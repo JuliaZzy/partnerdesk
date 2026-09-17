@@ -1,0 +1,10 @@
+[
+  {"id": "p-fo", "brand_id": "brand-aurora", "sku": "FO-100", "product_name_en": "Deep Sea Fish Oil", "native_name": "深海鱼油omega-3", "category": "Supplements", "unit_size": "60 caps", "case_pack": 12, "case_price": 100, "moq_units": 100, "cases_per_layer": 5, "layers_per_pallet": 8, "case_weight": 4.2},
+  {"id": "p-sr", "brand_id": "brand-aurora", "sku": "SR-200", "product_name_en": "Radiance Serum", "native_name": "焕采精华", "category": "Skincare", "unit_size": "30ml", "variant": "single", "case_pack": 6, "case_price": 50, "cases_per_layer": 10},
+  {"id": "p-srp", "brand_id": "brand-aurora", "sku": "SR-201", "product_name_en": "Radiance Serum Plus", "native_name": "焕采精华加强版", "category": "Skincare", "unit_size": "50ml", "variant": "single", "case_pack": 6, "case_price": 60, "cases_per_layer": 10},
+  {"id": "p-tn", "brand_id": "brand-aurora", "sku": "TN-300", "product_name_en": "Hydrating Toner", "native_name": "保湿精华水", "category": "Skincare", "unit_size": "150ml", "case_pack": 12, "case_price": 36, "moq_units": 48},
+  {"id": "p-np", "brand_id": "brand-aurora", "sku": "NP-300", "product_name_en": "Unpriced Item", "category": "Skincare", "case_pack": 6, "case_price": null},
+  {"id": "p-gs", "brand_id": "brand-aurora", "sku": "GS-010", "product_name_en": "Gift Set Mini", "category": "Gifts", "case_pack": 24, "case_price": 40, "commercial_role": "gift"},
+  {"id": "p-sm", "brand_id": "brand-aurora", "sku": "SM-001", "product_name_en": "Serum Sample Sachet", "category": "Samples", "case_pack": 100, "case_price": 5, "commercial_role": "sample"},
+  {"id": "p-old", "brand_id": "brand-aurora", "sku": "OLD-900", "product_name_en": "Legacy Night Cream", "category": "Skincare", "case_pack": 6, "case_price": 45, "discontinued": true}
+]

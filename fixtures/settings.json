@@ -1,0 +1,5 @@
+[
+  {"id": "brand-aurora", "payment_terms": "50_50", "incoterms": "CIF", "shipping_method": "sea", "eta_days": 60, "min_po_confidence": 0.5,
+   "operating_context": "Aurora ships from Shanghai twice a month. Sea freight to Europe takes about 6 weeks; air is available for urgent restocks at the distributor's cost.",
+   "tone": "Warm, direct and professional, like an experienced account rep. Short sentences. No emoji, no exclamation marks."}
+]

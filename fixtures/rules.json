@@ -1,0 +1,7 @@
+[
+  {"id": "rule-min", "brand_id": "brand-aurora", "name": "Minimum order value $500", "rule_type": "min_order_value", "rule_config": {"min": 500}, "severity": "block"},
+  {"id": "rule-disc", "brand_id": "brand-aurora", "name": "Discounts ≥ 15% need approval", "rule_type": "discount_approval", "rule_config": {"threshold_pct": 15}, "severity": "approval_required"},
+  {"id": "rule-gift", "brand_id": "brand-aurora", "name": "Gifts ≤ 10% of order", "rule_type": "gift_pct_cap", "rule_config": {"max_pct": 10}, "severity": "block"},
+  {"id": "rule-old", "brand_id": "brand-aurora", "name": "No discontinued products", "rule_type": "discontinued_block", "rule_config": {}, "severity": "block"},
+  {"id": "rule-terr", "brand_id": "brand-aurora", "name": "No shipments to KP / IR", "rule_type": "territory_restriction", "rule_config": {"territories": ["KP", "IR"]}, "severity": "block"}
+]

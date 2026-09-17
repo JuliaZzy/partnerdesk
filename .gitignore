@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+# local artifacts from running the pipelines
+*.ocr.json
+*.chunk.json
+*.extract.json
+
+# personal — never push with the project
+CV/
+*.pdf

@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "partnerdesk-ui", "runtimeExecutable": ".venv/Scripts/python.exe", "runtimeArgs": ["-m", "streamlit", "run", "partnerdesk/ui.py", "--server.port", "8501", "--server.headless", "true"], "port": 8501 },
+    { "name": "partnerdesk-api", "runtimeExecutable": ".venv/Scripts/python.exe", "runtimeArgs": ["-m", "uvicorn", "partnerdesk.app:app", "--port", "8000"], "port": 8000 }
+  ]
+}
