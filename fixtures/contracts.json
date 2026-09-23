@@ -1,0 +1,43 @@
+[
+  {
+    "id": "ct-aurora-nordic-2026",
+    "partnership_id": "ps-aurora-nordic",
+    "title": "Aurora Botanicals × Nordic Beauty — Distribution Agreement 2026",
+    "file_name": "aurora-nordic-distribution-2026.pdf",
+    "model": "fixture",
+    "extraction": {
+      "contract_type": "distribution_agreement",
+      "effective_date": "2026-01-01",
+      "term_start_date": "2026-01-01",
+      "term_end_date": "2027-12-31",
+      "auto_renewal": true,
+      "exclusivity_type": "exclusive",
+      "territory_text": "Sweden, Norway, Denmark and Finland.",
+      "allowed_countries": ["SE", "NO", "DK", "FI"],
+      "excluded_countries": [],
+      "minimum_order_quantities": [
+        {"quantity": 500, "unit": "USD", "applies_per": "per_order", "source_clause_text": "Each purchase order shall have a minimum value of USD 500."}
+      ],
+      "commercial_discount_rules": [
+        {
+          "title": "Container sequence discount",
+          "section_reference": "5.01(b)",
+          "applies_per": "each_contract_year",
+          "basis": "shipping_container_sequence",
+          "tiers": [
+            {"from_container": 1, "to_container": 2, "discount_percent": 3},
+            {"from_container": 3, "to_container": 4, "discount_percent": 5},
+            {"from_container": 5, "to_container": null, "discount_percent": 8}
+          ],
+          "source_clause_text": "In each contract year the first and second containers are invoiced at list price less 3%, the third and fourth at list price less 5%, and the fifth and every further container at list price less 8%."
+        }
+      ],
+      "commercial_discount_clause_text": "In each contract year the first and second containers are invoiced at list price less 3%, the third and fourth at list price less 5%, and the fifth and every further container at list price less 8%.",
+      "field_evidence": {
+        "commercial_discount_rules": [{"page": 7, "quote": "the first and second containers are invoiced at list price less 3%", "section_hint": "5.01(b)"}],
+        "minimum_order_quantities": [{"page": 6, "quote": "minimum value of USD 500", "section_hint": "4.02"}]
+      },
+      "confidence_score": 0.9
+    }
+  }
+]

@@ -7,9 +7,12 @@ build a valid, rule-compliant PO.
 
 Which slots gate the conversation vs. which auto-default:
   - line_items ........ REQUIRED — must resolve to catalog SKUs, be priced, pass MOQ + rules.
-  - discount .......... REQUIRED to ADDRESS — None means "the user hasn't said anything
-                        about a discount yet"; the agent must ask (money-sensitive).
-                        {"kind": "none"} once the user says they don't want one.
+  - discount .......... REQUIRED to ADDRESS — None means "nothing has settled it yet".
+                        The partnership's contract settles it first (turn.py pre-fills the
+                        agreed rate, source="contract"); only without a contract rate does
+                        the agent ask (money-sensitive). Whatever the customer then says
+                        (source="customer") overrides the pre-fill; {"kind": "none"} once
+                        they say the order is at list price.
   - payment_terms / incoterms / shipping_method / eta_date .... have defaults; they are
                         shown in the draft table and ratified by the user's Confirm.
   - notes ............. optional.
@@ -49,6 +52,16 @@ class Discount(BaseModel):
 
     kind: Literal["none", "amount", "percent"]
     value: float | None = None
+    # Who settled it: the customer in chat, or the partnership's contract (pre-filled by
+    # code). Shown in the draft so a contract rate reads as a given, not an offer.
+    source: Literal["customer", "contract"] | None = None
+    note: str | None = None  # e.g. "3rd container of the contract year → 5% (§5.01(b))"
+
+    def describe(self, currency: str = "") -> str:
+        if self.kind == "none":
+            return "list price per contract" if self.source == "contract" else "no discount"
+        head = f"{self.value:g}%" if self.kind == "percent" else f"{currency} {self.value:g}".strip()
+        return f"contract discount {head}" if self.source == "contract" else f"{head} discount"
 
 
 class PoSlots(BaseModel):
@@ -59,7 +72,7 @@ class PoSlots(BaseModel):
     incoterms: str | None = None
     shipping_method: str | None = None
     eta_date: str | None = None  # YYYY-MM-DD
-    discount: Discount | None = None  # None = not yet addressed (agent must ask)
+    discount: Discount | None = None  # None = not settled by contract or customer yet
     notes: str | None = None
 
 
@@ -85,9 +98,20 @@ def merge_slots(prev: PoSlots, nxt: PoSlots) -> PoSlots:
         incoterms=nxt.incoterms if nxt.incoterms is not None else prev.incoterms,
         shipping_method=nxt.shipping_method if nxt.shipping_method is not None else prev.shipping_method,
         eta_date=nxt.eta_date if nxt.eta_date is not None else prev.eta_date,
-        discount=nxt.discount if nxt.discount is not None else prev.discount,
+        discount=_merge_discount(prev.discount, nxt.discount),
         notes=nxt.notes if nxt.notes is not None else prev.notes,
     )
+
+
+def _merge_discount(prev: Discount | None, nxt: Discount | None) -> Discount | None:
+    """The model reads the gathered slots and tends to echo the pre-filled contract rate
+    back as if the customer had said it. Same kind and value → not a change: the contract
+    keeps the provenance (and the draft keeps saying "per contract")."""
+    if nxt is None:
+        return prev
+    if prev is not None and prev.source == "contract" and (nxt.kind, nxt.value) == (prev.kind, prev.value):
+        return prev
+    return nxt
 
 
 def default_eta_date(days: int, today: date | None = None) -> str:

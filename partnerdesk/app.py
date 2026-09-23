@@ -33,6 +33,7 @@ class Inbound(BaseModel):
     message: str = ""
     images: list[str] = []       # data URLs — read by the PO extractor
     attachments: list[str] = []  # file names — seen by the router only
+    model: str | None = None     # campus call name; default is LLM_MODEL
 
 
 class Confirm(BaseModel):
@@ -60,7 +61,7 @@ def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
 
     @app.get("/api/partnerships")
     def partnerships() -> list[dict[str, Any]]:
-        return get_db().documents("partnership")
+        return [p.model_dump() for p in get_db().partnerships()]
 
     @app.post("/api/sessions")
     def new_session(body: NewSession) -> dict[str, Any]:
@@ -79,6 +80,8 @@ def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
     @app.post("/api/sessions/{sid}/message")
     def message(sid: str, body: Inbound) -> StreamingResponse:
         d, llm = get_db(), get_llm()
+        if body.model and isinstance(llm, OpenAICompatLLM):
+            llm = llm.with_model(body.model)
         if not d.session(sid):
             raise HTTPException(404, "session not found")
         if not body.message.strip() and not body.images:

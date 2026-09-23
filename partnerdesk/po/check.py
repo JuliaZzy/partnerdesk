@@ -241,7 +241,7 @@ def _collect_gaps(lines: list[ResolvedLine], subtotal: float, slots: PoSlots) ->
     if lines and all(l.resolved for l in lines) and subtotal <= 0:
         gaps.append(Gap("zero_total", "The order total is $0 — please add quantities or products with a price."))
     if slots.discount is None:
-        gaps.append(Gap("discount_unaddressed", "Do you want a discount on this order, or should I proceed without one?"))
+        gaps.append(Gap("discount_unaddressed", "Is this order at list price, or is there an agreed discount to put on it?"))
     return gaps
 
 

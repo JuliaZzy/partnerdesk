@@ -28,6 +28,7 @@ class ReplyInput:
     image_count: int = 0
     submitted: dict | None = None  # {po_number, total, currency}
     operating_context: str | None = None
+    contract_discount: str | None = None  # set on the turn the contract rate was applied
 
 
 def build_reply_prompt(i: ReplyInput) -> str:
@@ -37,7 +38,9 @@ def build_reply_prompt(i: ReplyInput) -> str:
         "Voice and tone — follow this exactly:",
         i.tone,
         "",
-        f"Reply in {i.language or 'the customer language'}. 1–3 short sentences. Never print a table — the UI shows the order draft.",
+        f"Reply in {i.language or 'the customer language'}. "
+        + ("Up to about six short lines — this is the last thing they read before committing money." if i.stage == "confirm" else "1–3 short sentences.")
+        + " Never print a table — the UI shows the order draft. Quantities on an order are CASES (箱), never units or pieces — always say cases.",
         # Placed before the turn's specifics so it colours what the reply chooses to raise,
         # rather than reading as one more thing to mention.
         context_block(i.operating_context),
@@ -52,6 +55,12 @@ def build_reply_prompt(i: ReplyInput) -> str:
         lines += [f'They said "{said}" → you carry "{got}".' for said, got in i.resolutions]
         lines.append("If that isn't literally what they asked for, acknowledge it and offer it as the closest match rather than silently swapping.")
     lines.append(f"Order so far: {i.draft_summary or 'nothing yet'}")
+    if i.contract_discount:
+        lines.append(
+            f"This turn you put their contract rate on the order: {i.contract_discount}. Tell them so in this reply — "
+            "a discount is money and must never be applied silently. State it as the agreed term from their contract, "
+            "never as something they could request, apply for, or negotiate."
+        )
     if i.stage == "gathering":
         lines.append(
             f"Still to sort out (weave in naturally, don't recite): {' | '.join(i.gaps)}" if i.gaps
@@ -60,7 +69,13 @@ def build_reply_prompt(i: ReplyInput) -> str:
     elif i.stage == "confirm":
         if i.advisories:
             lines.append(f"Mention: {' | '.join(i.advisories)}")
-        lines.append("It's complete and passes all rules — say it looks good and ask them to press Confirm to place it.")
+        lines.append(
+            "It is complete and passes every rule. Confirm places a real order, so before they press it walk them through "
+            "what is on it, from the order above: each product with its case count, the discount and where it comes from "
+            "(their contract, or what they asked for, or none), payment terms, incoterms, shipping, ETA and the total. "
+            "Then ask them to check every line and press Confirm only once it all matches what they want. "
+            "Never say it looks fine or tell them to just confirm — checking is theirs to do, not yours to wave through."
+        )
     else:
         s = i.submitted or {}
         lines.append(f"Placed as {s.get('po_number')} ({s.get('currency')} {s.get('total')})." if s else "Placed.")
@@ -79,5 +94,5 @@ def stream_reply(llm: LLM, i: ReplyInput) -> Iterator[str]:
     yield from llm.stream_text(
         system=build_reply_prompt(i),
         messages=[{"role": "user", "content": i.user_message.strip() or "(they sent an image with no caption)"}],
-        temperature=0.7, max_tokens=300,
+        temperature=0.7, max_tokens=450 if i.stage == "confirm" else 300,
     )

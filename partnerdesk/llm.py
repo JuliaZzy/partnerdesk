@@ -11,10 +11,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
-from .config import LLMSettings, llm_settings
+from .config import LLMSettings, llm_settings, model_timeout, resolve_model_id
 
 Message = dict[str, Any]
 
@@ -50,16 +50,41 @@ class LLM(Protocol):
 
 
 class OpenAICompatLLM:
-    """OpenAI / Ollama / GLM through the `openai` SDK — same chat API, different base_url."""
+    """OpenAI / campus / Ollama / GLM through the `openai` SDK — same chat API, different base_url."""
 
-    def __init__(self, settings: LLMSettings | None = None, task: str | None = None):
+    def __init__(
+        self,
+        settings: LLMSettings | None = None,
+        task: str | None = None,
+        *,
+        _client: Any | None = None,
+    ):
         from openai import OpenAI
 
         self.settings = settings or llm_settings(task)
+        if _client is not None:
+            self._client = _client
+            return
         kwargs: dict[str, Any] = {"api_key": self.settings.api_key, "timeout": self.settings.timeout, "max_retries": 1}
         if self.settings.base_url:
             kwargs["base_url"] = self.settings.base_url
         self._client = OpenAI(**kwargs)
+
+    def with_model(self, model: str) -> OpenAICompatLLM:
+        """Same HTTP client, different call name — used when the chat page switches models."""
+        model = resolve_model_id(model)
+        return OpenAICompatLLM(
+            settings=replace(self.settings, model=model, timeout=model_timeout(model)),
+            _client=self._client,
+        )
+
+    def _glm_extra(self) -> dict[str, Any]:
+        # glm-4.x "thinking" occupies the stream (and can empty message.content). The
+        # Python SDK rejects GLM-only fields at the top level — they ride in extra_body.
+        url = (self.settings.base_url or "").lower()
+        if "bigmodel.cn" in url or "zhipuai" in url:
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return {}
 
     def _response_format(self, schema: dict[str, Any] | None) -> dict[str, Any]:
         if schema and self.settings.json_mode == "schema":
@@ -73,6 +98,8 @@ class OpenAICompatLLM:
             max_tokens=max_tokens,
             response_format=self._response_format(schema),
             messages=[{"role": "system", "content": system}, *messages],
+            timeout=self.settings.timeout,
+            **self._glm_extra(),
         )
         text = resp.choices[0].message.content or ""
         parsed = parse_json_loose(text)
@@ -87,11 +114,15 @@ class OpenAICompatLLM:
             max_tokens=max_tokens,
             stream=True,
             messages=[{"role": "system", "content": system}, *messages],
+            timeout=self.settings.timeout,
+            **self._glm_extra(),
         )
         for chunk in stream:
-            delta = chunk.choices[0].delta.content if chunk.choices else None
-            if delta:
-                yield delta
+            if not chunk.choices:
+                continue
+            text = chunk.choices[0].delta.content
+            if text:
+                yield text
 
 
 @dataclass

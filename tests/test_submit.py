@@ -6,6 +6,7 @@ from __future__ import annotations
 import threading
 
 from partnerdesk.llm import FakeLLM
+from partnerdesk.models import CommercialRule
 from partnerdesk.po.turn import confirm_order, load_bundle, run_po_turn
 
 EXTRACT_OK = {
@@ -75,8 +76,8 @@ def test_expired_token_is_refused(db):
 def test_price_change_between_draft_and_click_is_refused(db):
     bundle, done = drive_to_confirm(db)
     # The world moved: the catalog price changed after the draft was shown.
-    p = db.document("product", "p-fo")
-    db.put_document("product", "p-fo", {**p, "case_price": 120})
+    p = next(x for x in db.products("brand-1") if x.id == "p-fo")
+    db.upsert_product("brand-1", p.model_copy(update={"case_price": 120}))
     bundle = load_bundle(db, "ps-1")
     r = confirm_order(db, bundle, db.session("s1"), done["confirm_token"])
     assert r["state"] == "changed" and r["draft"]["total"] == 1200
@@ -85,7 +86,7 @@ def test_price_change_between_draft_and_click_is_refused(db):
 
 def test_rule_added_between_draft_and_click_is_refused(db):
     bundle, done = drive_to_confirm(db)
-    db.put_document("rule", "r-min", {"id": "r-min", "brand_id": "brand-1", "name": "min", "rule_type": "min_order_value", "rule_config": {"min": 5000}, "severity": "block"})
+    db.upsert_rule("brand-1", CommercialRule(id="r-min", name="min", rule_type="min_order_value", rule_config={"min": 5000}, severity="block"))
     r = confirm_order(db, load_bundle(db, "ps-1"), db.session("s1"), done["confirm_token"])
     assert r["state"] == "changed" and any("below" in g for g in r["gaps"])
 

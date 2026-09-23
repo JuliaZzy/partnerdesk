@@ -30,7 +30,7 @@ REPORT_STUB = "Thanks for the report. Report ingestion isn't wired into chat yet
 
 
 def new_session(db: Database, partnership_id: str | None = None) -> dict[str, Any]:
-    pid = partnership_id or (db.documents("partnership") or [{}])[0].get("id")
+    pid = partnership_id or next((p.id for p in db.partnerships()), None)
     if not pid or not db.partnership(pid):
         raise KeyError("partnership not found")
     return db.create_session(uuid.uuid4().hex, pid)

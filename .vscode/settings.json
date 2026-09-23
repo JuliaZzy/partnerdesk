@@ -2,5 +2,18 @@
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
   "python.terminal.activateEnvironment": true,
   "python.testing.pytestEnabled": true,
-  "python.testing.pytestArgs": ["tests"]
+  "python.testing.pytestArgs": ["tests"],
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "terminal.integrated.profiles.windows": {
+    "PowerShell": {
+      "source": "PowerShell",
+      "args": [
+        "-NoLogo",
+        "-ExecutionPolicy", "Bypass",
+        "-NoExit",
+        "-File",
+        "${workspaceFolder}\\.vscode\\terminal.ps1"
+      ]
+    }
+  }
 }

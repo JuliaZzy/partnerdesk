@@ -102,13 +102,13 @@ Respond with ONLY a raw JSON object (no markdown fence):
 def _normalize_discount(kind: Any, value: Any) -> Discount | None:
     k = kind.strip().lower() if isinstance(kind, str) else ""
     if k == "none":
-        return Discount(kind="none")
+        return Discount(kind="none", source="customer")
     try:
         n = float(value)
     except (TypeError, ValueError):
         return None
     if k in ("amount", "percent") and n > 0 and n != float("inf"):
-        return Discount(kind=k, value=n)
+        return Discount(kind=k, value=n, source="customer")
     return None
 
 

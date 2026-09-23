@@ -5,11 +5,15 @@ description = "Conversational operations agent for a brand's distributors: build
 requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.0,<3",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.13",
   "openai>=1.40.0",
   "python-dotenv>=1.0.0",
   "fastapi>=0.115",
   "uvicorn>=0.30",
   "streamlit>=1.43",
+  "psycopg[binary]>=3.2",
+  "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +35,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["partnerdesk*"]
+
+[tool.setuptools.package-data]
+partnerdesk = ["db/migrations/*.py", "db/migrations/*.mako", "db/migrations/versions/*.py"]
 
 
 [tool.ruff]

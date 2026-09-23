@@ -1,7 +1,10 @@
 # 移植规格：数据层最小字段集
 
+> 2026-09-20 起数据层改为 SQLAlchemy + Alembic 的真实表（`partnerdesk/db/orm.py`），不再是 JSON 文档表；
+> 合同抽取全量入库并预填下一单折扣，见 README「数据层」。下面的字段清单仍然是每张表的来源说明。
+
 第一版 PO agent 触到 7 张表。这里只列 agent **实际读写的列**——重写里每张是一个 pydantic model，
-数据从 `fixtures/*.json` 种进 SQLite。产品管理、目录编辑、导入向导等**功能**不搬。
+数据从 `fixtures/*.json` 种进数据库。产品管理、目录编辑、导入向导等**功能**不搬。
 
 ## 读
 

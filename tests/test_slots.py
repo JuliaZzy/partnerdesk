@@ -54,6 +54,17 @@ def test_normalize_rejects_bad_enums_dates_and_quantities():
 
 def test_normalize_discount_three_states():
     assert normalize_slots({"discount_kind": None}).discount is None
-    assert normalize_slots({"discount_kind": "none"}).discount == Discount(kind="none")
-    assert normalize_slots({"discount_kind": "amount", "discount_value": 50}).discount == Discount(kind="amount", value=50)
+    # What the customer says is marked as theirs — it outranks a contract pre-fill.
+    assert normalize_slots({"discount_kind": "none"}).discount == Discount(kind="none", source="customer")
+    assert normalize_slots({"discount_kind": "amount", "discount_value": 50}).discount == Discount(kind="amount", value=50, source="customer")
     assert normalize_slots({"discount_kind": "percent", "discount_value": -3}).discount is None
+
+
+def test_echoed_contract_rate_keeps_its_provenance():
+    prev = PoSlots(discount=Discount(kind="percent", value=3, source="contract", note="1st container"))
+    echoed = merge_slots(prev, PoSlots(discount=Discount(kind="percent", value=3, source="customer")))
+    assert echoed.discount is prev.discount
+    changed = merge_slots(prev, PoSlots(discount=Discount(kind="percent", value=5, source="customer")))
+    assert changed.discount.source == "customer" and changed.discount.value == 5
+    dropped = merge_slots(prev, PoSlots(discount=Discount(kind="none", source="customer")))
+    assert dropped.discount.kind == "none" and dropped.discount.source == "customer"

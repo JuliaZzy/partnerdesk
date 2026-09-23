@@ -1,0 +1,15 @@
+---
+description: 终端命令使用项目 .venv，不要用系统 Python
+alwaysApply: true
+---
+
+# Python 环境
+
+本仓库解释器是项目根目录 `.venv`。
+
+- 新开的集成终端会跑 `.vscode/terminal.ps1`，自动 activate `.venv`，并提供 `dev` 函数
+- 若提示符没有 `(.venv)`，这是旧终端：再开一个，或手动 `. .\.venv\Scripts\Activate.ps1`
+- 也可以直接调用 `.venv\Scripts\python.exe`、`.venv\Scripts\pytest.exe`
+- 常用入口用 `dev.bat`。新终端里可以直接 `dev` / `dev test` / `dev lint`；旧终端或外部 PowerShell 要用 `.\dev`
+- 不要用系统自带的 `python` / `pip`，只用 `.venv`
+- 若还没有 `.venv`：`python -m venv .venv`，再 `.venv\Scripts\python -m pip install -e ".[contract,dev]"`

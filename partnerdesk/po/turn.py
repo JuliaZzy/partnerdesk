@@ -1,6 +1,6 @@
 """One turn of the PO conversation, and the confirm gate.
 
-    extract (LLM) → merge → code-check (code, + LLM resolver fallback) → draft → reply (LLM, streamed)
+    extract (LLM) → merge → contract discount (code) → code-check (code, + LLM resolver fallback) → draft → reply (LLM, streamed)
 
 The reply is streamed as `token` events; the draft table, gaps and ledger arrive in the
 final `done` event — the UI renders them from code, never from the model.
@@ -20,15 +20,17 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..catalog import Catalog
+from ..contracts import contract_discount_for_next_order
 from ..db import Database
 from ..llm import LLM
+from ..memory import recall, with_memory
 from ..models import AgentSettings, CommercialRule, Partnership
 from .check import CheckResult, run_code_check
 from .draft import build_draft, build_draft_summary, hash_draft
 from .extract import extract_turn
 from .reply import ReplyInput, stream_reply
 from .resolver import resolve_references
-from .slots import PoSlots, merge_slots
+from .slots import Discount, PoSlots, merge_slots
 from .submit import create_and_submit_po
 
 # A chat confirm is pressed while the draft is on screen; a day bounds a tab left open.
@@ -48,7 +50,13 @@ def load_bundle(db: Database, partnership_id: str) -> Bundle:
     p = db.partnership(partnership_id)
     if not p:
         raise KeyError(f"partnership {partnership_id} not found")
-    return Bundle(partnership=p, settings=db.settings(p.brand_id), catalog=Catalog(db.products(p.brand_id)), rules=db.rules(p.brand_id))
+    settings = db.settings(p.brand_id)
+    # Long-term memory rides in the same context slot as the brand's standing context:
+    # awareness for the model, never an input to the code-check.
+    memories = recall(db, partnership_id)
+    if memories:
+        settings = settings.model_copy(update={"operating_context": with_memory(settings.operating_context, memories)})
+    return Bundle(partnership=p, settings=settings, catalog=Catalog(db.products(p.brand_id)), rules=db.rules(p.brand_id))
 
 
 def build_ledger(stage: str) -> list[dict[str, Any]]:
@@ -108,35 +116,47 @@ def run_po_turn(
         yield {"type": "warning", "message": f"extraction failed: {err}"}
         slots, language = current, "English"
 
-    # 2. Deterministic gate.
+    # 2. The partnership's contract settles the discount before anyone is asked. Pre-filled
+    #    once (source="contract"); whatever the customer says afterwards overrides it.
+    applied = None
+    if slots.discount is None and slots.line_items:
+        cd = contract_discount_for_next_order(db, bundle.partnership.id)
+        if cd:
+            slots.discount = Discount(
+                kind="percent" if cd.percent > 0 else "none", value=cd.percent if cd.percent > 0 else None,
+                source="contract", note=cd.note,
+            )
+            applied = cd.note
+
+    # 3. Deterministic gate.
     check = _check(bundle, slots, llm)
     stage = "confirm" if check.ready else "gathering"
     draft = build_draft(slots, check, bundle.partnership.currency, bundle.settings)
 
-    # 3. Mint the confirm token only when the order is complete and compliant; bind it to
+    # 4. Mint the confirm token only when the order is complete and compliant; bind it to
     #    the draft the user is about to see.
     token = draft_hash = expires = None
     if stage == "confirm" and draft:
         token, draft_hash = secrets.token_urlsafe(32), hash_draft(draft)
         expires = (datetime.now(UTC) + CONFIRM_TOKEN_TTL).isoformat(timespec="seconds")
 
-    # 4. Stream the reply — told the gate outcome, so it is accurate.
+    # 5. Stream the reply — told the gate outcome, so it is accurate.
     reply_text = ""
     try:
         for tok in stream_reply(llm, ReplyInput(
             tone=bundle.settings.tone, language=language, user_message=message, stage=stage,
-            draft_summary=build_draft_summary(slots, check, bundle.settings),
+            draft_summary=build_draft_summary(slots, check, bundle.settings, bundle.partnership.currency),
             resolutions=[(l.reference, l.product_name) for l in check.lines if l.resolved],
             gaps=check.gap_messages, advisories=[r.message for r in check.advisory],
             layer_notes=_layer_notes(check), image_count=len(images),
-            operating_context=bundle.settings.operating_context,
+            operating_context=bundle.settings.operating_context, contract_discount=applied,
         )):
             reply_text += tok
             yield {"type": "token", "text": tok}
     except Exception as err:
         yield {"type": "warning", "message": f"reply failed: {err}"}
 
-    # 5. Persist, then hand the UI the structured payload.
+    # 6. Persist, then hand the UI the structured payload.
     history = [*history, {"role": "user", "content": message or "(image)"}, {"role": "assistant", "content": reply_text}][-MAX_HISTORY_TURNS * 2:]
     db.update_session(
         session["id"], slots=slots.model_dump(), history=history, stage=stage, specialist="po",

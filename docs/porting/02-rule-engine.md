@@ -69,5 +69,6 @@ RuleEvaluationResult
 | `minimum_order_quantities[per product]`（单位） | 写回 `products.moq_units` | code-check 的 MOQ 检查直接生效 |
 | `excluded_countries[]` | `territory_restriction{territories}` block | 合同禁售地 |
 | `commercial_discount_rules` 最高档折扣 | `discount_approval{threshold_pct = 最高档 + ε}` approval_required | 超过合同给的折扣要人批 |
+| `commercial_discount_rules` 整个阶梯 | 存进 `contract_discount_rules/tiers`，下单时按合同年内柜次选档**预填**折扣 | 合同谈好的折扣是给定项，不是让经销商申请 |
 
-映射在 `partnerdesk/contracts/to_rules.py`，每条规则 `name` 带 "from contract" 标记，可追溯。
+映射在 `partnerdesk/contracts.py`，每条规则 `name` 带 "from contract" 标记、`contract_id` 指回合同，可追溯。

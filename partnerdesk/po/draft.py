@@ -14,7 +14,7 @@ import json
 from datetime import date
 from typing import Any
 
-from ..models import AgentSettings
+from ..models import PAYMENT_TERMS_LABELS, AgentSettings
 from .check import CheckResult
 from .slots import PoSlots, with_defaults
 
@@ -54,10 +54,11 @@ def build_draft(slots: PoSlots, check: CheckResult, currency: str, settings: Age
     }
 
 
-def build_draft_summary(slots: PoSlots, check: CheckResult, settings: AgentSettings, today: date | None = None) -> str:
+def build_draft_summary(slots: PoSlots, check: CheckResult, settings: AgentSettings, currency: str = "", today: date | None = None) -> str:
     """Short natural-language summary for the reply model. Must describe the same terms
     `build_draft` renders, or the reply would talk about a different order than the one
-    on screen."""
+    on screen. Quantities are spelled out as CASES — "200×" alone was read back to a
+    customer as 200 pieces."""
     if not check.lines:
         return "nothing yet"
     s = with_defaults(slots, settings, today)
@@ -69,13 +70,20 @@ def build_draft_summary(slots: PoSlots, check: CheckResult, settings: AgentSetti
             else l.product_name
         )
         flag = f" (below MOQ {l.moq_cases})" if l.below_moq else " (no price)" if l.missing_price else ""
-        parts.append(f"{l.cases}× {who}{flag}")
-    disc = (
-        "discount not yet addressed" if not s.discount
-        else "no discount" if s.discount.kind == "none"
-        else f"{s.discount.kind} discount {s.discount.value:g}"
-    )
-    return f"{', '.join(parts)}. Payment {s.payment_terms}, {s.incoterms}, {s.shipping_method}, ETA {s.eta_date}, {disc}."
+        parts.append(f"{l.cases} cases of {who}{flag}")
+    disc = "discount not yet settled" if not s.discount else s.discount.describe(currency)
+    if s.discount and s.discount.source == "contract" and s.discount.note:
+        disc += f" ({s.discount.note})"
+    money = ""
+    if check.subtotal > 0:
+        draft = build_draft(slots, check, currency, settings, today) or {}
+        cur = f"{currency} " if currency else ""
+        money = f" Subtotal {cur}{check.subtotal:,.2f}"
+        if draft.get("discount_amount"):
+            money += f", discount {cur}{draft['discount_amount']:,.2f}"
+        money += f", total {cur}{draft.get('total', check.subtotal):,.2f}."
+    pay = f"{s.payment_terms} ({PAYMENT_TERMS_LABELS[s.payment_terms]})" if s.payment_terms in PAYMENT_TERMS_LABELS else s.payment_terms
+    return f"{', '.join(parts)}. Payment {pay}, {s.incoterms}, {s.shipping_method}, ETA {s.eta_date}, {disc}.{money}"
 
 
 def hash_draft(draft: dict[str, Any]) -> str:
