@@ -1,9 +1,7 @@
 """Engine construction and schema migration.
 
-One engine per `Database`. SQLite gets the pragmas a multi-threaded local app needs
-(WAL, a busy timeout, foreign keys ON — SQLite ships with them OFF); a server URL gets a
-connection pool instead, so `PARTNERDESK_DB_URL=postgresql+psycopg://…` is a deploy-time
-change, not a code change.
+One engine per `Database`, always PostgreSQL — `PARTNERDESK_DB_URL` is required and there
+is no fallback engine (see `config.db_url` for why).
 
 Pool size is env-tunable (`PARTNERDESK_POOL_SIZE`, `PARTNERDESK_MAX_OVERFLOW`) because load
 testing is exactly the exercise of moving it: the ceiling on concurrent in-flight requests is
@@ -24,7 +22,7 @@ from typing import Any
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine
 
 from ..config import env
 
@@ -44,28 +42,20 @@ def _int_env(name: str, default: int) -> int:
 
 
 def make_engine(url: str) -> Engine:
-    kwargs: dict[str, Any] = {"json_serializer": _json_dumps, "future": True}
-    if url.startswith("sqlite"):
-        # Streamlit and FastAPI both hand connections across threads.
-        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 10}
-    else:
-        kwargs.update(
-            pool_size=_int_env("PARTNERDESK_POOL_SIZE", 10),
-            max_overflow=_int_env("PARTNERDESK_MAX_OVERFLOW", 20),
-            pool_timeout=_int_env("PARTNERDESK_POOL_TIMEOUT", 30),
-            pool_recycle=1800,
-            pool_pre_ping=True,
-        )
-    engine = create_engine(url, **kwargs)
-    if url.startswith("sqlite"):
-        @event.listens_for(engine, "connect")
-        def _sqlite_pragmas(dbapi_conn: Any, _record: Any) -> None:
-            cur = dbapi_conn.cursor()
-            cur.execute("PRAGMA journal_mode=WAL")
-            cur.execute("PRAGMA busy_timeout=10000")
-            cur.execute("PRAGMA foreign_keys=ON")
-            cur.close()
-    return engine
+    return create_engine(
+        url,
+        json_serializer=_json_dumps,
+        future=True,
+        # Read `timestamptz` back in UTC whatever the server's own timezone is. The instant
+        # is the same either way, but without this the datetimes the app formats and
+        # compares carry whatever offset the database host happens to be set to.
+        connect_args={"options": "-c timezone=UTC"},
+        pool_size=_int_env("PARTNERDESK_POOL_SIZE", 10),
+        max_overflow=_int_env("PARTNERDESK_MAX_OVERFLOW", 20),
+        pool_timeout=_int_env("PARTNERDESK_POOL_TIMEOUT", 30),
+        pool_recycle=1800,
+        pool_pre_ping=True,
+    )
 
 
 def alembic_config(url: str | None = None) -> Config:

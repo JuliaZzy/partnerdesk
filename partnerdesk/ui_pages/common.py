@@ -4,6 +4,7 @@ partnership, the sidebar links, and a few formatters. Not a page itself."""
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 import streamlit as st
@@ -168,5 +169,5 @@ def status_badge(status: str | None) -> str:
     return f":{color}-badge[{status or '—'}]"
 
 
-def short_date(ts: str | None) -> str:
-    return (ts or "")[:10] or "—"
+def short_date(ts: datetime | None) -> str:
+    return ts.date().isoformat() if ts else "—"

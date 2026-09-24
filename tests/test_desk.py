@@ -4,6 +4,7 @@ renders, and the pages act on the same database the agent reads."""
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
@@ -14,6 +15,10 @@ from partnerdesk.contracts import ingest_extraction
 from partnerdesk.knowledge import add_fragment
 from partnerdesk.llm import FakeLLM
 from partnerdesk.models import Partnership
+from partnerdesk.po.check import run_code_check
+from partnerdesk.po.slots import Discount, LineItemSlot, PoSlots
+from partnerdesk.po.submit import create_and_submit_po
+from partnerdesk.po.turn import load_bundle
 
 DESK = Path(__file__).resolve().parent.parent / "partnerdesk" / "ui.py"
 PAGES = ("ui_pages/orders.py", "ui_pages/contracts.py", "ui_pages/reports.py", "ui_pages/knowledge.py", "ui_pages/memory.py")
@@ -37,6 +42,21 @@ def test_desk_opens_on_the_chat_and_every_page_renders(db):
         at.switch_page(page).run()
         assert not at.exception, page
     assert [h.value for h in at.header] == ["Memory"]
+
+
+def test_orders_page_renders_a_placed_order(db):
+    """The only page that formats a timestamp the agent wrote rather than a seeded one."""
+    bundle = load_bundle(db, "ps-1")
+    slots = PoSlots(line_items=[LineItemSlot(reference="FO-100", cases=20)], discount=Discount(kind="none"))
+    check = run_code_check(slots=slots, catalog=bundle.catalog, rules=bundle.rules, partnership_id="ps-1", ship_to_country="US")
+    result = create_and_submit_po(db, partnership=bundle.partnership, settings=bundle.settings, slots=slots, check=check)
+    submitted_at = db.po(result.po_id).submitted_at
+    assert submitted_at.tzinfo is not None and submitted_at.utcoffset() == timedelta(0)
+
+    at = desk(db).run().switch_page("ui_pages/orders.py").run()
+    assert not at.exception
+    row = at.dataframe[0].value.iloc[0]
+    assert row["PO"] == result.po_number and row["Submitted"] == submitted_at.date().isoformat()
 
 
 def test_contracts_page_shows_the_agreement_and_the_next_discount(db, partnership: Partnership):

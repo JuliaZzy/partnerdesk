@@ -224,7 +224,7 @@ def ingest_extraction(db: Database, extraction: dict[str, Any], *, brand_id: str
 class ContractDiscount:
     percent: float
     container_index: int
-    period_start: str
+    period_start: date
     rule_title: str | None
     section_reference: str | None
 
@@ -233,21 +233,23 @@ class ContractDiscount:
         ordinal = {1: "1st", 2: "2nd", 3: "3rd"}.get(self.container_index, f"{self.container_index}th")
         ref = f" §{self.section_reference}" if self.section_reference else ""
         what = f"{self.percent:g}% off" if self.percent > 0 else "list price"
-        return f"{what} — {ordinal} container of the contract period from {self.period_start}{ref}"
+        return f"{what} — {ordinal} container of the contract period from {self.period_start.isoformat()}{ref}"
 
 
-def _period_start(contract: Contract, applies_per: str | None, today: date) -> str:
+def _period_start(contract: Contract, applies_per: str | None, today: date) -> date:
     """When the current counting period began. Contract years roll over on the anniversary
     of the effective date; calendar years on 1 January; anything else counts from the start."""
-    anchor = contract.effective_from or contract.term_start_date or contract.created_at or today.isoformat()
-    anchor_date = date.fromisoformat(anchor[:10])
+    # The first two are calendar dates on the agreement; `created_at` is an instant, and
+    # only a fallback for a contract that never said when it takes effect.
+    stated = contract.effective_from or contract.term_start_date
+    anchor_date = date.fromisoformat(stated) if stated else (contract.created_at.date() if contract.created_at else today)
     per = (applies_per or "").lower()
     if "calendar" in per:
-        return date(today.year, 1, 1).isoformat()
+        return date(today.year, 1, 1)
     if "contract" in per or "year" in per:
         start = _anniversary(anchor_date, today.year)
-        return (start if start <= today else _anniversary(anchor_date, today.year - 1)).isoformat()
-    return anchor_date.isoformat()
+        return start if start <= today else _anniversary(anchor_date, today.year - 1)
+    return anchor_date
 
 
 def _anniversary(anchor: date, year: int) -> date:

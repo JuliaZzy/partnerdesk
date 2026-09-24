@@ -1,12 +1,11 @@
 """Shared fixtures.
 
-`make_db` is the one way tests get a database. It hands back a `Database` on an empty store:
-a temp SQLite file by default, or a throwaway Postgres database when `PARTNERDESK_TEST_DB_URL`
-points at a server. Asking for the same `name` twice returns the same store, so a test can
-close a database and reopen it. Everything is dropped at teardown.
+`make_db` is the one way tests get a database: a throwaway PostgreSQL database per name,
+created on the server `PARTNERDESK_TEST_DB_URL` points at and dropped at teardown. Asking
+for the same `name` twice returns the same database, so a test can close one and reopen it.
 
-Running the suite on both engines is the point: SQLite keeps the fast default, Postgres is
-what the app actually deploys on, and a divergence between them should fail here.
+Tests run on the same engine the app deploys on — there is no lighter stand-in, because a
+stand-in only proves the code works on the stand-in.
 """
 
 from __future__ import annotations
@@ -63,20 +62,18 @@ def _admin(server: str, statement: str) -> None:
 
 
 @pytest.fixture
-def make_db(tmp_path):
+def make_db():
     server = env("PARTNERDESK_TEST_DB_URL")
-    stores: dict[str, str | object] = {}
+    if not server:
+        pytest.skip("PARTNERDESK_TEST_DB_URL is not set — see .env.example")
+    stores: dict[str, str] = {}
     live: list[Database] = []
 
     def build(name: str = "test") -> Database:
         if name not in stores:
-            if server:
-                stores[name] = f"pdtest_{uuid.uuid4().hex[:12]}"
-                _admin(server, f'CREATE DATABASE "{stores[name]}"')
-            else:
-                stores[name] = tmp_path / f"{name}.sqlite3"
-        target = stores[name]
-        d = Database(_server_url(server, target) if server else target)
+            stores[name] = f"pdtest_{uuid.uuid4().hex[:12]}"
+            _admin(server, f'CREATE DATABASE "{stores[name]}"')
+        d = Database(_server_url(server, stores[name]))
         live.append(d)
         return d
 
@@ -85,9 +82,8 @@ def make_db(tmp_path):
     # Postgres refuses to drop a database with sessions still on it, so every pool goes first.
     for d in live:
         d.engine.dispose()
-    if server:
-        for database in stores.values():
-            _admin(server, f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
+    for database in stores.values():
+        _admin(server, f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
 
 
 @pytest.fixture

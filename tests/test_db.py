@@ -12,13 +12,10 @@ from partnerdesk.db.orm import Base
 
 
 def test_migrations_match_the_models(make_db):
-    """A model change without a migration (or the reverse) fails here, not in production.
-
-    On Postgres this also catches types the migration spells differently from the model —
-    the mismatch SQLite is too permissive to notice."""
+    """A model change without a migration (or the reverse) fails here, not in production."""
     db = make_db("drift")
     with db.engine.connect() as conn:
-        ctx = MigrationContext.configure(conn, opts={"compare_type": True, "render_as_batch": True})
+        ctx = MigrationContext.configure(conn, opts={"compare_type": True})
         assert compare_metadata(ctx, Base.metadata) == []
 
 
@@ -44,7 +41,6 @@ def test_seed_is_idempotent_and_wires_the_demo_contract(make_db):
 
 
 def test_foreign_keys_are_enforced(make_db):
-    """Postgres always enforces them; SQLite only does once `make_engine` turns them on."""
     import pytest
     from sqlalchemy.exc import IntegrityError
 

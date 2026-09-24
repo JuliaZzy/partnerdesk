@@ -149,11 +149,18 @@ def llm_settings(task: str | None = None) -> LLMSettings:
     )
 
 
-DB_PATH = Path(env("PARTNERDESK_DB", str(REPO_ROOT / "partnerdesk.sqlite3")))
-
-
 def db_url() -> str:
-    """SQLAlchemy URL. `PARTNERDESK_DB_URL` wins (any engine — Postgres in deployment);
-    otherwise the local SQLite file at `PARTNERDESK_DB` / ./partnerdesk.sqlite3."""
-    return env("PARTNERDESK_DB_URL") or f"sqlite:///{DB_PATH.as_posix()}"
+    """The application database, from `PARTNERDESK_DB_URL`. PostgreSQL only.
+
+    There is deliberately no fallback engine. A second engine means every schema decision
+    has to hold on both, which is what kept timestamps as ISO-8601 text instead of
+    `timestamptz`; and a silent fallback would let a misconfigured deploy come up on an
+    empty database instead of failing. Missing config is an error, not a different mode."""
+    url = env("PARTNERDESK_DB_URL")
+    if not url:
+        raise RuntimeError(
+            "PARTNERDESK_DB_URL is not set. Copy .env.example to .env and point it at a local "
+            "PostgreSQL, e.g. postgresql+psycopg://postgres:PASSWORD@127.0.0.1:5432/partnerdesk"
+        )
+    return url
 FIXTURES_DIR = REPO_ROOT / "fixtures"

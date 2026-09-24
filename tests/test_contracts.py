@@ -108,7 +108,7 @@ def test_discount_schedule_picks_the_tier_by_container_sequence(db):
     ingest_extraction(db, EXTRACTION, brand_id="brand-1", partnership_id="ps-1")
     today = date(2026, 9, 20)
     d = contract_discount_for_next_order(db, "ps-1", today)
-    assert d and d.percent == 5.0 and d.container_index == 1 and d.period_start == "2026-03-15"
+    assert d and d.percent == 5.0 and d.container_index == 1 and d.period_start == date(2026, 3, 15)
     assert d.note.startswith("5% off — 1st container")
     _submit(db)
     _submit(db)

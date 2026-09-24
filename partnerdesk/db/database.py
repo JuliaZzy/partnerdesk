@@ -5,14 +5,14 @@ rows (`orm.py`) inward — nothing outside this package imports `orm`. Every met
 transaction; the multi-row writes (an order with its items and rule snapshot, a contract
 with its terms and derived rules) commit together or not at all.
 
-Construct it with a SQLAlchemy URL, a file path (→ SQLite) or nothing (`config.db_url()`).
+Construct it with a PostgreSQL URL, or nothing to use `config.db_url()`.
 The schema is migrated to head on construction.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,15 +46,14 @@ from . import orm
 from .engine import make_engine, run_migrations
 
 
-def now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+def utcnow() -> datetime:
+    """The one clock the tables are stamped from — always UTC-aware, so what goes into a
+    `timestamptz` column carries its offset instead of inheriting the server's."""
+    return datetime.now(UTC)
 
 
-def _as_url(target: str | Path | None) -> str:
-    if target is None:
-        return db_url()
-    s = str(target)
-    return s if "://" in s else f"sqlite:///{Path(s).as_posix()}"
+def _as_url(target: str | None) -> str:
+    return db_url() if target is None else str(target)
 
 
 def _row_dict(row: Any) -> dict[str, Any]:
@@ -62,7 +61,7 @@ def _row_dict(row: Any) -> dict[str, Any]:
 
 
 class Database:
-    def __init__(self, target: str | Path | None = None, engine: Engine | None = None):
+    def __init__(self, target: str | None = None, engine: Engine | None = None):
         self.url = _as_url(target) if engine is None else str(engine.url)
         self.engine = engine or make_engine(self.url)
         run_migrations(self.engine)
@@ -74,7 +73,7 @@ class Database:
 
     # --- upserts (seeding, admin, tests) -------------------------------------------
     def _upsert(self, s: Session, cls: type, pk: Any, values: dict[str, Any]) -> None:
-        ts = now_iso()
+        ts = utcnow()
         row = s.get(cls, pk)
         cols = {c.key for c in cls.__table__.columns}
         values = {k: v for k, v in values.items() if k in cols}
@@ -164,7 +163,7 @@ class Database:
         """One transaction: supersede the partnership's active contract, write the contract +
         raw extraction + normalized terms, then the derived rules and product MOQs. Returns
         the contract id."""
-        c, ts = rec.contract, now_iso()
+        c, ts = rec.contract, utcnow()
         with self.tx() as s:
             for old in s.scalars(select(orm.Contract).where(orm.Contract.partnership_id == c.partnership_id, orm.Contract.status == "active", orm.Contract.id != c.id)):
                 old.status, old.updated_at = "superseded", ts
@@ -260,7 +259,7 @@ class Database:
 
     # --- sessions ---------------------------------------------------------------------
     def create_session(self, id: str, partnership_id: str) -> dict[str, Any]:
-        ts = now_iso()
+        ts = utcnow()
         with self.tx() as s:
             s.add(orm.ChatSession(id=id, partnership_id=partnership_id, slots={}, history=[], created_at=ts, updated_at=ts))
         return self.session(id)  # type: ignore[return-value]
@@ -286,13 +285,13 @@ class Database:
                 raise KeyError(f"session {id} not found")
             for k, v in fields.items():
                 setattr(row, k, v)
-            row.updated_at = now_iso()
+            row.updated_at = utcnow()
 
     def burn_confirm_token(self, token: str) -> str | None:
         """Atomically consume a confirm token. Returns the session id, or None when the
         token was already used — two clicks landing together see one UPDATE match and one
         match nothing. Done BEFORE the order is created, never after."""
-        ts = now_iso()
+        ts = utcnow()
         with self.tx() as s:
             r = s.execute(
                 update(orm.ChatSession).where(orm.ChatSession.confirm_token == token)
@@ -307,7 +306,7 @@ class Database:
 
     # --- purchase orders --------------------------------------------------------------
     def insert_po(self, po: PurchaseOrder, items: list[dict[str, Any]], rule_snapshot: list[dict[str, Any]]) -> None:
-        ts = now_iso()
+        ts = utcnow()
         with self.tx() as s:
             s.add(orm.PurchaseOrder(**po.model_dump(), created_at=ts, updated_at=ts))
             s.flush()  # items and the snapshot reference it
@@ -331,14 +330,17 @@ class Database:
                 q = q.where(orm.PurchaseOrder.partnership_id == partnership_id)
             return [PurchaseOrder(**_row_dict(r)) for r in s.scalars(q.order_by(orm.PurchaseOrder.created_at.desc(), orm.PurchaseOrder.po_number.desc()))]
 
-    def count_submitted_pos(self, partnership_id: str, since: str | None = None) -> int:
-        """Orders this partnership has placed (submitted_at set), optionally from a date."""
+    def count_submitted_pos(self, partnership_id: str, since: date | None = None) -> int:
+        """Orders this partnership has placed (submitted_at set), optionally from a day.
+
+        `since` is a calendar date and the column an instant, so the bound is that day's
+        UTC midnight — the same cut the ISO-text comparison used to make lexically."""
         with self.tx() as s:
             q = select(func.count()).select_from(orm.PurchaseOrder).where(
                 orm.PurchaseOrder.partnership_id == partnership_id, orm.PurchaseOrder.submitted_at.is_not(None),
             )
             if since:
-                q = q.where(orm.PurchaseOrder.submitted_at >= since)
+                q = q.where(orm.PurchaseOrder.submitted_at >= datetime(since.year, since.month, since.day, tzinfo=UTC))
             return int(s.scalar(q) or 0)
 
     def update_po(self, id: str, **fields: Any) -> None:
@@ -348,11 +350,11 @@ class Database:
                 raise KeyError(f"purchase order {id} not found")
             for k, v in fields.items():
                 setattr(row, k, v)
-            row.updated_at = now_iso()
+            row.updated_at = utcnow()
 
     def add_po_event(self, po_id: str, kind: str, data: dict[str, Any]) -> None:
         with self.tx() as s:
-            s.add(orm.PoEvent(po_id=po_id, kind=kind, data=data, created_at=now_iso()))
+            s.add(orm.PoEvent(po_id=po_id, kind=kind, data=data, created_at=utcnow()))
 
     def po_events(self, po_id: str) -> list[dict[str, Any]]:
         with self.tx() as s:
@@ -378,7 +380,7 @@ class Database:
     ) -> None:
         """One transaction: the document's scan result, its sections, and its fragments.
         Fragments a person already approved (or archived) survive a re-run; drafts are replaced."""
-        ts = now_iso()
+        ts = utcnow()
         with self.tx() as s:
             row = s.get(orm.BrandDocument, document_id)
             if row is None:
@@ -445,7 +447,7 @@ class Database:
             row = s.get(orm.KnowledgeFragment, id)
             if row is None:
                 raise KeyError(f"fragment {id} not found")
-            row.status, row.updated_at = status, now_iso()
+            row.status, row.updated_at = status, utcnow()
 
     def delete_fragment(self, id: str) -> None:
         with self.tx() as s:
@@ -459,7 +461,7 @@ class Database:
         facts: list[ReportFact],
     ) -> str:
         """One transaction: the report, the extraction run that read it, and its draft facts."""
-        ts, xid = now_iso(), uuid.uuid4().hex
+        ts, xid = utcnow(), uuid.uuid4().hex
         with self.tx() as s:
             self._upsert(s, orm.SalesReport, report.id, report.model_dump(exclude={"created_at", "updated_at"}))
             s.flush()
@@ -499,7 +501,7 @@ class Database:
         """The gate for a report's numbers. Drafts become confirmed; a confirmed fact from
         another report of the same partnership measuring the same thing for the same period
         is superseded — a re-sent month replaces, it never doubles. Repeat calls are no-ops."""
-        ts = now_iso()
+        ts = utcnow()
         with self.tx() as s:
             rep = s.get(orm.SalesReport, report_id)
             if rep is None:
@@ -541,7 +543,7 @@ class Database:
 
     # --- long-term memory ------------------------------------------------------------
     def add_memory(self, m: Memory) -> int:
-        ts = now_iso()
+        ts = utcnow()
         with self.tx() as s:
             row = orm.Memory(**m.model_dump(exclude={"id", "created_at", "updated_at"}), created_at=ts, updated_at=ts)
             s.add(row)
@@ -560,12 +562,12 @@ class Database:
             row = s.get(orm.Memory, id)
             if row is None:
                 raise KeyError(f"memory {id} not found")
-            row.is_active, row.updated_at = active, now_iso()
+            row.is_active, row.updated_at = active, utcnow()
 
     def mark_memories_recalled(self, ids: list[int]) -> None:
         if not ids:
             return
-        ts = now_iso()
+        ts = utcnow()
         with self.tx() as s:
             s.execute(update(orm.Memory).where(orm.Memory.id.in_(ids)).values(last_recalled_at=ts))
 
@@ -576,4 +578,4 @@ class Database:
                 s.delete(row)
 
 
-__all__ = ["Database", "now_iso"]
+__all__ = ["Database", "utcnow"]

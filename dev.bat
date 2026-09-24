@@ -3,7 +3,7 @@ rem 一键入口，不需要 activate —— 直接用 .venv 里的 python。
 rem   dev            桌面 (streamlit)：聊天 / 订单 / 合同 / 报表 / 品牌知识 / 记忆   http://localhost:8501
 rem   dev api        HTTP API (fastapi)   http://127.0.0.1:8000/docs
 rem   dev kill       查并结束占用 8501 的进程
-rem   dev db         建库（读 PARTNERDESK_DB_URL；sqlite 下是 no-op）
+rem   dev db         建库（读 PARTNERDESK_DB_URL），首次运行需要
 rem   dev test       pytest
 rem   dev lint       ruff
 rem   dev eval       evals/run_po_extract.py（需要真实模型）

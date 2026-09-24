@@ -3,7 +3,7 @@
   - in-process: `partnerdesk.db.engine.run_migrations(engine)` hands a live connection over
     `config.attributes["connection"]` — used by the app on startup and by every test;
   - CLI: `alembic upgrade head` / `alembic revision --autogenerate` from the repo root,
-    against `PARTNERDESK_DB_URL` (or the local SQLite file).
+    against `PARTNERDESK_DB_URL`.
 """
 
 from __future__ import annotations
@@ -22,8 +22,6 @@ def _configure(connection: Connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
-        # SQLite cannot ALTER most things in place; batch mode rewrites the table instead.
-        render_as_batch=connection.dialect.name == "sqlite",
         compare_type=True,
     )
 

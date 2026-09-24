@@ -6,6 +6,7 @@ first version's tables were left behind.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -131,7 +132,7 @@ class PurchaseOrder(BaseModel):
     discount_percentage: float | None
     subtotal_amount: float
     total_amount: float
-    submitted_at: str | None = None
+    submitted_at: datetime | None = None
     submit_cycle_version: int = 0
     prepaid_amount: float = 0.0
     balance_paid: float = 0.0
@@ -255,7 +256,7 @@ class Contract(BaseModel):
     territory_text: str | None = None
     annual_sales_target: dict[str, Any] | None = None
     annual_sales_target_currency: str | None = None
-    created_at: str | None = None
+    created_at: datetime | None = None
 
 
 class ContractRecord(BaseModel):
@@ -294,9 +295,9 @@ class BrandDocument(BaseModel):
     summary: str | None = None
     model: str | None = None
     status: Literal["uploaded", "distilled", "failed"] = "uploaded"
-    distilled_at: str | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
+    distilled_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class DocumentSection(BaseModel):
@@ -324,8 +325,8 @@ class KnowledgeFragment(BaseModel):
     source_pages: list[int] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     status: Literal["draft", "approved", "archived"] = "draft"
-    created_at: str | None = None
-    updated_at: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 # --- sales reports -----------------------------------------------------------------
@@ -348,10 +349,10 @@ class SalesReport(BaseModel):
     period_start: str | None = None
     period_end: str | None = None
     status: Literal["draft", "confirmed"] = "draft"
-    confirmed_at: str | None = None
+    confirmed_at: datetime | None = None
     notes: str | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class ReportFact(BaseModel):
@@ -378,7 +379,7 @@ class ReportFact(BaseModel):
     source_header: str | None = None
     ai_derived: bool = False
     status: Literal["draft", "confirmed", "superseded"] = "draft"
-    created_at: str | None = None
+    created_at: datetime | None = None
 
     def identity(self) -> tuple[Any, ...]:
         """What makes two facts 'the same measurement' — a re-import supersedes on this key."""
@@ -398,6 +399,6 @@ class Memory(BaseModel):
     source: Literal["user", "chat", "system"] = "user"
     session_id: str | None = None
     is_active: bool = True
-    last_recalled_at: str | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
+    last_recalled_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None

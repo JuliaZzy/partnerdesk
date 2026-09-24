@@ -5,8 +5,10 @@ queried, joined and migrated. The only JSON columns are the ones whose shape is 
 polymorphic (a rule's `rule_config` depends on its `rule_type`; a contract extraction is
 kept verbatim next to its normalized rows so it can be audited or re-mapped later).
 
-Timestamps are ISO-8601 text: that is SQLite's own convention, it sorts correctly, and
-every caller already compares them with `datetime.fromisoformat`. Dates are `YYYY-MM-DD`.
+Timestamps are `timestamptz` and every value written is UTC-aware (`database.utcnow`),
+so comparisons, `BETWEEN` and `date_trunc` are the database's job rather than string
+slicing. Plain dates — a contract term, a reporting period — stay `YYYY-MM-DD` text: they
+are calendar labels with no instant behind them.
 
 Naming: these are rows, referred to as `orm.Product` etc. The pydantic models the rest of
 the code passes around are in `partnerdesk/models.py`; `database.py` converts between the
@@ -15,18 +17,34 @@ two.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, ClassVar
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-# JSON on SQLite, JSONB on Postgres — the same column definition works on both.
-JSONCol = JSON().with_variant(JSONB(), "postgresql")
+# JSONB, not JSON: it is stored parsed, so it can be indexed and queried by key.
+JSONCol = JSONB()
+# Every instant column. `timezone=True` is what makes it `timestamptz` rather than a
+# wall-clock `timestamp`, so a value carries the offset it was written with.
+TimestampCol = DateTime(timezone=True)
 
 
 class Base(DeclarativeBase):
-    type_annotation_map: ClassVar = {dict[str, Any]: JSONCol, list[str]: JSONCol, list[dict[str, Any]]: JSONCol}
+    type_annotation_map: ClassVar = {
+        dict[str, Any]: JSONCol, list[str]: JSONCol, list[dict[str, Any]]: JSONCol, datetime: TimestampCol,
+    }
 
 
 # --- parties -------------------------------------------------------------------
@@ -37,8 +55,8 @@ class Brand(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     preferred_currency: Mapped[str] = mapped_column(String(3), default="USD")
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class Distributor(Base):
@@ -47,8 +65,8 @@ class Distributor(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     country: Mapped[str | None] = mapped_column(String(2))
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class Partnership(Base):
@@ -60,8 +78,8 @@ class Partnership(Base):
     distributor_id: Mapped[str] = mapped_column(ForeignKey("distributors.id"), index=True)
     ship_to_country: Mapped[str | None] = mapped_column(String(2))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
     brand: Mapped[Brand] = relationship(lazy="joined")
     distributor: Mapped[Distributor] = relationship(lazy="joined")
@@ -96,8 +114,8 @@ class Product(Base):
     discontinued: Mapped[bool] = mapped_column(Boolean, default=False)
     policy_tags: Mapped[list[str]] = mapped_column(JSONCol, default=list)
     restricted_territories: Mapped[list[str]] = mapped_column(JSONCol, default=list)
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class CommercialRule(Base):
@@ -121,8 +139,8 @@ class CommercialRule(Base):
     product_tags: Mapped[list[str]] = mapped_column(JSONCol, default=list)
     effective_from: Mapped[str | None] = mapped_column(String(10))
     effective_until: Mapped[str | None] = mapped_column(String(10))
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class BrandAgentSettings(Base):
@@ -136,7 +154,7 @@ class BrandAgentSettings(Base):
     operating_context: Mapped[str | None] = mapped_column(Text)
     min_po_confidence: Mapped[float | None] = mapped_column(Float)
     tone: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[str] = mapped_column(String(32))
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 # --- contracts ---------------------------------------------------------------------
@@ -164,8 +182,8 @@ class Contract(Base):
     territory_text: Mapped[str | None] = mapped_column(Text)
     annual_sales_target: Mapped[dict[str, Any] | None] = mapped_column(JSONCol)
     annual_sales_target_currency: Mapped[str | None] = mapped_column(String(8))
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
     discount_rules: Mapped[list[ContractDiscountRule]] = relationship(
         back_populates="contract", cascade="all, delete-orphan", order_by="ContractDiscountRule.position",
@@ -185,7 +203,7 @@ class ContractExtraction(Base):
     raw: Mapped[dict[str, Any]] = mapped_column(JSONCol)
     # What the mapping could not place — reported, never silently dropped.
     skipped: Mapped[list[str]] = mapped_column(JSONCol, default=list)
-    extracted_at: Mapped[str] = mapped_column(String(32))
+    extracted_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class ContractDiscountRule(Base):
@@ -287,11 +305,11 @@ class ChatSession(Base):
     # The burn (`UPDATE … WHERE confirm_token = ?`) is the idempotency guarantee; index it.
     confirm_token: Mapped[str | None] = mapped_column(String(64), index=True)
     confirm_hash: Mapped[str | None] = mapped_column(String(64))
-    confirm_expires_at: Mapped[str | None] = mapped_column(String(32))
-    confirmed_at: Mapped[str | None] = mapped_column(String(32))
+    confirm_expires_at: Mapped[datetime | None] = mapped_column(TimestampCol)
+    confirmed_at: Mapped[datetime | None] = mapped_column(TimestampCol)
     po_id: Mapped[str | None] = mapped_column(ForeignKey("purchase_orders.id", ondelete="SET NULL"))
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 # --- purchase orders ---------------------------------------------------------------
@@ -316,12 +334,12 @@ class PurchaseOrder(Base):
     discount_percentage: Mapped[float | None] = mapped_column(Float)
     subtotal_amount: Mapped[float] = mapped_column(Float)
     total_amount: Mapped[float] = mapped_column(Float)
-    submitted_at: Mapped[str | None] = mapped_column(String(32))
+    submitted_at: Mapped[datetime | None] = mapped_column(TimestampCol)
     submit_cycle_version: Mapped[int] = mapped_column(Integer, default=0)
     prepaid_amount: Mapped[float] = mapped_column(Float, default=0.0)
     balance_paid: Mapped[float] = mapped_column(Float, default=0.0)
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class PurchaseOrderItem(Base):
@@ -348,7 +366,7 @@ class PoRuleEvaluation(Base):
     evaluation_context: Mapped[str] = mapped_column(String(32))
     submit_cycle_version: Mapped[int] = mapped_column(Integer)
     snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSONCol)
-    created_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class PoEvent(Base):
@@ -358,7 +376,7 @@ class PoEvent(Base):
     po_id: Mapped[str] = mapped_column(ForeignKey("purchase_orders.id", ondelete="CASCADE"), index=True)
     kind: Mapped[str] = mapped_column(String(32))
     data: Mapped[dict[str, Any]] = mapped_column(JSONCol, default=dict)
-    created_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 # --- brand knowledge base -------------------------------------------------------------
@@ -381,9 +399,9 @@ class BrandDocument(Base):
     summary: Mapped[str | None] = mapped_column(Text)
     model: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(16), default="uploaded")  # uploaded | distilled | failed
-    distilled_at: Mapped[str | None] = mapped_column(String(32))
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    distilled_at: Mapped[datetime | None] = mapped_column(TimestampCol)
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class BrandDocumentPage(Base):
@@ -429,8 +447,8 @@ class KnowledgeFragment(Base):
     source_pages: Mapped[list[int]] = mapped_column(JSONCol, default=list)
     tags: Mapped[list[str]] = mapped_column(JSONCol, default=list)
     status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | approved | archived
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 # --- sales reports -------------------------------------------------------------------
@@ -455,10 +473,10 @@ class SalesReport(Base):
     period_start: Mapped[str | None] = mapped_column(String(10))
     period_end: Mapped[str | None] = mapped_column(String(10))
     status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | confirmed
-    confirmed_at: Mapped[str | None] = mapped_column(String(32))
+    confirmed_at: Mapped[datetime | None] = mapped_column(TimestampCol)
     notes: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class ReportExtraction(Base):
@@ -472,7 +490,7 @@ class ReportExtraction(Base):
     model: Mapped[str | None] = mapped_column(String(100))
     raw: Mapped[dict[str, Any]] = mapped_column(JSONCol, default=dict)  # the column mapping / tables located
     skipped: Mapped[list[str]] = mapped_column(JSONCol, default=list)
-    extracted_at: Mapped[str] = mapped_column(String(32))
+    extracted_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class ReportFact(Base):
@@ -503,7 +521,7 @@ class ReportFact(Base):
     source_header: Mapped[str | None] = mapped_column(String(200))  # the column header verbatim
     ai_derived: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | confirmed | superseded
-    created_at: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 # --- long-term memory ----------------------------------------------------------------
@@ -522,6 +540,6 @@ class Memory(Base):
     source: Mapped[str] = mapped_column(String(16), default="user")  # user | chat | system
     session_id: Mapped[str | None] = mapped_column(ForeignKey("sessions.id", ondelete="SET NULL"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_recalled_at: Mapped[str | None] = mapped_column(String(32))
-    created_at: Mapped[str] = mapped_column(String(32))
-    updated_at: Mapped[str] = mapped_column(String(32))
+    last_recalled_at: Mapped[datetime | None] = mapped_column(TimestampCol)
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)

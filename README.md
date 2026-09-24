@@ -48,8 +48,10 @@ legacy/            第一版的 Python 模块，原样保留，逐步移植出�
 
 所有业务数据都进数据库，按真实的表建模（列、外键、索引），不再有 JSON blob 表：
 
-- **引擎**：SQLAlchemy 2.0。默认本地 SQLite（`./partnerdesk.sqlite3`，`PARTNERDESK_DB` 可改路径）；
-  设 `PARTNERDESK_DB_URL=postgresql+psycopg://…` 即切到 Postgres，代码不变。
+- **引擎**：SQLAlchemy 2.0 + PostgreSQL，没有第二个引擎。`PARTNERDESK_DB_URL` 是必填的，
+  首次用 `dev db` 建库。不保留 SQLite 回落是刻意的：双引擎意味着每个 schema 决策都要在两边都成立，
+  原生类型（`timestamptz`、`jsonb`、数组、枚举）就一直用不上；而静默回落会让配置错误的部署
+  在一个空库上正常启动，而不是当场失败。
 - **schema 由 Alembic 版本化**（`partnerdesk/db/migrations`）。`Database()` 构造时自动升到 head，
   测试每个临时库也走同一套 migration；`tests/test_db.py` 会在模型和 migration 不一致时直接失败。
   改表：改 `db/orm.py` → `.venv\Scripts\alembic revision --autogenerate -m "..."` → 检查生成文件。
@@ -102,12 +104,21 @@ python -m venv .venv
 .venv\Scripts\python -m pip install -e ".[contract,dev]"
 ```
 
-然后在 `.env` 里填一个模型的 key（默认是交大校园 API，需校园网或 VPN；也有 OpenAI / Ollama / GLM）。之后不需要 activate，用 `dev.bat`：
+然后 `copy .env.example .env`，填两样东西：一个模型的 key（默认是交大校园 API，需校园网或 VPN；
+也有 OpenAI / Ollama / GLM），以及本地 PostgreSQL 的连接串（`PARTNERDESK_DB_URL` 和
+`PARTNERDESK_TEST_DB_URL`，后者跑测试要用）。最后建库：
+
+```
+dev db
+```
+
+之后不需要 activate，用 `dev.bat`：
 
 ```
 dev            桌面（聊天 / 订单 / 合同 / 报表 / 品牌知识 / 记忆）   http://localhost:8501
 dev api        HTTP API          http://127.0.0.1:8000/docs（可选）
-dev test       全部测试，不联网
+dev db         建库，首次运行需要
+dev test       全部测试，不联网（模型；数据库是真的）
 dev lint       ruff
 dev eval       评估（需要真实模型）
 dev py -m partnerdesk.contracts extraction.json --brand brand-aurora --partnership ps-aurora-nordic --apply

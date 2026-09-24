@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from .database import Database, now_iso
+from .database import Database, utcnow
 from .engine import make_engine, run_migrations
 
-__all__ = ["Database", "make_engine", "now_iso", "run_migrations"]
+__all__ = ["Database", "make_engine", "run_migrations", "utcnow"]

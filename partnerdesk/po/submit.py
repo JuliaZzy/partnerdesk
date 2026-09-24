@@ -60,7 +60,7 @@ def create_and_submit_po(
         eta_date=s.eta_date, ship_to_country=partnership.ship_to_country, notes=s.notes,
         discount_amount=discount_amount if discount_amount > 0 else None, discount_percentage=discount_pct,
         subtotal_amount=subtotal, total_amount=total,
-        submitted_at=datetime.now(UTC).isoformat(timespec="seconds"), submit_cycle_version=1,
+        submitted_at=datetime.now(UTC), submit_cycle_version=1,
     )
     # Only resolved, priced, qty>0 lines — the code-check guaranteed these.
     items = [

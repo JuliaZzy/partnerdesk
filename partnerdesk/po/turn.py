@@ -138,7 +138,7 @@ def run_po_turn(
     token = draft_hash = expires = None
     if stage == "confirm" and draft:
         token, draft_hash = secrets.token_urlsafe(32), hash_draft(draft)
-        expires = (datetime.now(UTC) + CONFIRM_TOKEN_TTL).isoformat(timespec="seconds")
+        expires = datetime.now(UTC) + CONFIRM_TOKEN_TTL
 
     # 5. Stream the reply — told the gate outcome, so it is accurate.
     reply_text = ""
@@ -180,7 +180,7 @@ def confirm_order(db: Database, bundle: Bundle, session: dict[str, Any], token: 
     stored = session.get("confirm_token")
     if not stored or stored != token:
         return {"state": "used"}
-    if not session.get("confirm_expires_at") or datetime.fromisoformat(session["confirm_expires_at"]) < datetime.now(UTC):
+    if not session.get("confirm_expires_at") or session["confirm_expires_at"] < datetime.now(UTC):
         return {"state": "expired"}
 
     # Rebuild from the live catalog + live rules. No LLM: the slots were settled by the

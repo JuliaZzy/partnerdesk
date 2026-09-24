@@ -4,6 +4,7 @@ double-click producing exactly one order."""
 from __future__ import annotations
 
 import threading
+from datetime import UTC, datetime
 
 from partnerdesk.llm import FakeLLM
 from partnerdesk.models import CommercialRule
@@ -69,7 +70,7 @@ def test_wrong_or_missing_token_is_refused(db):
 
 def test_expired_token_is_refused(db):
     bundle, done = drive_to_confirm(db)
-    db.update_session("s1", confirm_expires_at="2020-01-01T00:00:00+00:00")
+    db.update_session("s1", confirm_expires_at=datetime(2020, 1, 1, tzinfo=UTC))
     assert confirm_order(db, bundle, db.session("s1"), done["confirm_token"])["state"] == "expired"
 
 

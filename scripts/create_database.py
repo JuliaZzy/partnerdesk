@@ -2,10 +2,9 @@
 
     dev db
 
-Alembic owns the schema, but it cannot create the database that holds it — on SQLite the
-file appears on first connect, on a server it does not. This is the one step that has to
-happen before `Database()` can migrate anything, so it lives here rather than in the app:
-a deploy runs it once, and on SQLite it is a no-op.
+Alembic owns the schema, but it cannot create the database that holds it. This is the one
+step that has to happen before `Database()` can migrate anything, so it lives here rather
+than in the app: a deploy runs it once.
 """
 
 from __future__ import annotations
@@ -20,9 +19,6 @@ from partnerdesk.config import db_url
 
 def main() -> int:
     url = make_url(db_url())
-    if url.drivername.startswith("sqlite"):
-        print(f"sqlite — nothing to create ({url.database})")
-        return 0
     if "YOUR_PASSWORD" in str(url):
         print("PARTNERDESK_DB_URL still has the YOUR_PASSWORD placeholder — edit .env first.", file=sys.stderr)
         return 1
