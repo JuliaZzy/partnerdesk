@@ -14,14 +14,14 @@ from partnerdesk.config import FIXTURES_DIR
 from partnerdesk.contracts import ingest_extraction
 from partnerdesk.knowledge import add_fragment
 from partnerdesk.llm import FakeLLM
-from partnerdesk.models import Partnership
+from partnerdesk.models import Partnership, Product
 from partnerdesk.po.check import run_code_check
 from partnerdesk.po.slots import Discount, LineItemSlot, PoSlots
 from partnerdesk.po.submit import create_and_submit_po
 from partnerdesk.po.turn import load_bundle
 
 DESK = Path(__file__).resolve().parent.parent / "partnerdesk" / "ui.py"
-PAGES = ("ui_pages/orders.py", "ui_pages/contracts.py", "ui_pages/reports.py", "ui_pages/knowledge.py", "ui_pages/memory.py")
+PAGES = ("ui_pages/products.py", "ui_pages/orders.py", "ui_pages/contracts.py", "ui_pages/reports.py", "ui_pages/knowledge.py", "ui_pages/memory.py")
 
 
 def desk(db, llm=None) -> AppTest:
@@ -57,6 +57,37 @@ def test_orders_page_renders_a_placed_order(db):
     assert not at.exception
     row = at.dataframe[0].value.iloc[0]
     assert row["PO"] == result.po_number and row["Submitted"] == submitted_at.date().isoformat()
+
+
+def test_products_page_lists_the_catalog_and_filters_it(db):
+    at = desk(db).run().switch_page("ui_pages/products.py").run()
+    assert not at.exception
+    table = at.dataframe[0].value
+    assert set(table["SKU"]) == {"FO-100", "SR-200", "SR-201", "NP-300", "GS-010", "OLD-900"}
+    assert set(table["Brand"]) == {"Brand"}
+
+    at.text_input(key="products_q").set_value("鱼油").run()  # the native name is searchable too
+    assert list(at.dataframe[0].value["SKU"]) == ["FO-100"]
+
+    at.text_input(key="products_q").set_value("").run()
+    at.selectbox(key="products_status").select("停产").run()
+    assert list(at.dataframe[0].value["SKU"]) == ["OLD-900"]
+
+
+def test_the_catalog_needs_no_partnership(make_db):
+    """Products is browsable before any brand has a distributor; the pages that order or
+    report say there's nothing to show instead of crashing."""
+    db = make_db("bare")
+    db.upsert_brand("b-solo", "Solo Foods")
+    db.upsert_product("b-solo", Product(id="p-1", sku="SF-1", product_name_en="Oat Drink", product_name_native="Haferdrink"))
+
+    at = desk(db).run()
+    assert not at.exception and "No brand–distributor partnership" in text_of(at)
+    at.switch_page("ui_pages/products.py").run()
+    assert not at.exception
+    assert list(at.dataframe[0].value["Native name"]) == ["Haferdrink"]
+    at.switch_page("ui_pages/orders.py").run()
+    assert not at.exception and "No brand–distributor partnership" in text_of(at)
 
 
 def test_contracts_page_shows_the_agreement_and_the_next_discount(db, partnership: Partnership):

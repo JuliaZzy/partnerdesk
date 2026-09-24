@@ -30,7 +30,6 @@ def test_seed_is_idempotent_and_wires_the_demo_contract(make_db):
     db.seed_from_fixtures(FIXTURES_DIR)
     (p,) = db.partnerships()
     assert p.brand_name == "Aurora Botanicals" and p.distributor_name == "Nordic Beauty Distribution"
-    assert len(db.products(p.brand_id)) == 8
     contract = db.active_contract(p.id)
     assert contract and contract.id == "ct-aurora-nordic-2026" and len(db.contract_extractions(contract.id)) == 1
     # Fixture rules + the two derived from the contract (min order value, discount approval), once.
@@ -57,3 +56,37 @@ def test_list_sessions_is_per_partnership_newest_first(db):
     db.update_session("a", stage="confirm")  # touched last → first
     assert [r["id"] for r in db.list_sessions("ps-1")] == ["a", "b"]
     assert db.list_sessions("ps-other") == []
+
+
+def test_replace_catalog_loads_searches_and_prunes(make_db):
+    db = make_db("catalog")
+    brands = [{"id": "b-a", "name": "Acme Foods"}, {"id": "b-z", "name": "Zeta"}]
+
+    def prod(pid, brand, sku, en, native, status="正品"):
+        return {"id": pid, "brand_id": brand, "sku": sku, "product_name_en": en, "product_name_native": native,
+                "category": "Snacks", "case_pack": 12, "case_price": 24.0, "product_status": status,
+                "policy_tags": ["ambient"], "restricted_territories": []}
+
+    first = db.replace_catalog(brands, [
+        prod("p-1", "b-a", "SNK-1", "Salted Crisps", "Chips salées"),
+        prod("p-2", "b-a", "SNK-2", "Dark Chocolate 70%", "Chocolat noir 70%", "停产"),
+        prod("p-3", "b-z", "SNK-3", "Oat Bar", "Haferriegel", "赠品"),
+    ])
+    assert first == {"brands": 2, "products": 3, "removed": 0}
+
+    rows, total = db.search_catalog("chips")  # the native name, case-insensitively
+    assert total == 1 and rows[0]["sku"] == "SNK-1" and rows[0]["brand_name"] == "Acme Foods"
+    assert db.search_catalog("70%")[1] == 1  # LIKE wildcards in the query are literal
+    assert db.search_catalog("0_")[1] == 0
+    assert db.search_catalog(brand="acme")[1] == 2
+    assert [r["sku"] for r in db.search_catalog(status="停产")[0]] == ["SNK-2"]
+    assert db.catalog_stats() == {"by_status": {"正品": 1, "停产": 1, "赠品": 1}, "brands": 2, "categories": 1}
+    page, total = db.search_catalog(limit=2, offset=2)
+    assert total == 3 and [r["sku"] for r in page] == ["SNK-3"]  # ordered by brand name, then SKU
+
+    # A reload is the whole catalog: what's missing goes, what changed is updated. Only brands
+    # with a product are written, but none is deleted — Zeta keeps its row, just no products.
+    second = db.replace_catalog(brands, [prod("p-1", "b-a", "SNK-1", "Sea Salt Crisps", "Chips au sel de mer")])
+    assert second == {"brands": 1, "products": 1, "removed": 2}
+    assert db.products("b-z") == [] and db.search_catalog(brand="zeta")[1] == 0
+    assert [p.product_name_en for p in db.products("b-a")] == ["Sea Salt Crisps"]

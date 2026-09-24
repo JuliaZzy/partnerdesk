@@ -35,8 +35,10 @@ partnerdesk/
   service.py       业务操作，不依赖传输层：handle_message（事件流）/ confirm / orders
   app.py           service.py 的 HTTP 适配层（FastAPI）：SSE 聊天、确认、订单
   ui.py            Streamlit 入口 + 聊天页：底部 desk() 把聊天和 ui_pages/ 的页面挂到同一个导航上，纯 Python
-  ui_pages/        其余页面：orders / contracts / reports / knowledge / memory；common.py 是共用的后端、合作关系、侧栏导航
-fixtures/          品牌、经销商、合作关系、目录、规则、设置、一份合同抽取——首次运行时种进数据库
+  ui_pages/        其余页面：products / orders / contracts / reports / knowledge / memory；common.py 是共用的后端、合作关系、侧栏导航
+fixtures/          演示用的品牌、经销商、合作关系、规则、设置、一份合同抽取——每次启动时 upsert 进数据库
+scripts/           fetch_off_products.py 拉 Open Food Facts 快照到 data/off/；build_catalog.py（dev catalog）把它导入产品目录
+data/              大数据集（Open Food Facts 快照），gitignore，不进仓库
 tests/             不联网的测试（FakeLLM；页面用 AppTest 无头驱动）
 evals/             模型层回归，需要真实模型
 docs/porting/      从第一版带过来了什么、为什么（01–06）
@@ -66,6 +68,12 @@ legacy/            第一版的 Python 模块，原样保留，逐步移植出�
   `report_facts` 按原生粒度存每个数字（metric_key / 渠道 / SKU / `product_id` / 期间 / 来源单元格）。
   事实是 draft，`Database.confirm_report` 才变 confirmed；同一合作关系同一测量同一期间的旧事实自动 superseded——重发不会翻倍。
   `product_id` 让报表的销量能和 `purchase_order_items` 按产品对上（报表页已有「下单 vs 售出」）。
+- **产品目录**：真实的 Open Food Facts 食品（ODbL），约 41 万个、10 万个真实品牌。只收同时有英文名（拉丁字母）、
+  标签原语言名（`product_name_native`，英文标签就等于英文名）和包装规格的产品。名称、品牌、类目、规格、标签是原数据；
+  箱规、箱价、MOQ、托盘、箱重是按真实规格和类目**确定性推导**的（同一条码每次算出一样的数）；
+  `product_status`（正品 / 赠品 / 样品 / 停产）里只有 OFF 标了 obsolete 的停产是真的，其余是推导的；
+  `restricted_territories` 留空——原数据没有，不编。量大，所以不走 fixtures：`dev catalog` 用 COPY 一次性替换整张表，
+  产品页的搜索、计数、分页都在数据库里做（名称和 SKU 有 trigram 索引）。目录不依赖合作关系；下单仍然要。
 - **长期记忆**：`memories` 按合作关系存偏好 / 指令 / 事实 / 事件，`is_active` 控制是否读入；
   `po/turn.py::load_bundle` 每轮把 active 记忆追加到品牌 operating context 之后——只是上下文，进不了 code-check。
 
@@ -79,7 +87,8 @@ legacy/            第一版的 Python 模块，原样保留，逐步移植出�
 | 草稿 + 摘要 + hash | 已移植 — `po/draft.py` |
 | 流式回复 | 已移植 — `po/reply.py` |
 | 一轮对话 + 确认门 + 提交 | 已移植 — `po/turn.py`、`po/submit.py`、`service.py` |
-| 多页桌面：聊天 / 订单 / 合同 / 报表 / 品牌知识 / 记忆 | **新增** — `ui.py`（入口 + 聊天）、`ui_pages/`；其他程序走 `app.py` 的 HTTP API |
+| 多页桌面：聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆 | **新增** — `ui.py`（入口 + 聊天）、`ui_pages/`；其他程序走 `app.py` 的 HTTP API |
+| 产品目录：Open Food Facts 真实食品 + 推导的批发字段，多品牌；产品页库内搜索分页 | **新增** — `scripts/`、`ui_pages/products.py`；全目录进 prompt 待改成检索（RAG） |
 | 意图 router | 已移植 — `router.py` |
 | 提交后的收货 / 付款 / 索赔 | 已移植 — `claims.py` |
 | 合同全量入库 + 条款 → PO 规则 + 合同折扣预填 | **新增** — `contracts.py`、`db/` |
@@ -112,12 +121,20 @@ python -m venv .venv
 dev db
 ```
 
+产品目录另外导入（可选，约半小时拉数据 + 几分钟入库）：
+
+```
+dev py scriptsetch_off_products.py
+dev catalog
+```
+
 之后不需要 activate，用 `dev.bat`：
 
 ```
-dev            桌面（聊天 / 订单 / 合同 / 报表 / 品牌知识 / 记忆）   http://localhost:8501
+dev            桌面（聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆）   http://localhost:8501
 dev api        HTTP API          http://127.0.0.1:8000/docs（可选）
 dev db         建库，首次运行需要
+dev catalog    导入产品目录（data/off/ 的快照；--dry-run 只统计不写库）
 dev test       全部测试，不联网（模型；数据库是真的）
 dev lint       ruff
 dev eval       评估（需要真实模型）

@@ -19,3 +19,6 @@ CV/
 *.sqlite3-wal
 *.sqlite3-shm
 *.sqlite3.*.bak
+
+# bulk datasets (Open Food Facts snapshot) — refetched, never committed
+/data/

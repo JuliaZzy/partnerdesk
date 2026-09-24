@@ -12,7 +12,7 @@ from partnerdesk.models import Partnership, Product
 from partnerdesk.reports import analyze, coerce_numeric, header_currency, header_role, ingest, parse_period
 
 PRODUCTS = [
-    Product(id="p-fo", sku="FO-100", product_name_en="Deep Sea Fish Oil", native_name="深海鱼油omega-3"),
+    Product(id="p-fo", sku="FO-100", product_name_en="Deep Sea Fish Oil", product_name_native="深海鱼油omega-3"),
     Product(id="p-sr", sku="SR-200", product_name_en="Radiance Serum"),
 ]
 

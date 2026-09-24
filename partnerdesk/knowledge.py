@@ -263,7 +263,7 @@ def match_product(products: list[Product], product_name: str | None, title: str 
     names = [n.strip().lower() for n in (product_name, title) if n and n.strip()]
     if not names:
         return None
-    keyed = [(p, {k.strip().lower() for k in (p.sku, p.product_name_en, p.native_name) if k and k.strip()}) for p in products]
+    keyed = [(p, {k.strip().lower() for k in (p.sku, p.product_name_en, p.product_name_native) if k and k.strip()}) for p in products]
     for p, keys in keyed:
         if any(n in keys for n in names):
             return p

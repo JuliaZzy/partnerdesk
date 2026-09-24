@@ -13,6 +13,7 @@
 dev            桌面 UI（Streamlit）   http://localhost:8501
 dev api        HTTP API（FastAPI）    http://127.0.0.1:8000/docs
 dev db         建库（读 PARTNERDESK_DB_URL），首次运行需要
+dev catalog    把 data/off/ 的 Open Food Facts 快照导入产品目录（几十万行，不走 fixtures；快照用 scripts/fetch_off_products.py 拉）
 dev test       全部测试，不联网
 dev lint       ruff
 dev eval       评估，需要真实模型

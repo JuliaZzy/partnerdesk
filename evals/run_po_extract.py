@@ -27,7 +27,7 @@ from partnerdesk.po.slots import PoSlots  # noqa: E402
 
 
 def load_catalog() -> Catalog:
-    rows = json.loads((ROOT / "fixtures" / "products.json").read_text(encoding="utf-8"))
+    rows = json.loads((ROOT / "evals" / "po_extract" / "products.json").read_text(encoding="utf-8"))
     return Catalog([Product(**r) for r in rows])
 
 

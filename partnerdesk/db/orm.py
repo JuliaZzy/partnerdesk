@@ -23,6 +23,7 @@ from typing import Any, ClassVar
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Enum,
     Float,
     ForeignKey,
     Index,
@@ -33,6 +34,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from ..models import PRODUCT_STATUS_VALUES
 
 # JSONB, not JSON: it is stored parsed, so it can be indexed and queried by key.
 JSONCol = JSONB()
@@ -51,6 +54,7 @@ class Base(DeclarativeBase):
 
 class Brand(Base):
     __tablename__ = "brands"
+    __table_args__ = (Index("ix_brands_name_trgm", "name", postgresql_using="gin", postgresql_ops={"name": "gin_trgm_ops"}),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
@@ -87,16 +91,26 @@ class Partnership(Base):
 
 # --- brand reference data --------------------------------------------------------
 
+def _trigram(name: str, column: str) -> Index:
+    """A GIN trigram index: `ILIKE '%text%'` on a name stays an index scan at a million rows."""
+    return Index(name, column, postgresql_using="gin", postgresql_ops={column: "gin_trgm_ops"})
+
+
 class Product(Base):
     __tablename__ = "products"
-    __table_args__ = (UniqueConstraint("brand_id", "sku", name="uq_product_sku_per_brand"),)
+    __table_args__ = (
+        UniqueConstraint("brand_id", "sku", name="uq_product_sku_per_brand"),
+        _trigram("ix_products_name_en_trgm", "product_name_en"),
+        _trigram("ix_products_name_native_trgm", "product_name_native"),
+        _trigram("ix_products_sku_trgm", "sku"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
     sku: Mapped[str] = mapped_column(String(64))
     product_name_en: Mapped[str | None] = mapped_column(String(200))
-    native_name: Mapped[str | None] = mapped_column(String(200))
-    category: Mapped[str | None] = mapped_column(String(100))
+    product_name_native: Mapped[str | None] = mapped_column(String(200))
+    category: Mapped[str | None] = mapped_column(String(100), index=True)
     subcategory: Mapped[str | None] = mapped_column(String(100))
     variant: Mapped[str | None] = mapped_column(String(100))
     form: Mapped[str | None] = mapped_column(String(100))
@@ -110,8 +124,9 @@ class Product(Base):
     layers_per_pallet: Mapped[int | None] = mapped_column(Integer)
     cases_per_pallet: Mapped[int | None] = mapped_column(Integer)
     case_weight: Mapped[float | None] = mapped_column(Float)
-    commercial_role: Mapped[str | None] = mapped_column(String(32))
-    discontinued: Mapped[bool] = mapped_column(Boolean, default=False)
+    product_status: Mapped[str] = mapped_column(
+        Enum(*PRODUCT_STATUS_VALUES, name="product_status"), default="正品", server_default="正品", index=True,
+    )
     policy_tags: Mapped[list[str]] = mapped_column(JSONCol, default=list)
     restricted_territories: Mapped[list[str]] = mapped_column(JSONCol, default=list)
     created_at: Mapped[datetime] = mapped_column(TimestampCol)

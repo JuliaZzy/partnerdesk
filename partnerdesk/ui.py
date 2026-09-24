@@ -3,7 +3,7 @@
     streamlit run partnerdesk/ui.py
 
 This file is the chat page and the app's entry point: `desk()` at the bottom registers
-this chat plus the pages in `ui_pages/` (orders, contracts, reports, brand knowledge,
+this chat plus the pages in `ui_pages/` (products, orders, contracts, reports, brand knowledge,
 memory) on one navigation, sharing one backend. The links sit in the sidebar under
 "New chat".
 
@@ -24,7 +24,13 @@ from partnerdesk.config import chat_models, default_model_id, model_label
 from partnerdesk.db import Database
 from partnerdesk.llm import LLM, OpenAICompatLLM
 from partnerdesk.po.turn import build_ledger
-from partnerdesk.ui_pages.common import NAV_PAGES_KEY, get_backend, pick_partnership, sidebar_nav
+from partnerdesk.ui_pages.common import (
+    NAV_PAGES_KEY,
+    current_partnership,
+    get_backend,
+    pick_partnership,
+    sidebar_nav,
+)
 
 st.set_page_config(
     page_title="partnerdesk", page_icon="📦", layout="wide", initial_sidebar_state="expanded",
@@ -167,8 +173,7 @@ def render_chat_nav(db: Database) -> None:
 def init_state(db: Database) -> None:
     if "sid" in st.session_state:
         return
-    partnership = db.partnerships()[0].model_dump()
-    st.session_state.partnership = partnership
+    partnership = current_partnership(db)  # the sidebar's pick survives; switching drops "sid" and lands here
     st.session_state.setdefault("chats", {})
     st.session_state.setdefault("chat_order", [])
     st.session_state.pending = None
@@ -411,9 +416,10 @@ def desk() -> None:
     `sidebar_nav` (under "New chat" here, at the top of the sidebar elsewhere), so the
     built-in one is hidden. Every page reads the same backend from session_state."""
     db, _ = get_backend()
-    pick_partnership(db)
+    partnership = pick_partnership(db)
     pages = [
         st.Page(main, title="Chat", icon=":material/chat:", default=True),
+        st.Page("ui_pages/products.py", title="Products", icon=":material/inventory_2:"),
         st.Page("ui_pages/orders.py", title="Orders", icon=":material/receipt_long:"),
         st.Page("ui_pages/contracts.py", title="Contracts", icon=":material/gavel:"),
         st.Page("ui_pages/reports.py", title="Reports", icon=":material/monitoring:"),
@@ -422,7 +428,7 @@ def desk() -> None:
     ]
     st.session_state[NAV_PAGES_KEY] = pages
     page = st.navigation(pages, position="hidden")
-    if page.title != "Chat":
+    if page.title != "Chat" or partnership is None:  # with no partnership the chat page stops before drawing its own
         sidebar_nav()
     page.run()
 

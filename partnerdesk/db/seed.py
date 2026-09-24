@@ -32,8 +32,11 @@ def seed_from_fixtures(db: Database, fixtures_dir: Path) -> None:
             brand_name=p.get("brand_name") or brands.get(p["brand_id"], {}).get("name") or p["brand_id"],
             distributor_name=p.get("distributor_name") or distributors.get(p["distributor_id"], {}).get("name") or p["distributor_id"],
         ))
+    by_brand: dict[str, list[Product]] = {}
     for p in _load(fixtures_dir / "products.json"):
-        db.upsert_product(p["brand_id"], Product(**p))
+        by_brand.setdefault(p["brand_id"], []).append(Product(**p))
+    for brand_id, products in by_brand.items():
+        db.upsert_products(brand_id, products)
     for r in _load(fixtures_dir / "rules.json"):
         db.upsert_rule(r["brand_id"], CommercialRule(**r))
     for s in _load(fixtures_dir / "settings.json"):

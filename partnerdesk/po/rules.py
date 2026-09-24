@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from ..models import CommercialRule, Product
+from ..models import CommercialRule, Product, product_status
 
 
 @dataclass
@@ -103,8 +103,8 @@ def _line_units(i: EvalItem) -> int:
     return (i.quantity or 0) * (cp if cp > 0 else 1)
 
 
-def _role(i: EvalItem) -> str:
-    return (i.product.commercial_role or "").lower() if i.product else ""
+def _status(i: EvalItem) -> str:
+    return i.product.product_status if i.product else ""
 
 
 def _applies_to_partner(rule: CommercialRule, po: POContext) -> bool:
@@ -120,8 +120,8 @@ def _scoped(rule: CommercialRule, items: list[EvalItem]) -> list[EvalItem]:
     if rule.product_scope == "specific":
         return [i for i in items if i.product_id in rule.product_ids]
     if rule.product_scope == "role":
-        roles = {r.lower() for r in rule.product_roles}
-        return [i for i in items if _role(i) in roles]
+        statuses = {product_status(r) for r in rule.product_roles}
+        return [i for i in items if _status(i) in statuses]
     if rule.product_scope == "tag":
         tags = {t.lower() for t in rule.product_tags}
         return [i for i in items if i.product and tags & {t.lower() for t in i.product.policy_tags}]
@@ -166,7 +166,7 @@ def evaluate_rules(
         if t == "gift_pct_cap":
             max_pct = float(_cfg(cfg, "max_pct", "maxPct", 10))
             total = sum(_line_value(i) for i in items)
-            gifts = [i for i in items if _role(i) == "gift"]
+            gifts = [i for i in items if _status(i) == "赠品"]
             gift_value = sum(_line_value(i) for i in gifts)
             pct = (gift_value / total * 100) if total > 0 else 0.0
             trig = gift_value > 0 and pct > max_pct
@@ -179,7 +179,7 @@ def evaluate_rules(
             ))
         elif t == "sample_unit_cap":
             max_units = int(_cfg(cfg, "max_units", "maxUnits", 24))
-            samples = [i for i in items if _role(i) == "sample"]
+            samples = [i for i in items if _status(i) == "样品"]
             n = sum(_line_cases(i) for i in samples)
             trig = n > max_units
             results.append(res(
@@ -210,7 +210,7 @@ def evaluate_rules(
                 if trig else f"Discount of {pct:.1f}% is below the {threshold:g}% approval threshold.",
             ))
         elif t == "discontinued_block":
-            disc = [i for i in items if i.product and i.product.discontinued]
+            disc = [i for i in items if _status(i) == "停产"]
             trig = len(disc) > 0
             results.append(res(
                 trig,

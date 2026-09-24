@@ -4,6 +4,7 @@ rem   dev            桌面 (streamlit)：聊天 / 订单 / 合同 / 报表 / �
 rem   dev api        HTTP API (fastapi)   http://127.0.0.1:8000/docs
 rem   dev kill       查并结束占用 8501 的进程
 rem   dev db         建库（读 PARTNERDESK_DB_URL），首次运行需要
+rem   dev catalog    把 data/off/ 的 Open Food Facts 快照导入产品目录（先跑 dev py scripts\fetch_off_products.py）
 rem   dev test       pytest
 rem   dev lint       ruff
 rem   dev eval       evals/run_po_extract.py（需要真实模型）
@@ -26,11 +27,12 @@ if /i "%CMD%"=="api"  ( "%PY%" -m uvicorn partnerdesk.app:app --port 8000 & exit
 if /i "%CMD%"=="kill" goto :kill8501
 if /i "%CMD%"=="stop" goto :kill8501
 if /i "%CMD%"=="db"   ( "%PY%" "%~dp0scripts\create_database.py" & exit /b )
+if /i "%CMD%"=="catalog" ( "%PY%" "%~dp0scripts\build_catalog.py" %2 %3 & exit /b )
 if /i "%CMD%"=="test" ( "%PY%" -m pytest -q %2 %3 %4 & exit /b )
-if /i "%CMD%"=="lint" ( "%PY%" -m ruff check partnerdesk tests evals & exit /b )
+if /i "%CMD%"=="lint" ( "%PY%" -m ruff check partnerdesk tests evals scripts & exit /b )
 if /i "%CMD%"=="eval" ( "%PY%" "%~dp0evals\run_po_extract.py" %2 %3 %4 & exit /b )
 if /i "%CMD%"=="py"   ( "%PY%" %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
-echo Unknown command: %CMD%   (use: ui api kill test lint eval py)
+echo Unknown command: %CMD%   (use: ui api kill db catalog test lint eval py)
 exit /b 1
 
 :kill8501

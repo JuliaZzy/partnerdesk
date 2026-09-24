@@ -88,7 +88,7 @@ class CheckResult:
 def _haystack(p: Product) -> str:
     return " ".join(
         x for x in (
-            p.product_name_en, p.native_name, p.sku, p.category, p.subcategory, p.variant, p.form,
+            p.product_name_en, p.product_name_native, p.sku, p.category, p.subcategory, p.variant, p.form,
             p.unit_size, p.net_content, p.description_en,
         ) if x
     ).lower()
@@ -112,7 +112,7 @@ def search_catalog(reference: str, catalog: Catalog) -> tuple[list[Product], boo
     # a prefix of, and picking the shorter name re-asks the question forever.
     exact_name = [
         p for p in catalog.products
-        if (p.product_name_en or "").strip().lower() == q or (p.native_name or "").strip().lower() == q
+        if (p.product_name_en or "").strip().lower() == q or (p.product_name_native or "").strip().lower() == q
     ]
     if len(exact_name) == 1:
         return exact_name, True

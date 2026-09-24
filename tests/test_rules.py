@@ -5,8 +5,8 @@ from partnerdesk.po.rules import EvalItem, POContext, evaluate_rules, is_rule_li
 from tests.conftest import rule
 
 
-def item(pid="p-fo", sku="FO-100", qty=10, price=100.0, role=None, discontinued=False, tags=(), case_pack=12) -> EvalItem:
-    p = Product(id=pid, sku=sku, product_name_en=sku, case_pack=case_pack, case_price=price, commercial_role=role, discontinued=discontinued, policy_tags=list(tags))
+def item(pid="p-fo", sku="FO-100", qty=10, price=100.0, status="正品", tags=(), case_pack=12) -> EvalItem:
+    p = Product(id=pid, sku=sku, product_name_en=sku, case_pack=case_pack, case_price=price, product_status=status, policy_tags=list(tags))
     return EvalItem(product_id=pid, sku=sku, product_name=sku, quantity=qty, case_pack=case_pack, case_price=price, line_total=price * qty, product=p)
 
 
@@ -37,9 +37,9 @@ def test_min_order_value():
 
 def test_gift_pct_cap_counts_only_gift_role():
     r = rule(rule_type="gift_pct_cap", rule_config={"maxPct": 10})  # camelCase accepted
-    res = one([r], [item(), item(pid="p-gs", sku="GS-010", qty=5, price=40.0, role="gift")])
+    res = one([r], [item(), item(pid="p-gs", sku="GS-010", qty=5, price=40.0, status="赠品")])
     assert res[0].triggered and res[0].affected_items[0]["sku"] == "GS-010"
-    assert not one([r], [item(), item(pid="p-gs", sku="GS-010", qty=2, price=40.0, role="gift")])[0].triggered
+    assert not one([r], [item(), item(pid="p-gs", sku="GS-010", qty=2, price=40.0, status="赠品")])[0].triggered
 
 
 def test_discount_approval_uses_po_level_pct():
@@ -56,7 +56,7 @@ def test_territory_restriction():
 
 
 def test_discontinued_block_and_block_all_with_product_scope():
-    old = item(pid="p-old", sku="OLD-900", discontinued=True)
+    old = item(pid="p-old", sku="OLD-900", status="停产")
     assert one([rule(rule_type="discontinued_block")], [item(), old])[0].triggered
     r = rule(rule_type="block_all", product_scope="specific", product_ids=["p-old"])
     assert one([r], [item(), old])[0].affected_items == [{"product_name": "OLD-900", "sku": "OLD-900", "quantity": 10}]
@@ -73,7 +73,7 @@ def test_unit_cap_case_mode_by_default_and_unit_mode_multiplies_by_case_pack():
 
 def test_value_pct_cap_is_against_the_whole_po():
     r = rule(rule_type="value_pct_cap", rule_config={"max_pct": 10}, product_scope="role", product_roles=["sample"])
-    sample = item(pid="p-sm", sku="SM-001", qty=30, price=5.0, role="sample")  # 150 of 1150 = 13%
+    sample = item(pid="p-sm", sku="SM-001", qty=30, price=5.0, status="样品")  # 150 of 1150 = 13%
     assert one([r], [item(), sample])[0].triggered
 
 

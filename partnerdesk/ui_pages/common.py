@@ -44,22 +44,28 @@ def get_backend() -> tuple[Database, LLM]:
 
 
 def current_partnership(db: Database) -> dict[str, Any]:
-    """The partnership every page works on. The chat page sets it on its first run; any
-    other page landed on first picks the first one, the same way the chat page does."""
+    """The partnership a page that orders, reports or remembers works on — the one picked in
+    the sidebar, else the first. With none set up there is nothing for such a page to show,
+    so it says so and stops; the catalog (Products) doesn't need one and never calls this."""
     p = st.session_state.get("partnership")
     if not p:
-        p = db.partnerships()[0].model_dump()
+        partnerships = db.partnerships()
+        if not partnerships:
+            st.info("No brand–distributor partnership is set up yet, so there is nothing to order or report on. "
+                    "The product catalog is under Products.", icon=":material/handshake:")
+            st.stop()
+        p = partnerships[0].model_dump()
         st.session_state.partnership = p
     return p
 
 
-def pick_partnership(db: Database) -> dict[str, Any]:
+def pick_partnership(db: Database) -> dict[str, Any] | None:
     """Sidebar control, shown only when there are several partnerships to choose from.
     Switching clears the chat page's per-partnership state so it re-opens on the new one."""
     partnerships = db.partnerships()
-    current = current_partnership(db)
     if len(partnerships) <= 1:
-        return current
+        return partnerships[0].model_dump() if partnerships else None
+    current = current_partnership(db)
     with st.sidebar:
         ids = [p.id for p in partnerships]
         labels = {p.id: f"{p.brand_name} · {p.distributor_name}" for p in partnerships}

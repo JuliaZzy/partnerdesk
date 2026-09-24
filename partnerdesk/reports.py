@@ -289,7 +289,7 @@ class CatalogIndex:
 
     def __init__(self, products: list[Product]):
         self.by_sku = {p.sku.strip().lower(): p for p in products if p.sku}
-        self.by_name = {n.strip().lower(): p for p in products for n in (p.product_name_en, p.native_name) if n}
+        self.by_name = {n.strip().lower(): p for p in products for n in (p.product_name_en, p.product_name_native) if n}
 
     def match(self, sku: Any, name: Any) -> Product | None:
         if sku is not None and str(sku).strip().lower() in self.by_sku:

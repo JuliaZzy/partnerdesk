@@ -41,11 +41,13 @@ class Catalog:
         self.by_sku = {p.sku.lower(): p for p in self.products if p.sku}
 
     def manifest(self) -> str:
-        """One line per product: `SKU ▸ name (native) ▸ size variant ▸ pack, price, MOQ, category ▸ logistics`."""
+        """One line per product: `SKU ▸ name (native) ▸ size variant ▸ pack, price, MOQ, category ▸ logistics`,
+        plus `▸ status` for anything that isn't a regular item (赠品 / 样品 / 停产) — the model has to
+        know a gift or a discontinued line when it sees one; the rules still decide what that means."""
         lines: list[str] = []
         for p in self.products[:MAX_PRODUCTS_IN_MANIFEST]:
-            name = sanitize(first_non_empty(p.product_name_en, p.native_name, p.sku))
-            native = f" ({sanitize(p.native_name)})" if p.native_name and p.native_name != p.product_name_en else ""
+            name = sanitize(first_non_empty(p.product_name_en, p.product_name_native, p.sku))
+            native = f" ({sanitize(p.product_name_native)})" if p.product_name_native and p.product_name_native != p.product_name_en else ""
             attrs = " ".join(x for x in (sanitize(first_non_empty(p.unit_size, p.net_content)), sanitize(p.variant)) if x)
             pack = f"{p.case_pack}/case" if p.case_pack else "?/case"
             price = f"${p.case_price:.2f}/case" if p.case_price is not None else "price n/a"
@@ -63,7 +65,8 @@ class Catalog:
             if p.case_weight is not None:
                 logi.append(f"{p.case_weight:g}kg/case")
             logi_s = f" ▸ {', '.join(logi)}" if logi else ""
-            lines.append(f"{sanitize(p.sku) or '(no SKU)'} ▸ {name}{native}{' ▸ ' + attrs if attrs else ''} ▸ {pack}, {price}{moq}{cat}{logi_s}")
+            status = f" ▸ {p.product_status}" if p.product_status != "正品" else ""
+            lines.append(f"{sanitize(p.sku) or '(no SKU)'} ▸ {name}{native}{' ▸ ' + attrs if attrs else ''} ▸ {pack}, {price}{moq}{cat}{logi_s}{status}")
         if len(self.products) > len(lines):
             lines.append(f"(+{len(self.products) - len(lines)} more products not listed — they can still be ordered by SKU)")
         return "\n".join(lines)
@@ -72,7 +75,7 @@ class Catalog:
         """What the LLM resolver reasons over — every attribute a person might name."""
         return [
             {
-                "sku": p.sku, "name": p.product_name_en or "", "native": p.native_name or "",
+                "sku": p.sku, "name": p.product_name_en or "", "native": p.product_name_native or "",
                 "unit_size": p.unit_size or p.net_content or "", "variant": p.variant or "", "category": p.category or "",
             }
             for p in self.products if p.sku

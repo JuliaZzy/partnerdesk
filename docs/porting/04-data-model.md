@@ -12,16 +12,17 @@
 | 列 | 用途 |
 |---|---|
 | `id`, `sku` | 解析用；模型只回显 SKU（UUID 会被抄错），所以索引按 lowercase SKU |
-| `product_name_en`, `native_name` | 搜索 haystack + manifest 显示 + 精确名匹配 |
+| `product_name_en`, `product_name_native` | 搜索 haystack + manifest 显示 + 精确名匹配；native 是标签原语言的名字（英文标签就等于英文名） |
 | `category`, `subcategory`, `variant`, `form`, `unit_size`, `net_content`, `description_en` | 搜索 haystack；size/variant 进 manifest 让模型能区分 "100ml" / "单支" |
 | `case_pack` | MOQ 换算（单位 → 箱）、unit_cap 规则 |
 | `case_price` | 定价；null → `missing_price` |
 | `moq_units` | MOQ（单位），`ceil(moq_units / case_pack)` 得箱数 |
 | `cases_per_layer` | 满层 nudge（不拦单） |
-| `commercial_role` (gift / sample / …), `discontinued`, `policy_tags[]`, `restricted_territories[]` | 规则引擎的 product scope |
+| `product_status`（enum：正品 / 赠品 / 样品 / 停产）| 赠品占比、样品上限、停产拦单；非正品会在 manifest 行尾标出来 |
+| `policy_tags[]`, `restricted_territories[]` | 规则引擎的 product scope |
 | `layers_per_pallet`, `cases_per_pallet`, `case_weight` | 只进 manifest（回答装箱问题），不参与任何判断 |
 
-manifest 每行：`SKU ▸ name (native) ▸ size variant ▸ pack/case, $price/case, MOQ Nu, category ▸ logistics`。
+manifest 每行：`SKU ▸ name (native) ▸ size variant ▸ pack/case, $price/case, MOQ Nu, category ▸ logistics ▸ status`（status 只有非正品才写）。
 名字要 sanitize（去掉 `[FILE]` / `[PO]` / `|||`）——品牌可控文本不能注入信号行。上限 400 行进 prompt，但**全部**产品都建索引。
 
 ### `product_catalogs` + `distributor_pricing`
