@@ -28,6 +28,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -407,6 +408,9 @@ class BrandDocument(Base):
     title: Mapped[str | None] = mapped_column(String(200))
     file_name: Mapped[str] = mapped_column(String(255))
     file_sha256: Mapped[str | None] = mapped_column(String(64))
+    # The upload itself, so a later distillation can render page images. Deferred: listing
+    # documents must not pull the bytes.
+    file_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     media_type: Mapped[str | None] = mapped_column(String(100))
     size_bytes: Mapped[int | None] = mapped_column(Integer)
     page_count: Mapped[int | None] = mapped_column(Integer)

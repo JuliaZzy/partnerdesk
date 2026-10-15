@@ -63,7 +63,7 @@ def test_products_page_lists_the_catalog_and_filters_it(db):
     at = desk(db).run().switch_page("ui_pages/products.py").run()
     assert not at.exception
     table = at.dataframe[0].value
-    assert set(table["SKU"]) == {"FO-100", "SR-200", "SR-201", "NP-300", "GS-010", "OLD-900"}
+    assert set(table["SKU"]) == {"FO-100", "SR-200", "SR-201", "NP-300", "GS-010", "GU-020", "OLD-900"}
     assert set(table["Brand"]) == {"Brand"}
 
     at.text_input(key="products_q").set_value("鱼油").run()  # the native name is searchable too

@@ -149,7 +149,10 @@ def _priced(p: Product, cases: int, reference: str, slot_sku: str | None) -> Res
         line_total=round(p.case_price * cases, 2) if p.case_price is not None else None,
         moq_cases=moq_cases, cases_per_layer=cpl, partial_layer=partial, cases_to_full_layer=to_full,
         below_moq=moq_cases is not None and cases > 0 and cases < moq_cases,
-        missing_price=p.case_price is None,
+        # A gift, a sample and a discontinued line are all sold on terms other than a case
+        # price, so no price on one of those is the catalog being correct, not a gap. Only a
+        # regular product without a price is something the customer has to be asked about.
+        missing_price=p.case_price is None and p.product_status == "正品",
     )
 
 

@@ -1,12 +1,8 @@
 """Brand knowledge base: a brand's own material → typed, self-contained fragments.
 
-Ported from `legacy/brand_knowledge` onto the project's one model seam (`llm.complete_json`),
-text layer only for now — the campus text models read the pages' text; page images for a
-vision model are the next step (documents.py in legacy shows how).
-
-Two passes, kept from the first version because a one-pass extractor with a fixed schema
-quietly drops whatever doesn't fit it (hand it a product schema and the brand story, the
-sales proof and the audience pages vanish):
+Two passes, on the project's one model seam (`llm.complete_json`). A one-pass extractor
+with a fixed schema quietly drops whatever doesn't fit it (hand it a product schema and
+the brand story, the sales proof and the audience pages vanish):
 
   pass 1 — scan:    "what kinds of content are in here?"  → sections (open type slugs)
   pass 2 — extract: fragments against what pass 1 found    → one fragment per self-contained fact
@@ -24,14 +20,16 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from .config import model_sees_images
 from .db import Database
+from .documents import load_pages
 from .llm import LLM
 from .models import BrandDocument, DocumentSection, KnowledgeFragment, Product
 
 PAGES_PER_BATCH = 12
+PAGES_PER_BATCH_WITH_IMAGES = 4  # a page image is most of the request; keep the batch small
 MAX_PAGE_CHARS = 6000
 MAX_BATCH_CHARS = 40_000
-PSEUDO_PAGE_CHARS = 3500  # plain text / docx have no pages; chunk so fragments can still cite one
 
 # Starting taxonomy handed to the model. Not enforced: the model is told to invent a new
 # slug when none fits, and unknown types surface on the Knowledge page to be relabelled.
@@ -129,55 +127,6 @@ EXTRACT_SCHEMA: dict[str, Any] = {
     },
 }
 
-SUPPORTED_EXTS = (".pdf", ".txt", ".md", ".docx")
-
-
-# --- the file → pages of text -----------------------------------------------------------
-
-def _chunk(text: str, size: int = PSEUDO_PAGE_CHARS) -> list[str]:
-    text = text.strip()
-    if not text:
-        return []
-    out, buf = [], ""
-    for para in re.split(r"\n\s*\n", text):
-        if buf and len(buf) + len(para) + 2 > size:
-            out.append(buf)
-            buf = ""
-        buf = f"{buf}\n\n{para}" if buf else para
-    if buf:
-        out.append(buf)
-    return out
-
-
-def load_pages(file_name: str, data: bytes) -> list[tuple[int, str]]:
-    """(page_number, text) per page. PDF via PyMuPDF; docx / txt / md are chunked into
-    pseudo-pages so a fragment can still point somewhere."""
-    name = file_name.lower()
-    if name.endswith(".pdf"):
-        try:
-            import pymupdf  # the `contract` extra
-        except ImportError as err:
-            raise ValueError('Reading PDFs needs PyMuPDF: pip install -e ".[contract]"') from err
-        pages: list[tuple[int, str]] = []
-        with pymupdf.open(stream=data, filetype="pdf") as doc:
-            for i, page in enumerate(doc, start=1):
-                pages.append((i, (page.get_text() or "").strip()))
-        return pages
-    if name.endswith(".docx"):
-        import docx  # python-docx, also in the `contract` extra
-
-        d = docx.Document(__import__("io").BytesIO(data))
-        text = "\n\n".join(p.text for p in d.paragraphs if p.text.strip())
-        for t in d.tables:
-            text += "\n\n" + "\n".join(" | ".join(c.text.strip() for c in row.cells) for row in t.rows)
-        return list(enumerate(_chunk(text), start=1))
-    if name.endswith((".txt", ".md")):
-        text = data.decode("utf-8", errors="replace")
-        parts = [p for p in text.split("\f") if p.strip()] if "\f" in text else _chunk(text)
-        return list(enumerate(parts, start=1))
-    raise ValueError(f"Unsupported document: {file_name} (use {', '.join(SUPPORTED_EXTS)})")
-
-
 # --- the two passes ------------------------------------------------------------------------
 
 @dataclass
@@ -220,8 +169,28 @@ def _batch_text(file_name: str, pages: list[tuple[int, str]]) -> str:
     return "\n\n".join(parts)
 
 
-def scan_pages(llm: LLM, file_name: str, pages: list[tuple[int, str]]) -> tuple[str, list[DocumentSection]]:
-    raw = llm.complete_json(system=SCAN_SYSTEM, messages=[{"role": "user", "content": _batch_text(file_name, pages)}], schema=SCAN_SCHEMA, temperature=0.1, max_tokens=1200)
+def _model_content(file_name: str, pages: list[tuple[int, str]], images: dict[int, bytes] | None) -> Any:
+    """Text, plus a JPEG of each page when the caller is sending them to a vision model."""
+    text = _batch_text(file_name, pages)
+    if not images:
+        return text
+    import base64
+
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for n, _ in pages:
+        jpeg = images.get(n)
+        if not jpeg:
+            continue
+        url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+        content.append({"type": "text", "text": f"Image of page {n}."})
+        content.append({"type": "image_url", "image_url": {"url": url}})
+    return content
+
+
+def scan_pages(
+    llm: LLM, file_name: str, pages: list[tuple[int, str]], images: dict[int, bytes] | None = None,
+) -> tuple[str, list[DocumentSection]]:
+    raw = llm.complete_json(system=SCAN_SYSTEM, messages=[{"role": "user", "content": _model_content(file_name, pages, images)}], schema=SCAN_SCHEMA, temperature=0.1, max_tokens=1200)
     sections = [
         DocumentSection(type=_slug(t.get("type")), label=str(t.get("label") or t.get("type") or "").strip() or _slug(t.get("type")),
                         description=str(t.get("description") or "").strip() or None, page_numbers=_ints(t.get("page_numbers")))
@@ -230,12 +199,17 @@ def scan_pages(llm: LLM, file_name: str, pages: list[tuple[int, str]]) -> tuple[
     return str(raw.get("summary") or "").strip(), sections
 
 
-def extract_fragments(llm: LLM, file_name: str, pages: list[tuple[int, str]], summary: str, sections: list[DocumentSection]) -> list[dict[str, Any]]:
+def extract_fragments(
+    llm: LLM, file_name: str, pages: list[tuple[int, str]], summary: str, sections: list[DocumentSection],
+    images: dict[int, bytes] | None = None,
+) -> list[dict[str, Any]]:
     found = "\n".join(f"- {s.type} ({s.label}): {s.description or ''} [pages {', '.join(map(str, s.page_numbers)) or 'unspecified'}]" for s in sections)
-    user = (
+    preface = (
         f"Overview of this material:\n{summary or '(none)'}\n\nContent types identified in it:\n{found or '- (none identified)'}\n\n"
-        f"Now extract the knowledge fragments.\n\n{_batch_text(file_name, pages)}"
+        f"Now extract the knowledge fragments.\n\n"
     )
+    body = _model_content(file_name, pages, images)
+    user: Any = preface + body if isinstance(body, str) else [{"type": "text", "text": preface}, *body]
     raw = llm.complete_json(system=EXTRACT_SYSTEM, messages=[{"role": "user", "content": user}], schema=EXTRACT_SCHEMA, temperature=0.2, max_tokens=3000)
     out: list[dict[str, Any]] = []
     for f in raw.get("fragments") or []:
@@ -278,18 +252,38 @@ def match_product(products: list[Product], product_name: str | None, title: str 
 def distill(
     llm: LLM, *, brand_id: str, file_name: str, pages: list[tuple[int, str]], document_id: str | None = None,
     products: list[Product] | None = None, pages_per_batch: int = PAGES_PER_BATCH,
+    images: dict[int, bytes] | None = None, attach_images: bool = False,
 ) -> Distillation:
-    """Both passes over every page batch, merged. Pure with respect to the database."""
-    readable = [(n, t) for n, t in pages if (t or "").strip()]
-    skipped = [f"page {n}: no text layer (scanned page — needs a vision model)" for n, t in pages if not (t or "").strip()]
+    """Both passes over every page batch, merged. Pure with respect to the database.
+
+    `images` are page JPEGs. They are sent only when `attach_images` is set — the caller
+    knows whether this model can see them. A scanned page with an image is then a real
+    page; without one it is reported and left out.
+    """
+    images = images or {}
+    use_images = attach_images and bool(images)
+
+    def visible(n: int, text: str) -> bool:
+        return bool((text or "").strip()) or (use_images and n in images)
+
+    readable = [(n, t) for n, t in pages if visible(n, t)]
+    skipped = [
+        f"page {n}: no text layer (scanned page — needs a vision model)"
+        for n, t in pages if not (t or "").strip() and not (use_images and n in images)
+    ]
     if not readable:
+        if images and not use_images:
+            raise ValueError(f"No text layer in {file_name!r}. Distil it with a vision model (Qwen) so the page images can be read.")
         raise ValueError(f"No readable text in {file_name!r}.")
+    if use_images:
+        pages_per_batch = min(pages_per_batch, PAGES_PER_BATCH_WITH_IMAGES)
     sections: dict[str, DocumentSection] = {}
     fragments: list[KnowledgeFragment] = []
     summaries: list[str] = []
     for i in range(0, len(readable), max(1, pages_per_batch)):
         batch = readable[i : i + pages_per_batch]
-        summary, found = scan_pages(llm, file_name, batch)
+        batch_images = {n: images[n] for n, _ in batch if use_images and n in images} or None
+        summary, found = scan_pages(llm, file_name, batch, batch_images)
         if summary:
             summaries.append(summary)
         for s in found:
@@ -297,7 +291,7 @@ def distill(
                 sections[s.type] = sections[s.type].model_copy(update={"page_numbers": sorted(set(sections[s.type].page_numbers) | set(s.page_numbers))})
             else:
                 sections[s.type] = s
-        for f in extract_fragments(llm, file_name, batch, summary, list(sections.values())):
+        for f in extract_fragments(llm, file_name, batch, summary, list(sections.values()), batch_images):
             product = match_product(products or [], f["product_name"], f["title"] if f["type"] == "product" else None)
             fragments.append(KnowledgeFragment(
                 id=f"kf_{uuid.uuid4().hex[:12]}", brand_id=brand_id, document_id=document_id, product_id=product.id if product else None, **f,
@@ -316,7 +310,7 @@ def ingest_document(db: Database, *, brand_id: str, file_name: str, data: bytes,
         id=f"doc_{uuid.uuid4().hex[:12]}", brand_id=brand_id, title=title or file_name, file_name=file_name,
         file_sha256=hashlib.sha256(data).hexdigest(), media_type=media_type, size_bytes=len(data), page_count=len(pages),
     )
-    db.save_document(doc, pages)
+    db.save_document(doc, pages, file_bytes=data)
     return doc
 
 
@@ -325,8 +319,18 @@ def distill_document(db: Database, llm: LLM, document_id: str, *, products: list
     if not doc:
         raise KeyError(f"document {document_id} not found")
     pages = db.document_pages(document_id)
+    images: dict[int, bytes] | None = None
+    raw = db.document_bytes(document_id)
+    if raw and doc.file_name.lower().endswith(".pdf"):
+        from .documents import render_pdf_images
+
+        images = render_pdf_images(raw)
+    model = getattr(getattr(llm, "settings", None), "model", None)
     try:
-        result = distill(llm, brand_id=doc.brand_id, file_name=doc.file_name, pages=pages, document_id=document_id, products=products)
+        result = distill(
+            llm, brand_id=doc.brand_id, file_name=doc.file_name, pages=pages, document_id=document_id, products=products,
+            images=images, attach_images=model_sees_images(model),
+        )
     except Exception:
         db.save_distillation(document_id, summary=doc.summary, model=doc.model, pages_processed=doc.pages_processed, sections=[], fragments=[], status="failed")
         raise

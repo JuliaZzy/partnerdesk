@@ -1,6 +1,6 @@
 """Brand knowledge — the brand's own material distilled into fragments the agent may quote.
-Upload a deck or catalogue, distil it (two model passes, text layer), then approve the
-fragments worth keeping. Only approved fragments will ever reach a prompt."""
+Upload a deck or catalogue, distil it (two model passes; a vision model also sees each
+page), then approve the fragments worth keeping. Only approved fragments will ever reach a prompt."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ tab_docs, tab_frags = page_tabs(["Documents", "Fragments"], key="knowledge-tabs"
 # --- documents ---------------------------------------------------------------------------------
 with tab_docs:
     with st.expander("Add material", icon=":material/upload_file:", expanded=not docs):
-        st.caption("PDF (text layer), Word, Markdown or plain text. The file is stored as pages; distilling is a separate step because it costs model calls.")
+        st.caption("PDF, Word, Markdown or plain text. The file is kept, so distilling can show page images to a vision model (Qwen). Distilling is a separate step because it costs model calls.")
         up = st.file_uploader("Document", type=["pdf", "docx", "md", "txt"], key="kb_file", label_visibility="collapsed")
         title = st.text_input("Title", key="kb_title", placeholder=up.name if up else "Spring 2026 product deck")
         if st.button("Upload", type="primary", icon=":material/check:", key="kb_upload", disabled=up is None):
@@ -67,7 +67,7 @@ with tab_docs:
                     st.markdown(" ".join(f":blue-badge[{s.type}]" for s in sections))
             with actions, st.container(horizontal=True, horizontal_alignment="right"):
                 verb = "Distil again" if d.status == "distilled" else "Distil"
-                if st.button(verb, icon=":material/auto_awesome:", key=f"distil-{d.id}", help=f"Two model passes over the text layer with {model_label(model_name) if model_name else 'the chat model'}. Draft fragments are replaced; approved ones stay."):
+                if st.button(verb, icon=":material/auto_awesome:", key=f"distil-{d.id}", help=f"Two model passes with {model_label(model_name) if model_name else 'the chat model'}. A vision model also sees each PDF page. Draft fragments are replaced; approved ones stay."):
                     with st.status(f"Distilling {d.title or d.file_name}…", expanded=True) as status:
                         try:
                             result = knowledge.distill_document(db, llm, d.id, products=products)

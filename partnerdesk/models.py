@@ -168,7 +168,7 @@ class PurchaseOrderItem(BaseModel):
 
 
 # --- contracts -------------------------------------------------------------------
-# What `legacy/contract_ai` reads out of an agreement, kept in full: the raw extraction
+# What an agreement read produces, kept in full: the raw extraction
 # (audit, re-mapping) plus these normalized terms the agent acts on. Discount tiers are the
 # reason this exists — a contract's discount is a schedule, not one number.
 
@@ -293,7 +293,7 @@ class ContractRecord(BaseModel):
 
 
 # --- brand knowledge base ----------------------------------------------------------
-# `legacy/brand_knowledge` distils a brand's decks and catalogues into typed fragments. A
+# A brand's decks and catalogues are distilled into typed fragments. A
 # fragment is a self-contained thing the agent may say about the brand or a product; it
 # is draft until a person approves it. The type is an open slug (see knowledge.SEED_TYPES).
 

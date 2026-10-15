@@ -206,6 +206,8 @@ def _bubble_body(t: dict[str, Any]) -> None:
     if t.get("model"):
         st.caption(model_label(t["model"]))
     st.markdown(t.get("text") or "")
+    for name in t.get("files") or []:
+        st.caption(f"📎 {name}")
     for u in t.get("images") or []:
         st.image(u, width=160)
 
@@ -234,8 +236,26 @@ def render_turn(t: dict[str, Any]) -> None:
             st.markdown(icon)
 
 
-def send(db: Database, llm: LLM, text: str, images: list[str]) -> None:
-    user_turn = {"role": "user", "text": text, "images": images}
+_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp"}
+_DOC_EXTS = {"pdf", "docx", "txt", "md"}
+
+
+def _split_uploads(files: list[Any]) -> tuple[list[str], list[tuple[str, bytes]]]:
+    images: list[str] = []
+    documents: list[tuple[str, bytes]] = []
+    for f in files:
+        name = getattr(f, "name", None) or "file"
+        ext = name.rsplit(".", 1)[-1].lower()
+        if ext in _IMAGE_EXTS:
+            images.append(to_data_url(f))
+        elif ext in _DOC_EXTS:
+            documents.append((name, f.getvalue()))
+    return images[: service.MAX_IMAGES], documents[:2]
+
+
+def send(db: Database, llm: LLM, text: str, images: list[str], documents: list[tuple[str, bytes]] | None = None) -> None:
+    documents = documents or []
+    user_turn = {"role": "user", "text": text, "images": images, "files": [n for n, _ in documents]}
     st.session_state.turns.append(user_turn)
     render_turn(user_turn)
     with _message_row(False):
@@ -245,7 +265,7 @@ def send(db: Database, llm: LLM, text: str, images: list[str]) -> None:
             box.caption("Working…")
             done: dict[str, Any] = {}
             parts: list[str] = []
-            for e in service.handle_message(db, llm, st.session_state.sid, text, images):
+            for e in service.handle_message(db, llm, st.session_state.sid, text, images, documents=documents):
                 if e["type"] == "token":
                     parts.append(e["text"])
                     box.markdown("".join(parts))
@@ -393,9 +413,9 @@ def main() -> None:
 
     with st.bottom, st.container(key="composer"):
         prompt = st.chat_input(
-            "Tell me what you'd like to order…",
+            "An order, or attach an agreement (PDF / Word)…",
             accept_file="multiple",
-            file_type=["png", "jpg", "jpeg", "webp"],
+            file_type=["png", "jpg", "jpeg", "webp", "pdf", "docx", "txt", "md"],
             width="stretch",
         )
         model_id = pick_model()  # drawn inside the input box, left of Send — see inject_layout_css
@@ -405,9 +425,10 @@ def main() -> None:
         if isinstance(llm, OpenAICompatLLM):
             llm = llm.with_model(model_id)
         text = pending or (prompt.text if hasattr(prompt, "text") else str(prompt))
-        files = [] if pending or not hasattr(prompt, "files") else list(prompt.files or [])[:service.MAX_IMAGES]
+        files = [] if pending or not hasattr(prompt, "files") else list(prompt.files or [])
+        images, documents = _split_uploads(files)
         with live:
-            send(db, llm, text, [to_data_url(f) for f in files])
+            send(db, llm, text, images, documents)
         st.rerun()
 
 

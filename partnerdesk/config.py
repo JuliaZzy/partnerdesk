@@ -111,6 +111,12 @@ def default_model_id() -> str:
     return resolve_model_id(env("LLM_MODEL"))
 
 
+def model_sees_images(model_id: str | None) -> bool:
+    """True for a catalog model that reads page and order photos. Unknown names do not."""
+    spec = get_chat_model(model_id) if model_id else None
+    return bool(spec and spec.vision)
+
+
 def model_label(model_id: str) -> str:
     spec = get_chat_model(model_id)
     return spec.label if spec else model_id

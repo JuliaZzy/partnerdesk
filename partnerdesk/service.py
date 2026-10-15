@@ -14,7 +14,9 @@ from collections.abc import Iterator
 from typing import Any
 
 from .claims import handle_post_submit
+from .contract_read import read_and_ingest, summarize
 from .db import Database
+from .documents import SUPPORTED_EXTS
 from .llm import LLM
 from .po.turn import build_ledger, confirm_order, load_bundle, run_po_turn
 from .router import route
@@ -25,7 +27,10 @@ ABSTAIN_REPLY = (
     "That's not something I can act on here — I'll leave it for a person at the brand. "
     "If you'd like to place an order, just tell me the products and case counts."
 )
-CONTRACT_STUB = "I can see this is about the agreement. Contract reading isn't wired into chat yet — a person on the brand side will pick this up."
+CONTRACT_NEED_FILE = (
+    "Attach the agreement itself — a PDF, Word file, or text — and I'll file the terms. "
+    "A file name on its own isn't the document."
+)
 REPORT_STUB = "Thanks for the report. Report ingestion isn't wired into chat yet — a person on the brand side will pick this up."
 
 
@@ -48,18 +53,49 @@ def _one_shot(db: Database, session: dict[str, Any], text: str, extra: dict[str,
     }
 
 
+def _file_agreement(db: Database, llm: LLM, session: dict[str, Any], documents: list[tuple[str, bytes]]) -> Iterator[dict[str, Any]]:
+    """The contract specialist. Sending the file is the action: terms are written, and the
+    reply is composed from what was stored. A name with no bytes is not a document."""
+    readable = [(n, b) for n, b in documents if n.lower().endswith(SUPPORTED_EXTS)]
+    if not readable:
+        yield from _one_shot(db, session, CONTRACT_NEED_FILE)
+        return
+    name, data = readable[0]
+    try:
+        rec = read_and_ingest(
+            db, llm, brand_id=_brand_id(db, session["partnership_id"]), partnership_id=session["partnership_id"],
+            file_name=name, data=data,
+        )
+    except Exception as err:
+        yield from _one_shot(db, session, f"I couldn't file that agreement: {err}")
+        return
+    text = summarize(rec)
+    if len(readable) > 1:
+        text += f" I filed {name} and left the other {len(readable) - 1} file(s) unread."
+    yield from _one_shot(db, session, text, {"contract_id": rec.contract.id})
+
+
+def _brand_id(db: Database, partnership_id: str) -> str:
+    p = db.partnership(partnership_id)
+    if not p:
+        raise KeyError("partnership not found")
+    return p.brand_id
+
+
 def handle_message(
     db: Database, llm: LLM, session_id: str, text: str, images: list[str] | None = None, attachments: list[str] | None = None,
+    documents: list[tuple[str, bytes]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     session = db.session(session_id)
     if not session:
         raise KeyError("session not found")
     text = (text or "").strip()
     images = [u for u in (images or []) if isinstance(u, str) and u.startswith("data:image/")][:MAX_IMAGES]
-    if not text and not images:
+    documents = [(n, b) for n, b in (documents or []) if n and b]
+    if not text and not images and not documents:
         raise ValueError("message required")
     bundle = load_bundle(db, session["partnership_id"])
-    names = [*(attachments or []), *[f"image-{i + 1}.jpg" for i in range(len(images))]]
+    names = [*(attachments or []), *[n for n, _ in documents], *[f"image-{i + 1}.jpg" for i in range(len(images))]]
 
     r = route(
         llm, message=text, attachments=names, history=session.get("history") or [],
@@ -86,7 +122,7 @@ def handle_message(
         yield from run_po_turn(db, llm, bundle, session, text, images)
     elif r.specialist == "contract":
         db.update_session(session_id, specialist="contract")
-        yield from _one_shot(db, session, CONTRACT_STUB)
+        yield from _file_agreement(db, llm, session, documents)
     elif r.specialist == "report":
         db.update_session(session_id, specialist="report")
         yield from _one_shot(db, session, REPORT_STUB)

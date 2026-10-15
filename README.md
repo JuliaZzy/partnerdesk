@@ -25,7 +25,9 @@ partnerdesk/
   router.py        意图分类 → po / contract / report / 弃权
   po/              slots → 抽取（LLM）→ 校验（代码）→ 草稿 + hash → 回复（LLM）→ 确认门 → 提交
   claims.py        提交之后：收货 / 付款 / 破损，落到订单状态上
+  contract_read.py 协议文件（PDF / Word / 文本）→ 模型填条款表 → contracts.ingest
   contracts.py     合同抽取结果 → 全量入库（原始 JSON + 规范化条款）→ PO 规则、产品 MOQ、下一单的合同折扣
+  documents.py     PDF / Word / 文本 → 逐页文本；PDF 页渲染成 JPEG，给视觉模型看
   reports.py       销售报表：整洁表格 → 事实（代码读格子，模型不碰数字）→ 草稿 → 人确认 → 同期重发即取代
   knowledge.py     品牌知识库：品牌资料 → 两遍蒸馏（扫描类型 → 抽片段）→ 草稿片段 → 人批准后才进 prompt
   memory.py        长期记忆：跨会话记住的偏好 / 指令 / 事实，每轮 PO 对话作为上下文读入（只能提醒，不能放宽规则）
@@ -42,8 +44,6 @@ data/              大数据集（Open Food Facts 快照），gitignore，不进
 tests/             不联网的测试（FakeLLM；页面用 AppTest 无头驱动）
 evals/             模型层回归，需要真实模型
 docs/porting/      从第一版带过来了什么、为什么（01–06）
-docs/              邮件渠道的面试备忘
-legacy/            第一版的 Python 模块，原样保留，逐步移植出来
 ```
 
 ## 数据层
@@ -92,17 +92,14 @@ legacy/            第一版的 Python 模块，原样保留，逐步移植出�
 | 意图 router | 已移植 — `router.py` |
 | 提交后的收货 / 付款 / 索赔 | 已移植 — `claims.py` |
 | 合同全量入库 + 条款 → PO 规则 + 合同折扣预填 | **新增** — `contracts.py`、`db/` |
-| 合同页：条款 / 派生规则 / 证据 / 抽取记录，导入抽取 JSON | **新增** — `ui_pages/contracts.py`；PDF 读取仍在 `legacy/contract_ai` |
+| 合同页：上传协议（PDF / Word / 文本）或导入抽取 JSON；条款 / 派生规则 / 证据 | 已接入 — `contract_read.py`、`ui_pages/contracts.py`；模型填条款，代码派生规则 |
 | 报表：整洁表格 → 事实 → 确认 → 取代；报表页 + 图表 + 下单 vs 售出 | **新增** — `reports.py`、`ui_pages/reports.py`；多块乱表（06）待做 |
-| 品牌知识库：上传 → 两遍蒸馏（文本层）→ 批准；知识页 | **新增** — `knowledge.py`、`ui_pages/knowledge.py`；页面图像送视觉模型待做 |
+| 品牌知识库：上传 → 两遍蒸馏（文本；视觉模型同时看页面图）→ 批准 | 已接入 — `knowledge.py`、`ui_pages/knowledge.py`；扫描页需要选 Qwen |
 | 长期记忆：记忆页 + 每轮 PO 对话读入 | **新增** — `memory.py`、`ui_pages/memory.py` |
-| 聊天里的合同 specialist | 占位 — 抽取在 `legacy/contract_ai`，还没接到聊天 |
+| 聊天里的合同 specialist | 已接入 — 附上协议文件即抽取并入库；只有文件名、没有文件内容时会要求重传 |
 | 聊天里的报表 specialist | 占位 — 设计和 prompt 在 `docs/porting/06-report-core.md` |
 | 聊天里引用知识库 / 合同 / 报表数据 | 待做 — 数据已在库里并按产品关联，prompt 侧还没接 |
 | 评估 | 脚手架 — `evals/` |
-
-第一版还有一个邮件渠道（IMAP 轮询 → 分类 → 通过幂等 outbox 回信 → hash 绑定的确认链接）。这里不重建；
-设计笔记在 [docs/email-channel-interview-notes.md](docs/email-channel-interview-notes.md)。
 
 ## 运行
 
@@ -147,7 +144,5 @@ dev py -m partnerdesk.contracts extraction.json --brand brand-aurora --partnersh
 
 | extra | 内容 |
 |---|---|
-| `contract` | `legacy/contract_ai`：PDF/DOCX 读取、GLM OCR |
-| `textract` | `legacy/contract_ai`：AWS Textract OCR（`CONTRACT_OCR_PROVIDER=textract` 时才需要） |
-| `brand` | `legacy/brand_knowledge`：Gemini 蒸馏品牌资料 |
+| `contract` | 读 PDF / Word：PyMuPDF、python-docx。合同和品牌资料都要用 |
 | `dev` | pytest、httpx、ruff |

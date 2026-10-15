@@ -28,6 +28,7 @@ CATALOG_ROWS = [
     dict(id="p-srp", sku="SR-201", product_name_en="Radiance Serum Plus", case_pack=6, case_price=60),
     dict(id="p-np", sku="NP-300", product_name_en="Unpriced Item", case_pack=6, case_price=None),
     dict(id="p-gs", sku="GS-010", product_name_en="Gift Set Mini", case_pack=24, case_price=40, product_status="赠品"),
+    dict(id="p-gu", sku="GU-020", product_name_en="Gift Sachet", case_pack=24, case_price=None, product_status="赠品"),
     dict(id="p-old", sku="OLD-900", product_name_en="Legacy Night Cream", case_pack=6, case_price=45, product_status="停产"),
 ]
 

@@ -1,8 +1,8 @@
 """Contracts — the agreement behind the partnership: its normalized terms, the PO rules
 derived from them, the evidence each field cites, and every extraction run kept verbatim.
 
-Import takes the extraction JSON `legacy/contract_ai` produces (the PDF reader itself isn't
-wired into the desk yet) and runs the same `contracts.ingest_extraction` the CLI does.
+Upload the agreement (PDF, Word, or text) and the model fills the term form; the code
+derives the PO rules. A previously extracted JSON still imports the same way.
 """
 
 from __future__ import annotations
@@ -11,10 +11,14 @@ import json
 
 import streamlit as st
 
+from partnerdesk.contract_read import read_and_ingest
 from partnerdesk.contracts import contract_discount_for_next_order, ingest_extraction
+from partnerdesk.llm import OpenAICompatLLM
 from partnerdesk.ui_pages.common import current_partnership, get_backend, page_tabs, short_date, status_badge
 
-db, _ = get_backend()
+db, llm = get_backend()
+if isinstance(llm, OpenAICompatLLM) and st.session_state.get("llm_model"):
+    llm = llm.with_model(st.session_state["llm_model"])
 p = current_partnership(db)
 
 st.header("Contracts", icon=":material/gavel:")
@@ -22,18 +26,25 @@ st.caption(f"{p['brand_name']} · {p['distributor_name']} — terms the code enf
 
 contracts = db.contracts(p["id"])
 
-with st.expander("Import an extraction", icon=":material/upload_file:"):
-    st.caption("The JSON `legacy/contract_ai` writes for an agreement (`{\"extraction\": {...}}` or the extraction object itself). "
-               "Stored in full, terms normalized, PO rules derived; the previous active contract is superseded.")
-    up = st.file_uploader("Extraction JSON", type=["json"], key="contract_json", label_visibility="collapsed")
+with st.expander("File an agreement", icon=":material/upload_file:"):
+    st.caption("A PDF, Word file, or text — the model copies the terms, the code derives the PO rules. "
+               "Or a JSON extraction (`{\"extraction\": {...}}` or the extraction object). "
+               "Stored in full; the previous active contract is superseded.")
+    up = st.file_uploader("Agreement", type=["pdf", "docx", "txt", "md", "json"], key="contract_json", label_visibility="collapsed")
     title = st.text_input("Title", key="contract_title", placeholder="Distribution Agreement 2027")
     if st.button("Import", type="primary", icon=":material/check:", key="contract_import", disabled=up is None):
         try:
-            data = json.loads(up.getvalue().decode("utf-8"))
-            extraction = data.get("extraction", data) if isinstance(data, dict) else None
-            if not isinstance(extraction, dict):
-                raise ValueError("the file is not a JSON object")
-            rec = ingest_extraction(db, extraction, brand_id=p["brand_id"], partnership_id=p["id"], title=title.strip() or up.name, file_name=up.name, model=data.get("model") if isinstance(data, dict) else None)
+            raw = up.getvalue()
+            label = title.strip() or up.name
+            if up.name.lower().endswith(".json"):
+                data = json.loads(raw.decode("utf-8"))
+                extraction = data.get("extraction", data) if isinstance(data, dict) else None
+                if not isinstance(extraction, dict):
+                    raise ValueError("the file is not a JSON object")
+                rec = ingest_extraction(db, extraction, brand_id=p["brand_id"], partnership_id=p["id"], title=label, file_name=up.name, model=data.get("model") if isinstance(data, dict) else None)
+            else:
+                with st.spinner("Reading the agreement…"):
+                    rec = read_and_ingest(db, llm, brand_id=p["brand_id"], partnership_id=p["id"], file_name=up.name, data=raw, title=label)
         except Exception as err:  # a bad file is a message, not a crash
             st.error(f"Could not import: {err}")
         else:

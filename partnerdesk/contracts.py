@@ -1,9 +1,9 @@
 """Contract → database → purchase orders.
 
-`legacy/contract_ai` reads an agreement into a `ContractExtractionDraft` (discount tiers,
-MOQ, price list, territory, evidence). This module keeps ALL of it: the raw extraction is
-stored verbatim, the terms are normalized into their own tables, and from those terms it
-derives what the PO gate needs:
+`contract_read` reads an agreement into an extraction (discount tiers, MOQ, price list,
+territory, evidence). This module keeps ALL of it: the raw extraction is stored verbatim,
+the terms are normalized into their own tables, and from those terms it derives what the
+PO gate needs:
 
   minimum_order_quantities[per_order, money]  → min_order_value rule (block)
   minimum_order_quantities[per SKU, units]    → products.moq_units
@@ -291,7 +291,7 @@ def contract_discount_for_next_order(db: Database, partnership_id: str, today: d
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Store a contract extraction and derive PO rules from it.")
-    ap.add_argument("extraction", help="JSON file: the `extraction` object from legacy contract_ai analyze_contract")
+    ap.add_argument("extraction", help="JSON file: an extraction object, or {\"extraction\": {...}}")
     ap.add_argument("--brand", required=True)
     ap.add_argument("--partnership", required=True)
     ap.add_argument("--title")

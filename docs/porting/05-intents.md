@@ -30,7 +30,7 @@
 | topic | specialist | 现状 |
 |---|---|---|
 | `purchase_order` | PO | 完整 |
-| `contract_terms`（带附件） | Contract | 抽取在 `legacy/contract_ai`，接口先留 stub |
+| `contract_terms`（带附件） | Contract | 已接入 — `contract_read.py` 读 PDF/Word/文本，聊天里附上文件即入库 |
 | `sales_reporting`（带附件） | Report | stub |
 | `product_catalog` / `marketing_promotion` / `general_relationship` / 空 | **abstain** — 明说这里帮不了、留给人 | 有 |
 

@@ -18,7 +18,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, func, or_, select, update
+from sqlalchemy import Engine, func, inspect, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -60,7 +60,10 @@ def _as_url(target: str | None) -> str:
 
 
 def _row_dict(row: Any) -> dict[str, Any]:
-    return {c.key: getattr(row, c.key) for c in row.__table__.columns}
+    """Column values, skipping ones not loaded. A deferred blob (the uploaded file) stays
+    out of every list and detail read that did not ask for it."""
+    unloaded = inspect(row).unloaded
+    return {c.key: getattr(row, c.key) for c in row.__table__.columns if c.key not in unloaded}
 
 
 class Database:
@@ -481,10 +484,14 @@ class Database:
 
 
     # --- brand knowledge base --------------------------------------------------------
-    def save_document(self, doc: BrandDocument, pages: list[tuple[int, str]]) -> str:
-        """The uploaded file as a row plus its text per page; nothing distilled yet."""
+    def save_document(self, doc: BrandDocument, pages: list[tuple[int, str]], *, file_bytes: bytes | None = None) -> str:
+        """The uploaded file as a row plus its text per page; nothing distilled yet.
+        `file_bytes` is the original upload, kept so distillation can render page images."""
+        values = doc.model_dump(exclude={"created_at", "updated_at"})
+        if file_bytes is not None:
+            values["file_bytes"] = file_bytes
         with self.tx() as s:
-            self._upsert(s, orm.BrandDocument, doc.id, doc.model_dump(exclude={"created_at", "updated_at"}))
+            self._upsert(s, orm.BrandDocument, doc.id, values)
             s.flush()
             for row in s.scalars(select(orm.BrandDocumentPage).where(orm.BrandDocumentPage.document_id == doc.id)):
                 s.delete(row)
@@ -523,6 +530,11 @@ class Database:
         with self.tx() as s:
             row = s.get(orm.BrandDocument, id)
             return BrandDocument(**_row_dict(row)) if row else None
+
+    def document_bytes(self, document_id: str) -> bytes | None:
+        with self.tx() as s:
+            row = s.get(orm.BrandDocument, document_id)
+            return row.file_bytes if row else None
 
     def document_pages(self, document_id: str) -> list[tuple[int, str]]:
         with self.tx() as s:

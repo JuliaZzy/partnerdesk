@@ -1,7 +1,6 @@
-# 移植规格：第一版的测试用例
+# 产品相关询问要求
 
-第一版 Python 侧没有测试；TS 侧这几份就是 slots / code-check / hash / claims 的验收标准。
-每条一行，右列是它在 `tests/` 里的落点。
+我们一共有约41万个产品、约10万个品牌，需要通过如下的测试，才能将下单链接展示给用户。
 
 ## code-check（提交门）— `tests/test_check.py`
 
@@ -11,16 +10,16 @@ SR-201 Radiance Serum Plus（$60）、NP-300 无价。
 **必须拦（ready=False）**
 - 没有行 → `no_items`
 - 目录里没有的产品 → `unresolved_reference`，行上无 product_id
-- "the serum" 同时匹配两个 → `ambiguous_product`，candidates=2，不同时标 unresolved
+- 如果客户在选择产品时语义模糊，如客户要购买“精华”，但同时能匹配两个或多个“精华”相关的产品 → `ambiguous_product`，candidates=2/n，不同时标 unresolved
 - 8 箱对 9 箱 MOQ → `below_moq`，moq_cases 从单位向上取整（100/12 → 9）
-- 无价产品 → `missing_price`
+- 无价产品 → 查看是否为“赠品”、“样品”或“停产”，如果不是 → `missing_price`
 - 0 箱 → `zero_total`
 - 折扣没有被问过（discount=None）→ `discount_unaddressed`（沉默不等于同意跳过）
 - 一行坏了整单不 ready
-- 999,999,999 箱 → `implausible_quantity`（曾经：ready、~$100bn、零 gap）；恰好等于上限仍通过
+- 999,999,999 箱 → `implausible_quantity`；恰好等于上限仍通过
 
 **必须放（ready=True）**
-- 模糊引用 "fish oil" 解析到唯一 SKU，subtotal = 单价 × 箱数，gaps 为空
+- 客户对产品进行模糊引用时，若解析到唯一 SKU，subtotal = 单价 × 箱数，gaps 为空
 - 不满层（12 箱 / 5 箱每层）不拦，但 partial_layer=True、cases_to_full_layer=3
 
 **精确 SKU / 名称**
@@ -33,7 +32,7 @@ SR-201 Radiance Serum Plus（$60）、NP-300 无价。
 **LLM 兜底解析器（目录才是权威）**
 - 返回不存在的 SKU → 丢弃，仍 unresolved，永不 ready
 - 返回一个有效 SKU → 解析并定价
-- 返回两个 → ambiguous（问，不猜）
+- 返回两个及以上 → ambiguous（问，不猜）
 - 解析器抛异常 → 保持 unresolved，绝不自动 ready
 
 ## slot merge — `tests/test_slots.py`

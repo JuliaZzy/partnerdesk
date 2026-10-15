@@ -49,9 +49,22 @@ def test_below_moq_blocks_and_rounds_up(catalog):
     assert r.lines[0].moq_cases == 9  # 100 / 12 → 9
 
 
-def test_missing_price_blocks(catalog):
+def test_missing_price_blocks_on_a_regular_product(catalog):
     r = check(catalog, slots(("NP-300", 10, None)))
     assert r.ready is False and "missing_price" in kinds(r)
+
+
+def test_an_unpriced_gift_is_not_a_gap(catalog):
+    """GU-020 is a gift with no case price — priced lines carry the order, the gift rides along."""
+    r = check(catalog, slots(("FO-100", 10, None), ("GU-020", 1, None)))
+    assert "missing_price" not in kinds(r) and r.ready is True
+    assert r.lines[1].missing_price is False and r.lines[1].line_total is None
+    assert r.subtotal == 1000.0  # the unpriced line adds nothing
+
+
+def test_an_order_of_only_unpriced_gifts_has_no_total(catalog):
+    r = check(catalog, slots(("GU-020", 5, None)))
+    assert r.ready is False and kinds(r) == ["zero_total"]
 
 
 def test_zero_quantity_blocks(catalog):

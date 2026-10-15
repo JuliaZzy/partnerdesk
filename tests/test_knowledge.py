@@ -70,6 +70,23 @@ def test_distill_batches_long_documents_and_reports_blank_pages():
         distill(FakeLLM(), brand_id="brand-1", file_name="scan.pdf", pages=[(1, ""), (2, "  ")])
 
 
+def test_distill_sends_a_scanned_page_when_the_model_can_see_it():
+    pages = [(1, ""), (2, "Founded in Bergen in 2009.")]
+    images = {1: b"\xff\xd8scan"}
+    llm = FakeLLM(json_replies=[dict(SCAN), dict(EXTRACT)])
+    d = distill(llm, brand_id="brand-1", file_name="scan.pdf", pages=pages, images=images, attach_images=True, products=PRODUCTS)
+    assert d.pages_processed == 2 and d.skipped == []
+    content = llm.calls[0]["messages"][0]["content"]
+    assert isinstance(content, list) and any(part.get("type") == "image_url" for part in content)
+    # The same scan, held back from a text model, is reported and not sent.
+    held = FakeLLM(json_replies=[dict(SCAN), dict(EXTRACT)])
+    skipped = distill(held, brand_id="brand-1", file_name="scan.pdf", pages=pages, images=images, attach_images=False, products=PRODUCTS)
+    assert skipped.pages_processed == 1 and skipped.skipped == ["page 1: no text layer (scanned page — needs a vision model)"]
+    assert isinstance(held.calls[0]["messages"][0]["content"], str)
+    with pytest.raises(ValueError, match="vision model"):
+        distill(FakeLLM(), brand_id="brand-1", file_name="scan.pdf", pages=[(1, "  ")], images=images, attach_images=False)
+
+
 def test_match_product_by_name_or_sku():
     assert match_product(PRODUCTS, "deep sea fish oil").id == "p-fo"
     assert match_product(PRODUCTS, None, "SR-200").id == "p-sr"
@@ -85,6 +102,8 @@ def test_match_product_by_name_or_sku():
 def test_document_lifecycle_in_the_database(db):
     doc = ingest_document(db, brand_id="brand-1", file_name="deck.txt", data=b"Deep Sea Fish Oil\f1000 mg omega-3\fFounded in Bergen", title="Spring deck")
     assert doc.status == "uploaded" and doc.page_count == 3 and db.document_pages(doc.id)[2] == (3, "Founded in Bergen")
+    assert db.document_bytes(doc.id) == b"Deep Sea Fish Oil\f1000 mg omega-3\fFounded in Bergen"
+    assert "file_bytes" not in doc.model_dump()
     assert [d.id for d in db.documents("brand-1")] == [doc.id]
 
     llm = FakeLLM(json_replies=[dict(SCAN), dict(EXTRACT)])

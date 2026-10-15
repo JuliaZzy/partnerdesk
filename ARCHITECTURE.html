@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>partnerdesk 后端路由图</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --ink: #1d2433;
+    --muted: #5b6475;
+    --line: #dde1e7;
+    --llm: #efe6ff;   --llm-b: #7c4dff;
+    --code: #e6f4ea;  --code-b: #2e7d32;
+    --human: #fff1e0; --human-b: #ef6c00;
+    --db: #e3f0fd;    --db-b: #1565c0;
+    --stub: #f4f4f4;  --stub-b: #9e9e9e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.65 "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  }
+  main { max-width: 1320px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 40px 0 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .lede { color: var(--muted); margin: 0 0 16px; max-width: 900px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 16px 0 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .chip i { width: 22px; height: 14px; border-radius: 3px; border: 1.5px solid; display: inline-block; }
+  .chip.llm i { background: var(--llm); border-color: var(--llm-b); }
+  .chip.code i { background: var(--code); border-color: var(--code-b); }
+  .chip.human i { background: var(--human); border-color: var(--human-b); border-radius: 8px; }
+  .chip.db i { background: var(--db); border-color: var(--db-b); border-radius: 6px / 4px; }
+  .chip.stub i { background: var(--stub); border-color: var(--stub-b); border-style: dashed; }
+  nav.toc { font-size: 14px; color: var(--muted); margin-top: 8px; }
+  nav.toc a { color: var(--db-b); text-decoration: none; margin-right: 14px; white-space: nowrap; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 12px 0; overflow-x: auto; }
+  pre.mermaid { margin: 0; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--muted); white-space: pre; }
+  pre.mermaid[data-processed] { text-align: center; white-space: normal; }
+  .notes { margin: 8px 0 0; padding-left: 20px; max-width: 980px; }
+  .notes li { margin: 4px 0; }
+  code { font: 13px ui-monospace, Consolas, monospace; background: #eef0f4; padding: 1px 5px; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; background: var(--card); font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #eef0f4; font-weight: 600; }
+  td code { white-space: nowrap; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; margin: 12px 0; }
+  .status { font-size: 13px; color: var(--muted); }
+  .status.error { color: #b3261e; }
+  footer { margin-top: 40px; font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>partnerdesk 后端路由图</h1>
+<p class="lede">
+  HTTP 层只有 <code>app.py</code> 一个文件，下面全是不认识传输层的 <code>service.py</code> 和领域模块。
+  一个聊天入口，router 分流给 specialist；每个数字、每个判定都在代码里，模型只出现在紫色节点上。
+</p>
+
+<div class="legend">
+  <span class="chip llm"><i></i>模型调用（LLM）</span>
+  <span class="chip code"><i></i>确定性代码</span>
+  <span class="chip human"><i></i>人 / 外部输入</span>
+  <span class="chip db"><i></i>数据库表</span>
+  <span class="chip stub"><i></i>占位 / 待做</span>
+</div>
+<nav class="toc">
+  <a href="#routes">1 路由总览</a>
+  <a href="#dispatch">2 消息分发</a>
+  <a href="#po-turn">3 订单：一轮对话</a>
+  <a href="#confirm">4 订单：确认门</a>
+  <a href="#offline-wired">5 离线入库：已接进聊天</a>
+  <a href="#offline-pending">6 离线入库：聊天还没读</a>
+  <a href="#table">路由表</a>
+</nav>
+<p class="status" id="status">正在加载 Mermaid…</p>
+
+<!-- ============================================================== -->
+<h2 id="routes">1. 路由总览：<code>app.py</code></h2>
+<div class="card">
+<pre class="mermaid">
+flowchart LR
+  APP(["app.py · create_app()<br/>首次请求时建 Database()<br/>自动迁移到 alembic head + seed_from_fixtures"])
+
+  APP --> E0["GET /"] --> H0["服务信息 + /docs"]
+  APP --> E1["GET /api/partnerships"] --> H1["Database.partnerships"]
+  APP --> E2["POST /api/sessions<br/>body：partnership_id?"] --> H2["service.new_session<br/>不传就用第一个合作关系"]
+  APP --> E3["GET /api/sessions/{sid}"] --> H3["Database.session<br/>slots · stage · history"]
+  APP --> E4["POST /api/sessions/{sid}/message<br/>body：message · images · attachments · model"] --> H4["service.handle_message<br/>SSE：route → token… → done"]
+  APP --> E5["POST /api/sessions/{sid}/confirm<br/>body：token"] --> H5["service.confirm<br/>state：submitted · done · used · expired · changed"]
+  APP --> E6["GET /api/orders<br/>?partnership_id="] --> H6["service.orders<br/>订单 + 订单行 + 事件"]
+
+  H1 --> T1[("partnerships")]
+  H2 --> T2[("sessions")]
+  H3 --> T2
+  H4 --> F4["意图路由 → specialist<br/>（图 2）"]
+  H5 --> F5["确认门，不调模型<br/>（图 4）"]
+  H6 --> T6[("purchase_orders · purchase_order_items<br/>po_events")]
+
+  class APP human
+  class E0,E1,E2,E3,E4,E5,E6,H0,H1,H2,H3,H4,H5,H6,F4,F5 code
+  class T1,T2,T6 db
+</pre>
+</div>
+<ul class="notes">
+  <li>FastAPI 只做适配：解析 body、把 <code>KeyError</code> 变成 404、把事件流包成 SSE。业务全在 <code>service.py</code>，它不认识 HTTP。</li>
+  <li>确认是单独的端点，body 只有 token——模型不在这条路径上。</li>
+  <li>请求模型（<code>NewSession</code> / <code>Inbound</code> / <code>Confirm</code>）定义在模块层：有 <code>from __future__ import annotations</code> 时，
+    定义在 <code>create_app</code> 里的类会被 FastAPI 静默当成 query parameter。</li>
+</ul>
+
+<!-- ============================================================== -->
+<h2 id="dispatch">2. 消息分发：<code>service.handle_message</code></h2>
+<div class="card">
+<pre class="mermaid">
+flowchart TD
+  HM["service.handle_message<br/>图片只收 data:image，最多 3 张"]
+  T_CTX[("partnerships · brand_agent_settings<br/>products · commercial_rules · memories")] --> BUNDLE
+  HM --> BUNDLE["po/turn.load_bundle<br/>合作关系 · 设置 · 目录 · 规则<br/>+ 长期记忆拼进上下文"]
+  BUNDLE --> ACTIVE{{"router.route<br/>有进行中的订单？"}}
+  ACTIVE -->|"是：不重新分类"| SUBMITTED
+  ACTIVE -->|"否"| CLASSIFY["router.classify<br/>6 个话题 · 多标签 + 置信度<br/>可以一个都不选"]
+  CLASSIFY --> PICK{{"选 specialist<br/>置信度从高到低"}}
+  PICK -->|"purchase_order<br/>≥ min_po_confidence"| SUBMITTED
+  PICK -->|"contract_terms + 附件"| CONTRACT["合同 specialist<br/>CONTRACT_STUB"]
+  PICK -->|"sales_reporting + 附件"| REPORT["报表 specialist<br/>REPORT_STUB"]
+  PICK -->|"其他 / 不够确定 / 没附件"| ABSTAIN["明确弃权，留给人<br/>ABSTAIN_REPLY"]
+
+  SUBMITTED{{"这个会话已经下过单？"}}
+  SUBMITTED -->|"否"| TURN["po/turn.run_po_turn<br/>抽取 → 校验 → 草稿 → 回复<br/>（图 3）"]
+  SUBMITTED -->|"是"| CLAIMS["claims.handle_post_submit<br/>三个分类器：收货 / 付款 / 破损"]
+  CLAIMS -->|"置信度 ≥ 0.7"| POSTATUS["代码改订单状态，记 po_events<br/>received · payment_claimed · claim_filed"]
+  CLAIMS -->|"都不是"| RESET["同一个会话开新单<br/>清空 slots"]
+  RESET --> TURN
+  POSTATUS --> T_PO[("purchase_orders · po_events")]
+
+  class HM,BUNDLE,ACTIVE,PICK,SUBMITTED,ABSTAIN,POSTATUS,RESET,TURN code
+  class CLASSIFY,CLAIMS llm
+  class CONTRACT,REPORT stub
+  class T_CTX,T_PO db
+</pre>
+</div>
+<ul class="notes">
+  <li>路由先看状态，再问模型：订单进行中时，"用那个保湿水"会被分类成产品咨询，但它其实是在续单，所以不重新分类。</li>
+  <li>六个话题、三个 specialist、一个显式弃权。分类器只给标签和置信度；选谁、阈值、合同和报表必须带附件，都是代码。</li>
+  <li>除了 PO 的流式回复，其他分支（弃权、占位、收货 / 付款 / 索赔）的回复都是代码拼的，用同一种事件形状发出去。</li>
+</ul>
+
+<!-- ============================================================== -->
+<h2 id="po-turn">3. 订单 specialist：一轮对话 <code>po/turn.run_po_turn</code></h2>
+<div class="card">
+<pre class="mermaid">
+flowchart TD
+  MSG(["经销商消息（可带图片）"]) --> EXTRACT["① po/extract.extract_turn<br/>填进固定 slot 模板<br/>产品只写“引用”，不写 SKU"]
+  EXTRACT --> MERGE["po/slots.merge_slots<br/>合并，不覆盖"]
+  MERGE --> DISC["② contracts.contract_discount_for_next_order<br/>按合同年内已下单数选折扣档，预填"]
+  DISC --> SEARCH
+  subgraph check["③ 确定性闸门 po/check"]
+    SEARCH["run_code_check → search_catalog<br/>SKU 精确 / 名称模糊"]
+    SEARCH -->|"搜不到 / 多个候选"| RESOLVE["po/resolver.resolve_references<br/>LLM 兜底，只能从目录里挑"]
+    SEARCH --> PRICE["定价 · MOQ 换算成箱 · 托盘层"]
+    RESOLVE --> PRICE
+    PRICE --> GAPS["缺项：未解析 / 有歧义<br/>低于 MOQ / 没价格"]
+    GAPS --> RULES["po/rules.evaluate_rules<br/>商业规则：block / 需审批"]
+  end
+  RULES --> DRAFT["④ po/draft.build_draft<br/>草稿表由代码生成"]
+  DRAFT --> READY{{"ready？<br/>没缺项，没 block"}}
+  READY -->|"是"| TOKEN["铸 confirm token<br/>绑定 hash_draft · 24 小时"]
+  READY -->|"否：回复里追问缺项"| REPLY
+  TOKEN --> REPLY["⑤ po/reply.stream_reply<br/>被告知闸门结果，只负责措辞"]
+  REPLY --> SAVE[("⑥ sessions<br/>slots · history · stage · token + hash")]
+
+  class MSG human
+  class EXTRACT,RESOLVE,REPLY llm
+  class MERGE,DISC,SEARCH,PRICE,GAPS,RULES,DRAFT,READY,TOKEN code
+  class SAVE db
+</pre>
+</div>
+<ul class="notes">
+  <li>紫色只有三处：抽取、兜底解析、回复措辞。产品解析的结果、价格、MOQ、规则、总价全是绿色。</li>
+  <li>回复在闸门<b>之后</b>生成，并被告知闸门结果——它说不出闸门没给的结论（比如"已确认"）。</li>
+  <li>草稿表、缺项、步骤和 token 走最后的 <code>done</code> 事件，由代码组装，不经过模型。</li>
+</ul>
+
+<!-- ============================================================== -->
+<h2 id="confirm">4. 订单 specialist：确认门 <code>po/turn.confirm_order</code></h2>
+<div class="card">
+<pre class="mermaid">
+flowchart TD
+  CLICK(["POST /confirm，带着图 3 ⑥ 存下的 token<br/>是按钮，不是推断"]) --> TOK{{"token 对得上？没过期？"}}
+  TOK -->|"否"| USED["used / expired<br/>不建单"]
+  TOK -->|"是"| RECHECK["重跑 run_code_check<br/>live 目录 + live 规则 · 不调模型"]
+  RECHECK --> SAME{{"draft hash 没变？"}}
+  SAME -->|"变了"| CHANGED["changed：退回 gathering<br/>让用户重看新草稿"]
+  SAME -->|"没变"| BURN["db.burn_confirm_token<br/>原子 UPDATE，建单之前先烧"]
+  BURN -->|"没烧到：双击 / 重试"| USED
+  BURN -->|"烧到了"| SUBMIT["po/submit.create_and_submit_po<br/>折扣、总价由代码算"]
+  SUBMIT --> T_PO[("purchase_orders · purchase_order_items<br/>po_rule_evaluations · po_events")]
+
+  class CLICK human
+  class TOK,USED,RECHECK,SAME,CHANGED,BURN,SUBMIT code
+  class T_PO db
+</pre>
+</div>
+<ul class="notes">
+  <li>确认门里没有模型：会话里的 slots 已经由对话定下来，点击时再抽取一遍等于让模型重新决定用户已经看过的订单。</li>
+  <li>重跑校验并比对 hash——这期间价格或规则变了就不建单，返回 <code>changed</code> 让用户重看。</li>
+  <li>先烧 token 再建单：两次点击相隔一秒，一个 UPDATE 命中，另一个什么都没命中、直接返回 <code>used</code>——双击只产生一张订单。</li>
+</ul>
+
+<!-- ============================================================== -->
+<h2 id="offline-wired">5. 离线入库：已经接进聊天的</h2>
+<div class="card">
+<pre class="mermaid">
+flowchart TD
+  subgraph s_cat["产品目录 · scripts/"]
+    OFF(["Open Food Facts 快照"]) --> FETCH["fetch_off_products.py<br/>→ data/off/"]
+    FETCH --> BUILD["build_catalog.py · dev catalog<br/>批发字段按条码确定性推导<br/>COPY 整表替换"]
+  end
+  subgraph s_con["合同"]
+    PDF(["合同 PDF / DOCX / 文本"]) --> READ["contract_read.read_agreement<br/>文本层；扫描页送视觉模型<br/>模型只填条款"]
+    READ --> CINGEST["contracts.ingest_extraction<br/>条款规范化 → derive_rules<br/>说不清的字段进 skipped"]
+    CJSON(["抽取 JSON"]) --> CINGEST
+  end
+  subgraph s_seed["启动"]
+    FIX(["fixtures/*.json"]) --> SEED["Database.seed_from_fixtures<br/>按 id upsert，幂等"]
+  end
+  subgraph s_mem["长期记忆"]
+    MCALL["调用方：暂无 HTTP 端点"] --> REMEMBER["memory.remember<br/>只有人或代码能写，模型不能"]
+  end
+
+  BUILD --> T_PROD[("products · 约 41 万")]
+  CINGEST -->|"单品 MOQ"| T_PROD
+  CINGEST --> T_CON[("contracts + 条款表<br/>折扣阶梯 · MOQ · 价格表 · 区域 · 证据")]
+  CINGEST -->|"带 contract_id"| T_RULES[("commercial_rules")]
+  SEED --> T_RULES
+  SEED -->|"fixture 合同"| CINGEST
+  SEED --> T_REF[("brands · distributors<br/>partnerships · brand_agent_settings")]
+  REMEMBER --> T_MEM[("memories")]
+
+  T_PROD --> SEARCHC["Database.search_catalog<br/>trigram 索引 · 库内分页<br/>暂无 HTTP 端点"]
+  T_PROD & T_RULES & T_MEM & T_REF --> LIVE["每轮对话读：load_bundle（图 2）"]
+  T_CON --> LIVE2["下一单的合同折扣（图 3 ②）"]
+
+  class OFF,PDF,CJSON,FIX human
+  class FETCH,BUILD,READ,CINGEST,SEED,REMEMBER,SEARCHC,LIVE,LIVE2 code
+  class MCALL stub
+  class T_PROD,T_CON,T_RULES,T_REF,T_MEM db
+</pre>
+</div>
+<ul class="notes">
+  <li>进库的数字全是代码给的：目录的批发字段按条码确定性推导，同一条码每次算出一样的数。</li>
+  <li>合同条款会变成 PO 规则和单品 MOQ，每条派生规则带 <code>contract_id</code>，审批的人能追回到条款原文；说不清的字段进 <code>skipped</code>，不猜。</li>
+  <li>合同文件由 <code>contract_read</code> 读取：模型只填条款，规则由代码派生。聊天里附上文件走同一条路。</li>
+  <li>记忆读进 prompt 只是上下文，放宽不了规则。</li>
+</ul>
+
+<!-- ============================================================== -->
+<h2 id="offline-pending">6. 离线入库：先等人确认，聊天还没读的</h2>
+<div class="card">
+<pre class="mermaid">
+flowchart TD
+  subgraph s_rep["销售报表 · reports.py"]
+    RCALL["调用方：暂无 HTTP 端点"] --> ANALYZE["reports.analyze<br/>CSV / XLSX：找表 → 词表映射列 → 读格子<br/>模型不碰数字"]
+    ANALYZE --> RINGEST["reports.ingest<br/>事实先是 draft"]
+    RINGEST --> RCONF(["人确认<br/>Database.confirm_report"])
+  end
+  subgraph s_kb["品牌知识库 · knowledge.py"]
+    KCALL["调用方：暂无 HTTP 端点"] -->     KINGEST["knowledge.ingest_document<br/>PDF / DOCX / TXT 逐页文本入库<br/>原文件留下，供稍后渲染"]
+    KINGEST --> DISTILL["knowledge.distill_document<br/>第 1 遍 scan：有哪些内容<br/>第 2 遍 extract：抽片段<br/>视觉模型同时看页面图"]
+    DISTILL --> KAPPROVE(["人批准<br/>Database.set_fragment_status"])
+  end
+
+  RCONF --> T_FACTS[("report_facts<br/>同期旧事实 superseded")]
+  KAPPROVE --> T_FRAG[("knowledge_fragments<br/>draft → approved")]
+  T_FACTS & T_FRAG -.-> TODO["聊天里引用<br/>待做"]
+
+  class RCONF,KAPPROVE human
+  class ANALYZE,RINGEST,KINGEST code
+  class DISTILL llm
+  class RCALL,KCALL,TODO stub
+  class T_FACTS,T_FRAG db
+</pre>
+</div>
+<ul class="notes">
+  <li>两条路都先落成 draft，人确认了才生效——和订单过的是同一种门。</li>
+  <li>报表里模型不碰数字：列靠词表映射，每个格子过 <code>coerce_numeric</code>，合计行丢掉。</li>
+  <li>模型只出现在知识蒸馏，而且分两遍：先问"有哪些内容"，再按找到的类型抽片段——一遍固定 schema 会悄悄丢掉不合 schema 的内容。</li>
+  <li>数据已经入库并按 <code>product_id</code> 关联，聊天侧还没读（虚线）。</li>
+</ul>
+
+<!-- ============================================================== -->
+<h2 id="table">路由表</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>方法</th><th>路径</th><th>body / 参数</th><th>调用</th><th>返回</th></tr></thead>
+  <tbody>
+    <tr><td>GET</td><td><code>/</code></td><td>—</td><td>—</td><td>服务信息、<code>/docs</code></td></tr>
+    <tr><td>GET</td><td><code>/api/partnerships</code></td><td>—</td><td><code>Database.partnerships</code></td><td>合作关系列表</td></tr>
+    <tr><td>POST</td><td><code>/api/sessions</code></td><td><code>partnership_id?</code></td><td><code>service.new_session</code></td><td>新会话；合作关系不存在 404</td></tr>
+    <tr><td>GET</td><td><code>/api/sessions/{sid}</code></td><td>—</td><td><code>Database.session</code></td><td>slots / stage / history；不存在 404</td></tr>
+    <tr><td>POST</td><td><code>/api/sessions/{sid}/message</code></td><td><code>message</code> · <code>images</code>（data URL）· <code>attachments</code>（文件名，只给 router 看）· <code>files</code>（<code>{name, data}</code>，协议正文）· <code>model?</code></td><td><code>service.handle_message</code></td><td>SSE：<code>route</code> → <code>token</code>… → <code>done</code>（中途可能有 <code>warning</code>）；空消息 400</td></tr>
+    <tr><td>POST</td><td><code>/api/sessions/{sid}/confirm</code></td><td><code>token</code></td><td><code>service.confirm</code></td><td><code>state</code>：submitted / done / used / expired / changed</td></tr>
+    <tr><td>GET</td><td><code>/api/orders</code></td><td><code>?partnership_id=</code></td><td><code>service.orders</code></td><td>订单 + 订单行 + 事件</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p class="lede">已经写好、但还没有 HTTP 端点的后端操作（目前只能在进程内调用）：</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>领域</th><th>写</th><th>读</th></tr></thead>
+  <tbody>
+    <tr><td>产品目录</td><td><code>scripts/build_catalog.py</code>（dev catalog）</td><td><code>Database.search_catalog</code> · <code>catalog_stats</code> · <code>catalog_categories</code></td></tr>
+    <tr><td>合同</td><td><code>contracts.ingest_extraction</code>（另有 CLI）</td><td><code>Database.contracts</code> · <code>contract_terms</code> · <code>derived_rules</code> · <code>contract_extractions</code></td></tr>
+    <tr><td>销售报表</td><td><code>reports.analyze</code> → <code>reports.ingest</code> → <code>Database.confirm_report</code></td><td><code>Database.reports</code> · <code>report_facts</code> · <code>confirmed_facts</code></td></tr>
+    <tr><td>品牌知识</td><td><code>knowledge.ingest_document</code> → <code>distill_document</code> → <code>Database.set_fragment_status</code></td><td><code>Database.documents</code> · <code>fragments</code> · <code>document_pages</code></td></tr>
+    <tr><td>长期记忆</td><td><code>memory.remember</code> · <code>Database.set_memory_active</code></td><td><code>Database.memories</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer>
+  图用 Mermaid 画，源码就在这个文件的 <code>&lt;pre class="mermaid"&gt;</code> 里——改了端点、路由或流程，顺手改这里。
+  打开时需要联网加载 Mermaid（依次试 jsDelivr、npmmirror、unpkg、cdnjs）；加载不到时页面上显示的是图的源码。
+</footer>
+
+</main>
+
+<script>
+  // Mermaid comes from a CDN; try mirrors in order because any single one can be slow or
+  // blocked depending on the network. A source that hasn't answered in time doesn't block
+  // the next one — whichever loads first renders.
+  const MERMAID_SOURCES = [
+    "https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js",
+    "https://registry.npmmirror.com/mermaid/11.4.0/files/dist/mermaid.min.js",
+    "https://unpkg.com/mermaid@11.4.0/dist/mermaid.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.0/mermaid.min.js",
+  ];
+  const TRY_NEXT_AFTER_MS = 6000;
+  // One palette for every diagram (the legend at the top uses the same colours). Appended at
+  // render time so each diagram's source above only says which class a node is.
+  const CLASS_DEFS = `
+  classDef llm fill:#efe6ff,stroke:#7c4dff,color:#1f1147
+  classDef code fill:#e6f4ea,stroke:#2e7d32,color:#0f2e12
+  classDef human fill:#fff1e0,stroke:#ef6c00,color:#3e2200
+  classDef db fill:#e3f0fd,stroke:#1565c0,color:#0b2545
+  classDef stub fill:#f4f4f4,stroke:#9e9e9e,color:#555555,stroke-dasharray:5 5`;
+  const statusEl = document.getElementById("status");
+  let rendered = false;
+  let failures = 0;
+
+  async function render() {
+    if (rendered || !window.mermaid) return;
+    rendered = true;
+    window.mermaid.initialize({
+      startOnLoad: false,
+      theme: "base",
+      fontFamily: '"Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif',
+      flowchart: { wrappingWidth: 400 },
+      themeVariables: {
+        primaryColor: "#ffffff", primaryBorderColor: "#90a4ae", primaryTextColor: "#1d2433",
+        lineColor: "#607d8b", clusterBkg: "#f8f9fb", clusterBorder: "#cfd8dc",
+        edgeLabelBackground: "#ffffff", fontSize: "14px",
+      },
+    });
+    document.querySelectorAll("pre.mermaid").forEach((pre) => { pre.innerHTML += CLASS_DEFS; });
+    try {
+      await window.mermaid.run({ querySelector: "pre.mermaid" });
+      statusEl.remove();
+    } catch (err) {
+      statusEl.textContent = "Mermaid 渲染出错：" + err;
+      statusEl.classList.add("error");
+    }
+  }
+
+  function load(i) {
+    if (rendered || i >= MERMAID_SOURCES.length) return;
+    const s = document.createElement("script");
+    s.src = MERMAID_SOURCES[i];
+    const next = setTimeout(() => load(i + 1), TRY_NEXT_AFTER_MS);
+    s.onload = () => { clearTimeout(next); render(); };
+    s.onerror = () => {
+      clearTimeout(next);
+      if (++failures === MERMAID_SOURCES.length) {
+        statusEl.textContent = "Mermaid 没加载上（离线？）——下面显示的是图的源码。";
+        statusEl.classList.add("error");
+      }
+      load(i + 1);
+    };
+    document.head.appendChild(s);
+  }
+
+  load(0);
+</script>
+</body>
+</html>

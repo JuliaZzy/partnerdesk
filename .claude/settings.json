@@ -1,0 +1,16 @@
+{
+    "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "Bash|PowerShell",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/python.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/safety_check.py\"",
+              "timeout": 10
+            }
+          ]
+        }
+      ]
+    }
+  }

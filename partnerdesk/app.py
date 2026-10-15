@@ -8,6 +8,7 @@ Confirmation is its own endpoint — the model is never on that path.
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Iterator
 from functools import lru_cache
@@ -29,11 +30,31 @@ class NewSession(BaseModel):
     partnership_id: str | None = None
 
 
+class InboundFile(BaseModel):
+    name: str
+    data: str  # data URL (data:<mime>;base64,...) or raw base64
+
+
 class Inbound(BaseModel):
     message: str = ""
     images: list[str] = []       # data URLs — read by the PO extractor
     attachments: list[str] = []  # file names — seen by the router only
+    files: list[InboundFile] = []  # the document bytes, for the contract specialist
     model: str | None = None     # campus call name; default is LLM_MODEL
+
+
+_MAX_FILE_BYTES = 12 * 1024 * 1024
+
+
+def _decode_file(f: InboundFile) -> tuple[str, bytes]:
+    raw = f.data.split(",", 1)[-1] if f.data.startswith("data:") else f.data
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except Exception as err:
+        raise HTTPException(400, f"could not read {f.name}") from err
+    if len(data) > _MAX_FILE_BYTES:
+        raise HTTPException(400, f"{f.name} is larger than 12 MB")
+    return f.name, data
 
 
 class Confirm(BaseModel):
@@ -84,11 +105,12 @@ def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
             llm = llm.with_model(body.model)
         if not d.session(sid):
             raise HTTPException(404, "session not found")
-        if not body.message.strip() and not body.images:
+        if not body.message.strip() and not body.images and not body.files:
             raise HTTPException(400, "message required")
+        documents = [_decode_file(f) for f in body.files]
 
         def gen() -> Iterator[bytes]:
-            for e in service.handle_message(d, llm, sid, body.message, body.images, body.attachments):
+            for e in service.handle_message(d, llm, sid, body.message, body.images, body.attachments, documents):
                 yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n".encode()
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
