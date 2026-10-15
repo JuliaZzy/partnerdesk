@@ -1,11 +1,17 @@
 """Send an email over SMTP. Side-effect tool — only when the user asked to send.
 
-Config (all from env, never shown to the model):
-  SMTP_HOST, SMTP_PORT (default 587), SMTP_USER, SMTP_PASSWORD,
-  SMTP_FROM (defaults to SMTP_USER), SMTP_USE_TLS (default 1).
+Config (env, never shown to the model):
+  SMTP_HOST, SMTP_PORT (587 STARTTLS or 465 SSL), SMTP_USER, SMTP_PASSWORD,
+  SMTP_FROM (defaults to SMTP_USER), SMTP_USE_TLS (default 1; ignored on port 465).
 
-If SMTP_HOST is empty, the tool refuses rather than pretending to send.
-Set EMAIL_DRY_RUN=1 to accept and log without talking to SMTP (tests / local).
+QQ Mail example:
+  SMTP_HOST=smtp.qq.com
+  SMTP_PORT=465
+  SMTP_USER=you@qq.com
+  SMTP_PASSWORD=<QQ mailbox authorization code, not the login password>
+  SMTP_FROM=you@qq.com
+
+If SMTP_HOST is empty, the tool refuses. Set EMAIL_DRY_RUN=1 to accept without sending.
 """
 
 from __future__ import annotations
@@ -67,12 +73,6 @@ def send(
     subject: str,
     body: str,
     cc: str = "",
-    host: str | None = None,
-    port: int | None = None,
-    user: str | None = None,
-    password: str | None = None,
-    from_addr: str | None = None,
-    use_tls: bool | None = None,
     dry_run: bool | None = None,
 ) -> dict[str, Any]:
     to_a, subj, text = _addr(to), str(subject or "").strip(), str(body or "").strip()
@@ -87,26 +87,28 @@ def send(
         raise ValueError("body required")
 
     dry = env("EMAIL_DRY_RUN") in ("1", "true", "yes") if dry_run is None else dry_run
-    smtp_host = (host if host is not None else env("SMTP_HOST")).strip()
+    smtp_user = env("SMTP_USER")
+    mail_from = (env("SMTP_FROM") or smtp_user).strip()
     if dry:
         return {
             "sent": False,
             "dry_run": True,
+            "provider": "smtp",
             "to": to_a,
             "cc": cc_a or None,
             "subject": subj,
-            "from": (from_addr or env("SMTP_FROM") or env("SMTP_USER") or "dry-run@localhost"),
+            "from": mail_from or "dry-run@localhost",
         }
+
+    smtp_host = env("SMTP_HOST")
     if not smtp_host:
         raise RuntimeError("SMTP_HOST is not set — configure SMTP or EMAIL_DRY_RUN=1")
-
-    smtp_port = int(port if port is not None else (env("SMTP_PORT") or "587"))
-    smtp_user = (user if user is not None else env("SMTP_USER")).strip()
-    smtp_password = password if password is not None else env("SMTP_PASSWORD")
-    mail_from = (from_addr if from_addr is not None else env("SMTP_FROM") or smtp_user).strip()
-    tls = use_tls if use_tls is not None else env("SMTP_USE_TLS", "1") not in ("0", "false", "no")
     if not mail_from:
         raise RuntimeError("SMTP_FROM or SMTP_USER required")
+
+    smtp_port = int(env("SMTP_PORT") or "587")
+    smtp_password = env("SMTP_PASSWORD")
+    use_tls = env("SMTP_USE_TLS", "1") not in ("0", "false", "no")
 
     msg = EmailMessage()
     msg["From"] = mail_from
@@ -115,20 +117,28 @@ def send(
         msg["Cc"] = cc_a
     msg["Subject"] = subj
     msg.set_content(text)
-
     recipients = [to_a] + ([cc_a] if cc_a else [])
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as client:
-        client.ehlo()
-        if tls:
-            client.starttls()
+
+    # 465 = implicit SSL (common for QQ); 587 = STARTTLS.
+    if smtp_port == 465:
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=20) as client:
+            if smtp_user:
+                client.login(smtp_user, smtp_password)
+            client.send_message(msg, from_addr=mail_from, to_addrs=recipients)
+    else:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as client:
             client.ehlo()
-        if smtp_user:
-            client.login(smtp_user, smtp_password)
-        client.send_message(msg, from_addr=mail_from, to_addrs=recipients)
+            if use_tls:
+                client.starttls()
+                client.ehlo()
+            if smtp_user:
+                client.login(smtp_user, smtp_password)
+            client.send_message(msg, from_addr=mail_from, to_addrs=recipients)
 
     return {
         "sent": True,
         "dry_run": False,
+        "provider": "smtp",
         "to": to_a,
         "cc": cc_a or None,
         "subject": subj,

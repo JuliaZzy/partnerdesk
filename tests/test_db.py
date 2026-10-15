@@ -7,7 +7,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 
 from partnerdesk.config import FIXTURES_DIR
-from partnerdesk.contracts import contract_discount_for_next_order
+from partnerdesk.contract import contract_discount_for_next_order
 from partnerdesk.db.orm import Base
 
 

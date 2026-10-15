@@ -77,7 +77,7 @@ def test_orders_include_the_submitted_day(db):
 
 def test_contract_detail_shows_the_next_discount_and_derived_rules(db, partnership: Partnership):
     fixture = json.loads((FIXTURES_DIR / "contracts.json").read_text(encoding="utf-8"))[0]
-    from partnerdesk.contracts import ingest_extraction
+    from partnerdesk.contract import ingest_extraction
 
     rec = ingest_extraction(
         db, fixture["extraction"], brand_id=partnership.brand_id, partnership_id=partnership.id, title="Aurora × Nordic 2026",

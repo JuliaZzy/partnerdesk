@@ -18,7 +18,7 @@ def _load(path: Path) -> list[dict[str, Any]]:
 
 
 def seed_from_fixtures(db: Database, fixtures_dir: Path) -> None:
-    from ..contracts import ingest_extraction  # lazy: contracts imports this package
+    from ..contract.ingest import ingest_extraction  # lazy: ingest imports this package
 
     brands = {b["id"]: b for b in _load(fixtures_dir / "brands.json")}
     distributors = {d["id"]: d for d in _load(fixtures_dir / "distributors.json")}

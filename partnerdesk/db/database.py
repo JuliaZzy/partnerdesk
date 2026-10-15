@@ -168,7 +168,7 @@ class Database:
             return AgentSettings(**{k: v for k, v in d.items() if v is not None and k != "brand_id"})
 
     def seed_from_fixtures(self, fixtures_dir: Path = FIXTURES_DIR) -> None:
-        from .seed import seed_from_fixtures  # lazy: seed imports contracts, which imports this package
+        from .seed import seed_from_fixtures  # lazy: seed imports contract.ingest, which imports this package
 
         seed_from_fixtures(self, fixtures_dir)
 

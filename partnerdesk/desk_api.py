@@ -18,15 +18,16 @@ from pydantic import BaseModel
 
 from . import knowledge, reports, service
 from .config import chat_models, default_model_id
-from .contract_read import read_and_ingest
-from .contracts import contract_discount_for_next_order, ingest_extraction
+from .contract import contract_discount_for_next_order, ingest_extraction, read_and_ingest
 from .db import Database
 from .knowledge import SEED_TYPES
 from .llm import LLM, OpenAICompatLLM
 from .memory import KIND_LABELS, memory_block, remember
 from .models import PRODUCT_STATUS_VALUES, Partnership
 
-_MAX_FILE_BYTES = 12 * 1024 * 1024
+_MAX_FILE_BYTES = 20 * 1024 * 1024
+
+# pending
 _MATRIX = {"units", "revenue", "stock"}
 _FRAGMENT_STATUS = {"draft", "approved", "archived"}
 

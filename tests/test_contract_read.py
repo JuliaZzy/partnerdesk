@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from partnerdesk import service
-from partnerdesk.contract_read import read_agreement, read_and_ingest, sanitize_extraction
+from partnerdesk.contract import read_agreement, read_and_ingest, sanitize_extraction
 from partnerdesk.llm import FakeLLM
 
 AGREEMENT = (
@@ -50,10 +50,6 @@ EXTRACTION = {
 }
 
 
-def _route():
-    return {"topics": [{"topic": "contract_terms", "confidence": 0.91}], "requests": [], "summary": "agreement"}
-
-
 def test_sanitize_keeps_only_quotes_that_are_in_the_document():
     pages = [(1, AGREEMENT)]
     out = sanitize_extraction(EXTRACTION, pages, set())
@@ -80,16 +76,24 @@ def test_a_file_with_no_terms_is_not_written(db):
     assert db.active_contract("ps-1") is None
 
 
+def _plan(name: str) -> dict:
+    return {"tasks": [{"id": "1", "kind": "agent", "name": name, "input": {}, "depends_on": []}]}
+
+
 def test_chat_files_the_attached_agreement_and_ignores_a_bare_name(db):
     sid = service.new_session(db, "ps-1")["id"]
-    named = FakeLLM(json_replies=[_route()])
+    named = FakeLLM(
+        json_replies=[{"tags": ["contract"], "title": "agreement"}, _plan("contract")],
+        text_reply="Please attach the agreement file.",
+    )
     ev = list(service.handle_message(db, named, sid, "see the attached agreement", attachments=["agreement.pdf"]))
-    assert ev[0]["specialist"] == "contract" and "Attach the agreement" in ev[1]["text"]
+    assert ev[1]["tasks"][0]["name"] == "contract"
+    assert "attach" in "".join(e.get("text", "") for e in ev).lower()
     assert db.active_contract("ps-1") is None
-    assert len([c for c in named.calls if c["kind"] == "json"]) == 1
+    assert not any((c.get("schema") or {}).get("name") == "contract_extraction" for c in named.calls)
 
-    llm = FakeLLM(json_replies=[_route(), dict(EXTRACTION)])
+    llm = FakeLLM(json_replies=[_plan("contract"), dict(EXTRACTION)])
     ev = list(service.handle_message(db, llm, sid, "please file this", documents=[("agreement.txt", AGREEMENT.encode())]))
-    assert ev[0]["specialist"] == "contract" and ev[-1]["contract_id"]
-    assert "Filed agreement.txt" in ev[1]["text"]
+    assert ev[-1]["contract_id"]
+    assert "Filed agreement.txt" in "".join(e.get("text", "") for e in ev)
     assert db.active_contract("ps-1").term_start_date == "2026-01-01"

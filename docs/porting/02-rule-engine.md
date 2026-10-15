@@ -71,4 +71,4 @@ RuleEvaluationResult
 | `commercial_discount_rules` 最高档折扣 | `discount_approval{threshold_pct = 最高档 + ε}` approval_required | 超过合同给的折扣要人批 |
 | `commercial_discount_rules` 整个阶梯 | 存进 `contract_discount_rules/tiers`，下单时按合同年内柜次选档**预填**折扣 | 合同谈好的折扣是给定项，不是让经销商申请 |
 
-映射在 `partnerdesk/contracts.py`，每条规则 `name` 带 "from contract" 标记、`contract_id` 指回合同，可追溯。
+映射在 `partnerdesk/contract/ingest.py`，每条规则 `name` 带 "from contract" 标记、`contract_id` 指回合同，可追溯。

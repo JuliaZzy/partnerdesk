@@ -27,8 +27,7 @@ partnerdesk/
   orchestrator.py  聊天入口：先 native tools=，再意图分类 → po / contract / report / 弃权
   po/              slots → 抽取（LLM）→ 校验（代码）→ 草稿 + hash → 回复（LLM）→ 确认门 → 提交
   claims.py        提交之后：收货 / 付款 / 破损，落到订单状态上
-  contract_read.py 协议文件（PDF / Word / 文本）→ 模型填条款表 → contracts.ingest
-  contracts.py     合同抽取结果 → 全量入库（原始 JSON + 规范化条款）→ PO 规则、产品 MOQ、下一单的合同折扣
+  contract/        协议：read 填条款表 → ingest 入库并派生 PO 规则 → turn 聊天归档
   documents.py     PDF / Word / 文本 → 逐页文本；PDF 页渲染成 JPEG，给视觉模型看
   reports.py       销售报表：整洁表格 → 事实（代码读格子，模型不碰数字）→ 草稿 → 人确认 → 同期重发即取代
   knowledge.py     品牌知识库：品牌资料 → 两遍蒸馏（扫描类型 → 抽片段）→ 草稿片段 → 人批准后才进 prompt
@@ -61,7 +60,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
   改表：改 `db/orm.py` → `.venv\Scripts\alembic revision --autogenerate -m "..."` → 检查生成文件。
 - **合同**：`contracts` 一行一份协议；`contract_extractions` 原样保存每次抽取的 JSON（审计 / 重跑）；
   折扣阶梯、MOQ、价格表、区域、原文证据各有自己的表；由合同派生的规则通过 `commercial_rules.contract_id` 追溯。
-  下单时 `contracts.contract_discount_for_next_order` 按合同年内已下单数选档，预填到订单里
+  下单时 `contract.contract_discount_for_next_order` 按合同年内已下单数选档，预填到订单里
   （假设：一张已提交的 PO = 一柜）。经销商在对话里说的折扣覆盖预填；超过合同最高档走审批规则。
 - **品牌知识库**：`brand_documents` 一行一份上传的资料，`brand_document_pages` 逐页文本（片段引用的依据），
   `brand_document_sections` 是第一遍扫描找到的内容类型，`knowledge_fragments` 是可复用的知识片段
@@ -93,8 +92,8 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 | 产品目录：Open Food Facts 真实食品 + 推导的批发字段，多品牌；产品页库内搜索分页 | **新增** — `scripts/`、`web/` 产品页；全目录进 prompt 待改成检索（RAG） |
 | 意图 / 聊天入口 | 已改 — `session_open`（首次 title+tags）+ `PLAN`（tools/MCP/agents）；无代码侧 route |
 | 提交后的收货 / 付款 / 索赔 | 已移植 — `claims.py` |
-| 合同全量入库 + 条款 → PO 规则 + 合同折扣预填 | **新增** — `contracts.py`、`db/` |
-| 合同页：上传协议（PDF / Word / 文本）或导入抽取 JSON；条款 / 派生规则 / 证据 | 已接入 — `contract_read.py`、`web/` 合同页；模型填条款，代码派生规则 |
+| 合同全量入库 + 条款 → PO 规则 + 合同折扣预填 | **新增** — `contract/`、`db/` |
+| 合同页：上传协议（PDF / Word / 文本）或导入抽取 JSON；条款 / 派生规则 / 证据 | 已接入 — `contract/`、`web/` 合同页；模型填条款，代码派生规则 |
 | 报表：整洁表格 → 事实 → 确认 → 取代；报表页 + 图表 + 下单 vs 售出 | **新增** — `reports.py`、`web/` 报表页；多块乱表（06）待做 |
 | 品牌知识库：上传 → 两遍蒸馏（文本；视觉模型同时看页面图）→ 批准 | 已接入 — `knowledge.py`、`web/` 知识页；扫描页需要选 Qwen |
 | 长期记忆：记忆页 + 每轮 PO 对话读入 | **新增** — `memory.py`、`web/` 记忆页 |
@@ -137,7 +136,7 @@ dev catalog    导入产品目录（data/off/ 的快照；--dry-run 只统计不
 dev test       全部测试，不联网（模型；数据库是真的）
 dev lint       ruff
 dev eval       评估（需要真实模型）
-dev py -m partnerdesk.contracts extraction.json --brand brand-aurora --partnership ps-aurora-nordic --apply
+dev py -m partnerdesk.contract extraction.json --brand brand-aurora --partnership ps-aurora-nordic --apply
 ```
 
 （VS Code 打开这个目录会自动选中 `.venv`，新终端里直接 `python` 就是它。）
@@ -146,5 +145,5 @@ dev py -m partnerdesk.contracts extraction.json --brand brand-aurora --partnersh
 
 | extra | 内容 |
 |---|---|
-| `contract` | 读 PDF / Word：PyMuPDF、python-docx。合同和品牌资料都要用 |
+| `contract` | Word 用 python-docx；PDF 页图用 PyMuPDF。PDF 正文走 GLM-OCR（`GLM_OCR_API_KEY`） |
 | `dev` | pytest、httpx、ruff |

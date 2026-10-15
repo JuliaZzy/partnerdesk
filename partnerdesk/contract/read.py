@@ -1,7 +1,7 @@
-"""Read an agreement file into the extraction `contracts.ingest_extraction` already stores.
+"""Read an agreement file into the extraction `ingest.ingest_extraction` already stores.
 
 The model fills the fixed form (dates, tiers, MOQs, territories, verbatim quotes). It does
-not derive PO rules and it does not decide that a term applies — `contracts.derive_rules`
+not derive PO rules and it does not decide that a term applies — `ingest.derive_rules`
 does that from the normalized rows. A quote that is not actually in the text is dropped.
 Scanned pages (no text layer) go along as images, the same way an order photo does.
 """
@@ -14,11 +14,11 @@ import json
 import re
 from typing import Any
 
-from .contracts import ingest_extraction, record_from_extraction
-from .db import Database
-from .documents import SUPPORTED_EXTS, load_pages, render_pdf_images
-from .llm import LLM
-from .prompts.contract import EXTRACT
+from ..db import Database
+from ..documents import SUPPORTED_EXTS, load_pages, render_pdf_images
+from ..llm import LLM
+from ..prompts.contract import EXTRACT
+from .ingest import ingest_extraction, record_from_extraction
 
 MAX_BATCH_CHARS = 24_000
 MAX_SCAN_IMAGES = 6
@@ -296,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     from pathlib import Path
 
-    from .llm import OpenAICompatLLM
+    from ..llm import OpenAICompatLLM
 
     data = Path(args.file).read_bytes()
     llm = OpenAICompatLLM()

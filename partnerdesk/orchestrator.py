@@ -14,9 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .claims import handle_post_submit
-from .contract_read import read_and_ingest, summarize
+from .contract import run_contract_turn
 from .db import Database
-from .documents import SUPPORTED_EXTS
 from .llm import LLM, AssistantTurn
 from .po.turn import load_bundle, run_po_turn
 from .prompts.orchestrator import ANSWER, PLAN, REACT
@@ -219,36 +218,6 @@ def _answer_directly(db: Database, llm: LLM, session: dict[str, Any], text: str)
     }
 
 
-def _file_agreement(db: Database, llm: LLM, session: dict[str, Any], documents: list[tuple[str, bytes]], text: str) -> Iterator[dict[str, Any]]:
-    readable = [(n, b) for n, b in documents if n.lower().endswith(SUPPORTED_EXTS)]
-    if not readable:
-        yield from _answer_directly(
-            db, llm, session,
-            text or "I want to file a distribution agreement but have not attached the file yet.",
-        )
-        return
-    name, data = readable[0]
-    try:
-        rec = read_and_ingest(
-            db, llm, brand_id=_brand_id(db, session["partnership_id"]), partnership_id=session["partnership_id"],
-            file_name=name, data=data,
-        )
-    except Exception as err:
-        yield from _one_shot(db, session, f"I couldn't file that agreement: {err}")
-        return
-    reply = summarize(rec)
-    if len(readable) > 1:
-        reply += f" I filed {name} and left the other {len(readable) - 1} file(s) unread."
-    yield from _one_shot(db, session, reply, {"contract_id": rec.contract.id})
-
-
-def _brand_id(db: Database, partnership_id: str) -> str:
-    p = db.partnership(partnership_id)
-    if not p:
-        raise KeyError("partnership not found")
-    return p.brand_id
-
-
 def _agent_names(tasks: list[PlanTask]) -> set[str]:
     return {t.name for t in tasks if t.kind == "agent"}
 
@@ -308,7 +277,7 @@ def handle_message(
 
     if "contract" in agents:
         db.update_session(session_id, specialist="contract")
-        yield from _file_agreement(db, llm, session, documents, text)
+        yield from run_contract_turn(db, llm, session, documents, text)
         return
 
     if "report" in agents:

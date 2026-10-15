@@ -1,7 +1,7 @@
 """Contract → database → purchase orders.
 
-`contract_read` reads an agreement into an extraction (discount tiers, MOQ, price list,
-territory, evidence). This module keeps ALL of it: the raw extraction is stored verbatim,
+`read` fills an extraction (discount tiers, MOQ, price list, territory, evidence). This
+module keeps ALL of it: the raw extraction is stored verbatim,
 the terms are normalized into their own tables, and from those terms it derives what the
 PO gate needs:
 
@@ -16,7 +16,7 @@ Every derived rule carries `contract_id`, so an approver can follow it back to t
 Ambiguous fields are reported in `skipped`, never guessed.
 
 CLI (manual ops entry point):
-  python -m partnerdesk.contracts extraction.json --brand <brand_id> --partnership <id> [--apply]
+  python -m partnerdesk.contract extraction.json --brand <brand_id> --partnership <id> [--apply]
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from .db import Database
-from .models import (
+from ..db import Database
+from ..models import (
     CommercialRule,
     Contract,
     ContractDiscountRule,

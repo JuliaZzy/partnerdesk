@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..catalog import Catalog
-from ..contracts import contract_discount_for_next_order
+from ..contract import contract_discount_for_next_order
 from ..db import Database
 from ..llm import LLM
 from ..memory import recall, with_memory
