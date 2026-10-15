@@ -1,7 +1,0 @@
-[server]
-headless = true
-showEmailPrompt = false
-port = 8501
-
-[browser]
-gatherUsageStats = false

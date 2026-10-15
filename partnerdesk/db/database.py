@@ -382,7 +382,10 @@ class Database:
     def create_session(self, id: str, partnership_id: str) -> dict[str, Any]:
         ts = utcnow()
         with self.tx() as s:
-            s.add(orm.ChatSession(id=id, partnership_id=partnership_id, slots={}, history=[], created_at=ts, updated_at=ts))
+            s.add(orm.ChatSession(
+                id=id, partnership_id=partnership_id, title=None, tags=[], slots={}, history=[],
+                created_at=ts, updated_at=ts,
+            ))
         return self.session(id)  # type: ignore[return-value]
 
     def session(self, id: str) -> dict[str, Any] | None:

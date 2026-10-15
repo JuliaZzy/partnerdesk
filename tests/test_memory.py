@@ -11,8 +11,12 @@ from partnerdesk.memory import memory_block, recall, remember, with_memory
 from partnerdesk.po.turn import load_bundle
 
 
-def cls(topics):
-    return {"topics": [{"topic": k, "confidence": c} for k, c in topics], "requests": [], "summary": ""}
+def open_meta():
+    return {"tags": ["po"], "title": "10 cases fish oil"}
+
+
+def plan_po():
+    return {"tasks": [{"id": "1", "kind": "agent", "name": "po", "input": {}, "depends_on": []}]}
 
 
 def test_remember_and_recall(db):
@@ -50,11 +54,16 @@ def test_bundle_carries_memories_in_the_operating_context(db):
 
 def test_po_turn_prompts_see_the_memory(db):
     remember(db, "ps-1", "They order in full layers only", kind="preference")
-    llm = FakeLLM(json_replies=[cls([("purchase_order", 0.9)]), {"line_items": [{"reference": "fish oil", "cases": 10, "sku": None}], "discount_kind": "none", "user_confirmed": False, "reply_language": "English"}])
+    llm = FakeLLM(json_replies=[
+        open_meta(), plan_po(),
+        {"line_items": [{"reference": "fish oil", "cases": 10, "sku": None}], "discount_kind": "none", "user_confirmed": False, "reply_language": "English"},
+    ])
     sid = service.new_session(db, "ps-1")["id"]
     events = list(service.handle_message(db, llm, sid, "10 cases of fish oil, no discount"))
     assert events[-1]["type"] == "done" and events[-1]["stage"] == "confirm"
-    extract_call, reply_call = llm.calls[1], llm.calls[2]
+    json_calls = [c for c in llm.calls if c["kind"] == "json"]
+    text_calls = [c for c in llm.calls if c["kind"] == "text"]
+    # open_session, plan, extract — memory is PO context only.
+    extract_call, reply_call = json_calls[2], text_calls[0]
     assert "They order in full layers only" in extract_call["system"] and "They order in full layers only" in reply_call["system"]
-    # The router never sees it — memory is PO context, not a routing signal.
-    assert "full layers" not in llm.calls[0]["system"]
+    assert "full layers" not in json_calls[0]["system"] and "full layers" not in json_calls[1]["system"]

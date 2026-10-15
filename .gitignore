@@ -22,3 +22,7 @@ CV/
 
 # bulk datasets (Open Food Facts snapshot) — refetched, never committed
 /data/
+
+# web desk
+web/node_modules/
+web/dist/

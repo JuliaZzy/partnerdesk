@@ -314,6 +314,8 @@ class ChatSession(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     partnership_id: Mapped[str] = mapped_column(ForeignKey("partnerships.id"), index=True)
+    title: Mapped[str | None] = mapped_column(String(120))
+    tags: Mapped[list[str]] = mapped_column(JSONCol, default=list)
     specialist: Mapped[str | None] = mapped_column(String(32))
     stage: Mapped[str] = mapped_column(String(16), default="gathering")
     slots: Mapped[dict[str, Any]] = mapped_column(JSONCol, default=dict)

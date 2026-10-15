@@ -15,6 +15,7 @@ from typing import Any
 from .db import Database
 from .llm import LLM
 from .models import PurchaseOrder
+from .prompts.po import CLAIM, PAYMENT, RECEIPT
 
 MIN_CONFIDENCE = 0.7
 
@@ -95,23 +96,9 @@ def match_claim_lines(items: list[dict[str, Any]], raw_lines: list[dict[str, Any
 
 # --- classifiers ---------------------------------------------------------------
 
-RECEIPT_PROMPT = """You read one chat message from a distributor to a brand. The brand has shipped a purchase order. The distributor does not click buttons in an app — this message is how they accept the goods.
-
-Pick exactly one verdict:
-- received_ok: they say the goods arrived AND inspection is fine (received, all good, no issues, quality OK). They do NOT claim they have already paid a remaining balance.
-- received_ok_paid: same as received_ok, AND they claim a payment is already sent (wire, remittance, "paid the balance", "transferred the rest").
-- issues: they report damage, shortage, wrong items, quality problems, or want to file a claim — even if the rest of the shipment arrived.
-- none: anything else — not about this shipment, only asking when it will arrive, ONLY saying they paid (no receipt/OK), promising to inspect later, or too unclear.
-
-confidence is your own 0-to-1 estimate. Respond with ONLY a raw JSON object: {"verdict": "none"|"received_ok"|"received_ok_paid"|"issues", "confidence": number}"""
-
-PAYMENT_PROMPT = """You read one chat message from a distributor to a brand about a purchase order. Decide whether the distributor is stating that they have ALREADY SENT a payment for it (wire done, remittance attached, "paid", "transferred"). Promising to pay later, asking for the invoice, or asking how much is due is NOT a payment claim.
-
-Respond with ONLY a raw JSON object: {"paid": boolean, "confidence": number}"""
-
-CLAIM_PROMPT = """You read one chat message from a distributor reporting a problem with goods received on a purchase order. Extract every affected line as the distributor described it. Do not invent quantities; leave out lines with no quantity.
-
-Respond with ONLY a raw JSON object: {"lines": [{"reference": string, "qty": number, "issue_type": "damaged"|"shortage"|"wrong_item"|"quality", "description": string}], "resolution": "credit"|"replacement"|"refund"|null, "confidence": number}"""
+RECEIPT_PROMPT = RECEIPT
+PAYMENT_PROMPT = PAYMENT
+CLAIM_PROMPT = CLAIM
 
 
 def _conf(raw: dict[str, Any]) -> float:

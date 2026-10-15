@@ -25,6 +25,8 @@ from .db import Database
 from .documents import load_pages
 from .llm import LLM
 from .models import BrandDocument, DocumentSection, KnowledgeFragment, Product
+from .prompts import fill
+from .prompts.knowledge import EXTRACT, SCAN
 
 PAGES_PER_BATCH = 12
 PAGES_PER_BATCH_WITH_IMAGES = 4  # a page image is most of the request; keep the batch small
@@ -46,39 +48,12 @@ SEED_TYPES: dict[str, str] = {
 }
 _SEED_LIST = "\n".join(f"- {slug}: {desc}" for slug, desc in SEED_TYPES.items())
 
-SCAN_SYSTEM = f"""You are cataloguing a brand's own sales, product and marketing material so a distributor-facing assistant can later answer questions about the brand and its products accurately.
 
-Read every page you are given and report what kinds of content are actually present. Do not extract details yet — this pass only identifies what is here.
+def _scan_system() -> str:
+    return fill(SCAN, seed_list=_SEED_LIST)
 
-These are the content types we already know about:
-{_SEED_LIST}
 
-Rules:
-- Only report a type if the material genuinely contains it. Do not pad the list.
-- If a body of content does not fit any type above, invent a new snake_case slug for it and describe it. This matters more than reusing an existing type: a forced fit loses the content later.
-- Record the 1-based page numbers where each type appears.
-- Ignore pure decoration, agendas, title slides, and legal boilerplate.
-
-Respond with ONLY a raw JSON object (no markdown fence):
-{{"summary": string, "types": [{{"type": string, "label": string, "description": string, "page_numbers": [number]}}]}}"""
-
-EXTRACT_SYSTEM = """You are distilling a brand's sales, product and marketing material into reusable knowledge fragments. A few fragments at a time will later be handed to an assistant talking to the brand's distributors, so it has accurate, specific things to say about the brand and its products.
-
-Write one fragment per distinct, self-contained piece of knowledge.
-
-Rules:
-- Each fragment must stand alone. A later reader sees only that fragment, never the source page, so never write "as shown above" or "this product" without naming it.
-- Be concrete and keep real specifics: figures, percentages, certifications, ingredient or material names, market names, dates, award names. Vague marketing prose is worthless here — "high quality formulation" tells a reader nothing; "22% niacinamide, third-party tested for purity" does.
-- Never invent, extrapolate, or round facts that are not in the material. If a claim is qualified or dated in the source, keep the qualifier.
-- Use the type slugs identified in the scan. If a fragment genuinely fits none of them, use a new snake_case slug rather than forcing it into a close-enough one.
-- Set product_name only for type 'product', copying the product name verbatim as written in the material.
-- Record the 1-based source pages for every fragment so a human can verify it.
-- Split a page covering several products into one fragment per product. Merge a single product spread across several pages into one fragment.
-- Skip decoration, agendas, title slides, table-of-contents pages, and legal boilerplate.
-- Write content in the language of the material.
-
-Respond with ONLY a raw JSON object (no markdown fence):
-{"fragments": [{"type": string, "title": string, "content": string, "product_name": string|null, "source_pages": [number], "tags": [string]}]}"""
+EXTRACT_SYSTEM = EXTRACT
 
 SCAN_SCHEMA: dict[str, Any] = {
     "name": "brand_document_scan",
@@ -190,7 +165,7 @@ def _model_content(file_name: str, pages: list[tuple[int, str]], images: dict[in
 def scan_pages(
     llm: LLM, file_name: str, pages: list[tuple[int, str]], images: dict[int, bytes] | None = None,
 ) -> tuple[str, list[DocumentSection]]:
-    raw = llm.complete_json(system=SCAN_SYSTEM, messages=[{"role": "user", "content": _model_content(file_name, pages, images)}], schema=SCAN_SCHEMA, temperature=0.1, max_tokens=1200)
+    raw = llm.complete_json(system=_scan_system(), messages=[{"role": "user", "content": _model_content(file_name, pages, images)}], schema=SCAN_SCHEMA, temperature=0.1, max_tokens=1200)
     sections = [
         DocumentSection(type=_slug(t.get("type")), label=str(t.get("label") or t.get("type") or "").strip() or _slug(t.get("type")),
                         description=str(t.get("description") or "").strip() or None, page_numbers=_ints(t.get("page_numbers")))

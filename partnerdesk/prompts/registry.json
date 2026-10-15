@@ -1,0 +1,58 @@
+{
+  "agents": [
+    {
+      "id": "orchestrator",
+      "kind": "planner",
+      "module": "partnerdesk.prompts.orchestrator",
+      "may_call": ["po", "contract", "report", "brand", "data", "socialcrawl"],
+      "parallel": true
+    },
+    {
+      "id": "session_open",
+      "kind": "meta",
+      "module": "partnerdesk.prompts.session_open",
+      "notes": "First turn only: session title + tags. Not scheduled by PLAN."
+    },
+    {
+      "id": "po",
+      "kind": "chat",
+      "module": "partnerdesk.prompts.po"
+    },
+    {
+      "id": "contract",
+      "kind": "chat",
+      "module": "partnerdesk.prompts.contract"
+    },
+    {
+      "id": "report",
+      "kind": "chat",
+      "module": "partnerdesk.prompts.report",
+      "notes": "Has REFLECT placeholder; will grow into deep research."
+    },
+    {
+      "id": "brand",
+      "kind": "tool",
+      "module": "partnerdesk.prompts.rag",
+      "notes": "Retrieve approved knowledge fragments. Distillation lives in prompts.knowledge. Has REFLECT placeholder."
+    },
+    {
+      "id": "data",
+      "kind": "tool",
+      "module": "partnerdesk.prompts.data_query",
+      "notes": "Has REFLECT placeholder (query plan / result completeness)."
+    },
+    {
+      "id": "knowledge",
+      "kind": "tool",
+      "module": "partnerdesk.prompts.knowledge",
+      "notes": "Distillation pipeline only; brand is the retrieval agent."
+    },
+    {
+      "id": "socialcrawl",
+      "kind": "mcp",
+      "mcp": "socialcrawl",
+      "module": "partnerdesk.prompts.socialcrawl",
+      "notes": "Multi-platform SocialCrawl MCP (not LinkedIn-only). Usually reached via tools=, not PLAN."
+    }
+  ]
+}

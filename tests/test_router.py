@@ -1,49 +1,47 @@
+"""Session open + plan — replaces the old classify→route gate."""
+
 from __future__ import annotations
 
 from partnerdesk.llm import FakeLLM
-from partnerdesk.router import TOPIC_KEYS, classify, route
+from partnerdesk.orchestrator import TOPIC_KEYS, make_plan, open_session
 
 
-def cls(topics, **extra):
-    return {"topics": [{"topic": k, "confidence": c} for k, c in topics], "requests": [], "summary": "", **extra}
+def test_open_session_returns_title_and_tags():
+    llm = FakeLLM(json_replies=[{"tags": ["po"], "title": "20 cases fish oil"}])
+    opened = open_session(llm, message="20 cases of fish oil", attachments=[])
+    assert opened.tags == ["po"] and opened.title == "20 cases fish oil"
+    assert set(llm.calls[0]["schema"]["schema"]["properties"]["tags"]["items"]["enum"]) == set(TOPIC_KEYS)
 
 
-def test_active_po_keeps_every_message_without_calling_the_model():
-    llm = FakeLLM()
-    r = route(llm, message="use the hydrating toner", attachments=[], history=[], active_specialist="po", stage="gathering")
-    assert r.specialist == "po" and llm.calls == []
+def test_open_session_drops_unknown_tags_and_defaults_title():
+    llm = FakeLLM(json_replies=[{"tags": ["po", "made_up", "data"], "title": "  "}])
+    opened = open_session(llm, message="", attachments=["deal.pdf"])
+    assert opened.tags == ["po", "data"] and opened.title == "deal.pdf"
 
 
-def test_purchase_order_routes_to_po():
-    llm = FakeLLM(json_replies=[cls([("purchase_order", 0.9)])])
-    assert route(llm, message="20 cases of fish oil", attachments=[], history=[], active_specialist=None, stage=None).specialist == "po"
+def test_open_session_does_not_send_history():
+    llm = FakeLLM(json_replies=[{"tags": [], "title": "hello"}])
+    open_session(llm, message="hi", attachments=[])
+    user = llm.calls[0]["messages"][0]["content"]
+    assert "RECENT CONVERSATION" not in user
+    assert "=== MESSAGE ===" in user
 
 
-def test_po_confidence_floor_demotes_a_shaky_order():
-    llm = FakeLLM(json_replies=[cls([("purchase_order", 0.4)])])
-    assert route(llm, message="maybe order?", attachments=[], history=[], active_specialist=None, stage=None, min_po_confidence=0.5).specialist is None
+def test_make_plan_parses_agents_only():
+    llm = FakeLLM(json_replies=[{
+        "tasks": [
+            {"id": "1", "kind": "agent", "name": "po", "input": {}, "depends_on": []},
+            {"id": "2", "kind": "tool", "name": "web_search", "input": {"query": "x"}, "depends_on": []},
+            {"id": "3", "kind": "agent", "name": "data", "input": {}, "depends_on": []},
+        ],
+    }])
+    tasks = make_plan(
+        llm, message="order fish oil", attachments=[], history=[], stage=None, tags=["po"],
+    )
+    # tools/MCP are not planned — they go through tools= function calling.
+    assert [(t.kind, t.name) for t in tasks] == [("agent", "po"), ("agent", "data")]
 
 
-def test_empty_topics_abstain():
-    llm = FakeLLM(json_replies=[cls([])])
-    r = route(llm, message="hello!", attachments=[], history=[], active_specialist=None, stage=None)
-    assert r.specialist is None
-
-
-def test_contract_and_report_need_a_document():
-    llm = FakeLLM(json_replies=[cls([("contract_terms", 0.9)]), cls([("contract_terms", 0.9)]), cls([("sales_reporting", 0.8)])])
-    assert route(llm, message="about our agreement", attachments=[], history=[], active_specialist=None, stage=None).specialist is None
-    assert route(llm, message="here is the agreement", attachments=["agreement.pdf"], history=[], active_specialist=None, stage=None).specialist == "contract"
-    assert route(llm, message="monthly report attached", attachments=["sept.xlsx"], history=[], active_specialist=None, stage=None).specialist == "report"
-
-
-def test_multi_label_prefers_the_higher_confidence_specialist():
-    llm = FakeLLM(json_replies=[cls([("sales_reporting", 0.6), ("purchase_order", 0.9)])])
-    assert route(llm, message="report attached, also reorder 20 cases", attachments=["sept.xlsx"], history=[], active_specialist=None, stage=None).specialist == "po"
-
-
-def test_classify_drops_unknown_keys_and_clamps_confidence():
-    llm = FakeLLM(json_replies=[cls([("purchase_order", 1.7), ("made_up", 0.9)], requests=["Send price list", 3])])
-    c = classify(llm, message="x", attachments=[], history=[])
-    assert c.topics == [("purchase_order", 1.0)] and c.requests == ["Send price list"]
-    assert set(llm.calls[0]["schema"]["schema"]["properties"]["topics"]["items"]["properties"]["topic"]["enum"]) == set(TOPIC_KEYS)
+def test_empty_plan_is_allowed():
+    llm = FakeLLM(json_replies=[{"tasks": []}])
+    assert make_plan(llm, message="thanks", attachments=[], history=[], stage=None, tags=[]) == []

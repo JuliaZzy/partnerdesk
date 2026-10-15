@@ -1,0 +1,140 @@
+"""Tools return a typed envelope. Translate uses FakeLLM; search does not hit Bocha."""
+
+from __future__ import annotations
+
+import json
+
+from partnerdesk.llm import AssistantTurn, FakeLLM, ToolCall
+from partnerdesk.orchestrator import run_tool_calls
+from partnerdesk.tools import SCHEMAS, TOOLS
+from partnerdesk.tools.exchange_rate import quote
+from partnerdesk.tools.exchange_rate import run as fx_run
+from partnerdesk.tools.lang_translate import run as translate_run
+from partnerdesk.tools.send_email import run as email_run
+from partnerdesk.tools.send_email import send as email_send
+from partnerdesk.tools.web_search import run as search_run
+from partnerdesk.tools.web_search import search
+
+
+def test_translate_returns_only_the_model_text():
+    llm = FakeLLM(json_replies=[{"translation": "ten cases of fish oil"}])
+    out = translate_run({"text": "10 箱鱼油", "target_language": "English"}, llm=llm)
+    assert out == {"ok": True, "data": {"translation": "ten cases of fish oil"}, "error": None}
+    assert "10 箱鱼油" in llm.calls[0]["messages"][0]["content"]
+
+
+def test_translate_rejects_an_empty_request():
+    assert translate_run({"text": "  "}, llm=FakeLLM())["ok"] is False
+    assert translate_run({"target_language": "English", "source": "message"}, llm=FakeLLM())["error"] == "text required when source is message"
+
+
+def test_translate_uses_the_last_assistant_turn_when_asked():
+    llm = FakeLLM(json_replies=[{"translation": "Order placed."}])
+    ctx = {"history": [
+        {"role": "user", "content": "10 cases"},
+        {"role": "assistant", "content": "已下单。"},
+    ]}
+    out = translate_run({"target_language": "English", "source": "last_assistant"}, llm=llm, context=ctx)
+    assert out["ok"] and "已下单。" in llm.calls[0]["messages"][0]["content"]
+
+
+def test_translate_uses_the_session_report_and_fails_if_missing():
+    llm = FakeLLM(json_replies=[{"translation": "Sales were flat."}])
+    out = translate_run(
+        {"target_language": "English", "source": "report"},
+        llm=llm,
+        context={"last_report": "本月销量持平。"},
+    )
+    assert out["ok"] and "本月销量持平。" in llm.calls[0]["messages"][0]["content"]
+    assert translate_run({"target_language": "English", "source": "report"}, llm=FakeLLM(), context={})["ok"] is False
+
+
+def test_web_search_parses_bocha_pages(monkeypatch):
+    payload = {
+        "data": {"webPages": {"value": [
+            {"name": "Nordic Beauty", "snippet": "Distributor in Stockholm", "url": "https://example.com"},
+        ]}},
+    }
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode()
+
+    monkeypatch.setenv("BOCHA_API_KEY", "test-key")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    rows = search("Nordic Beauty")
+    assert rows == [{"title": "Nordic Beauty", "snippet": "Distributor in Stockholm", "url": "https://example.com"}]
+    assert search_run({"query": "Nordic Beauty"})["ok"] is True
+
+
+def test_orchestrator_runs_translate_then_answers():
+    llm = FakeLLM(
+        tool_replies=[
+            AssistantTurn(tool_calls=[ToolCall(
+                id="call_1", name="translate",
+                arguments={"text": "10 箱鱼油", "target_language": "English"},
+            )]),
+            AssistantTurn(content="ten cases of fish oil"),
+        ],
+        json_replies=[{"translation": "ten cases of fish oil"}],
+    )
+    reply = run_tool_calls(llm, text="把这句话译成英语：10 箱鱼油", history=[], include_mcp=False)
+    assert reply == "ten cases of fish oil"
+    kinds = [c["kind"] for c in llm.calls]
+    assert kinds == ["complete", "json", "complete"]
+    assert llm.calls[0]["tools"] == SCHEMAS
+
+
+def test_orchestrator_skips_tools_when_the_model_calls_none():
+    assert run_tool_calls(FakeLLM(), text="10 cases of fish oil", history=[], include_mcp=False) is None
+
+
+def test_tools_registry_names():
+    names = [s["function"]["name"] for s in SCHEMAS]
+    assert names == list(TOOLS)
+    assert set(TOOLS) == {"web_search", "translate", "exchange_rate", "send_email"}
+
+
+def test_exchange_rate_normalizes_rmb_and_quotes(monkeypatch):
+    payload = {"amount": 1.0, "base": "CNY", "date": "2026-10-14", "rates": {"EUR": 0.13}}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode()
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    data = quote("rmb", "eur")
+    assert data["base"] == "CNY" and data["target"] == "EUR" and data["converted"] == 0.13
+    assert fx_run({"base_currency": "CNY", "target_currency": "EUR"})["ok"] is True
+    assert fx_run({"base_currency": "", "target_currency": "EUR"})["ok"] is False
+
+
+def test_send_email_dry_run_and_validation(monkeypatch):
+    monkeypatch.setenv("EMAIL_DRY_RUN", "1")
+    out = email_run({
+        "to": "buyer@example.com",
+        "subject": "Quote",
+        "body": "10 cases fish oil",
+    })
+    assert out["ok"] and out["data"]["dry_run"] is True and out["data"]["to"] == "buyer@example.com"
+    assert email_run({"to": "not-an-email", "subject": "x", "body": "y"})["ok"] is False
+    assert email_run({"to": "a@b.com", "subject": "", "body": "y"})["ok"] is False
+    monkeypatch.delenv("EMAIL_DRY_RUN", raising=False)
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    try:
+        email_send(to="a@b.com", subject="x", body="y", dry_run=False)
+        raise AssertionError("expected SMTP_HOST error")
+    except RuntimeError as err:
+        assert "SMTP_HOST" in str(err)

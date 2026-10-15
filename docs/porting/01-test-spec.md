@@ -61,8 +61,7 @@ payment（`pickPrepaymentClaimTarget`）：
 claim line match：
 - PO 上只有一个产品就够；SKU 匹配大小写不敏感；产品名包含引用；数量必填；多行不猜；数量取整、描述 trim；垃圾 type/qty 丢弃
 
-## 意图分类 — `tests/test_router.py`（第一版 `topicClassifier.test.ts` 是 wrapper 测试，这里改为路由测试）
-- 活跃 PO 会话里的任何消息 → PO（不经 router）
-- `purchase_order` 置信度低于 floor → 不路由到 PO
-- 空 topics → abstain
-- 多标签同时命中 → 按优先级分发（PO 先）
+## 会话开场 + 计划 — `tests/test_router.py`（实现在 `orchestrator.py` / `prompts/session_open.py`）
+- 首次发言：`open_session` 写入 title + tags（po/contract/report/brand/data），不带历史
+- 每轮：`make_plan`；空 plan 合法（直接散文回答）
+- 未知 tag 丢弃；空 title 用附件名兜底

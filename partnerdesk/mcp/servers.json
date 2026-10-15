@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "socialcrawl": {
+      "transport": "http",
+      "url": "https://mcp.socialcrawl.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SOCIALCRAWL_API_KEY}"
+      },
+      "notes": "SocialCrawl hosted MCP (Streamable HTTP). Many social/commerce platforms (LinkedIn, TikTok, Instagram, X, …) via socialcrawl_request — not LinkedIn-only."
+    }
+  }
+}

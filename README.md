@@ -16,13 +16,15 @@
 2. **确认是一个动作，不是一个推断。** 提交需要按钮或 hash 绑定的链接。模型的"用户好像同意了"在小模型上实测是错的
    （"thanks" → 已确认），所以永远不采信。
 3. **副作用幂等。** 提交以 confirm token 为键，token 在建单**之前**烧掉——双击、重试只产生一张订单。
-4. **最小充分 agency。** 一个 router、几个有界的 specialist、确定性校验——不是 swarm。
+4. **最小充分 agency。** 一个 orchestrator、几个有界的 specialist、确定性校验——不是 swarm。
 
 ## 目录结构
 
 ```
 partnerdesk/
-  router.py        意图分类 → po / contract / report / 弃权
+  prompts/         每个 agent 一个 py（po.py、contract.py…），常量 + registry.json；填槽用 prompts.fill
+  mcp/             SocialCrawl MCP（多平台社交/电商数据）：servers.json + runtime → 并入 tools=
+  orchestrator.py  聊天入口：先 native tools=，再意图分类 → po / contract / report / 弃权
   po/              slots → 抽取（LLM）→ 校验（代码）→ 草稿 + hash → 回复（LLM）→ 确认门 → 提交
   claims.py        提交之后：收货 / 付款 / 破损，落到订单状态上
   contract_read.py 协议文件（PDF / Word / 文本）→ 模型填条款表 → contracts.ingest
@@ -32,16 +34,16 @@ partnerdesk/
   knowledge.py     品牌知识库：品牌资料 → 两遍蒸馏（扫描类型 → 抽片段）→ 草稿片段 → 人批准后才进 prompt
   memory.py        长期记忆：跨会话记住的偏好 / 指令 / 事实，每轮 PO 对话作为上下文读入（只能提醒，不能放宽规则）
   catalog.py       产品索引 + 给 prompt 的目录清单
-  llm.py           唯一的模型接缝：complete_json / stream_text；测试用 FakeLLM
+  llm.py           唯一的模型接缝：complete_json / stream_text / complete（tools=）；测试用 FakeLLM
   db/              数据层：orm.py（表结构）、database.py（唯一入口）、migrations/（Alembic）、seed.py（fixtures 入库）
-  service.py       业务操作，不依赖传输层：handle_message（事件流）/ confirm / orders
+  service.py       业务操作，不依赖传输层：handle_message（转发 orchestrator）/ confirm / orders
   app.py           service.py 的 HTTP 适配层（FastAPI）：SSE 聊天、确认、订单
-  ui.py            Streamlit 入口 + 聊天页：底部 desk() 把聊天和 ui_pages/ 的页面挂到同一个导航上，纯 Python
-  ui_pages/        其余页面：products / orders / contracts / reports / knowledge / memory；common.py 是共用的后端、合作关系、侧栏导航
+  desk_api.py      桌面其余页面的 HTTP：产品目录、合同、报表、品牌知识、记忆
+web/               桌面（Vite + React + TypeScript）：聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆，只调上面的 HTTP
 fixtures/          演示用的品牌、经销商、合作关系、规则、设置、一份合同抽取——每次启动时 upsert 进数据库
 scripts/           fetch_off_products.py 拉 Open Food Facts 快照到 data/off/；build_catalog.py（dev catalog）把它导入产品目录
 data/              大数据集（Open Food Facts 快照），gitignore，不进仓库
-tests/             不联网的测试（FakeLLM；页面用 AppTest 无头驱动）
+tests/             不联网的测试（FakeLLM；页面行为由 HTTP 测试和 web/ 的 Vitest 覆盖）
 evals/             模型层回归，需要真实模型
 docs/porting/      从第一版带过来了什么、为什么（01–06）
 ```
@@ -87,15 +89,15 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 | 草稿 + 摘要 + hash | 已移植 — `po/draft.py` |
 | 流式回复 | 已移植 — `po/reply.py` |
 | 一轮对话 + 确认门 + 提交 | 已移植 — `po/turn.py`、`po/submit.py`、`service.py` |
-| 多页桌面：聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆 | **新增** — `ui.py`（入口 + 聊天）、`ui_pages/`；其他程序走 `app.py` 的 HTTP API |
-| 产品目录：Open Food Facts 真实食品 + 推导的批发字段，多品牌；产品页库内搜索分页 | **新增** — `scripts/`、`ui_pages/products.py`；全目录进 prompt 待改成检索（RAG） |
-| 意图 router | 已移植 — `router.py` |
+| 多页桌面：聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆 | **新增** — `web/`（Vite + React），对接 `app.py` / `desk_api.py` |
+| 产品目录：Open Food Facts 真实食品 + 推导的批发字段，多品牌；产品页库内搜索分页 | **新增** — `scripts/`、`web/` 产品页；全目录进 prompt 待改成检索（RAG） |
+| 意图 / 聊天入口 | 已改 — `session_open`（首次 title+tags）+ `PLAN`（tools/MCP/agents）；无代码侧 route |
 | 提交后的收货 / 付款 / 索赔 | 已移植 — `claims.py` |
 | 合同全量入库 + 条款 → PO 规则 + 合同折扣预填 | **新增** — `contracts.py`、`db/` |
-| 合同页：上传协议（PDF / Word / 文本）或导入抽取 JSON；条款 / 派生规则 / 证据 | 已接入 — `contract_read.py`、`ui_pages/contracts.py`；模型填条款，代码派生规则 |
-| 报表：整洁表格 → 事实 → 确认 → 取代；报表页 + 图表 + 下单 vs 售出 | **新增** — `reports.py`、`ui_pages/reports.py`；多块乱表（06）待做 |
-| 品牌知识库：上传 → 两遍蒸馏（文本；视觉模型同时看页面图）→ 批准 | 已接入 — `knowledge.py`、`ui_pages/knowledge.py`；扫描页需要选 Qwen |
-| 长期记忆：记忆页 + 每轮 PO 对话读入 | **新增** — `memory.py`、`ui_pages/memory.py` |
+| 合同页：上传协议（PDF / Word / 文本）或导入抽取 JSON；条款 / 派生规则 / 证据 | 已接入 — `contract_read.py`、`web/` 合同页；模型填条款，代码派生规则 |
+| 报表：整洁表格 → 事实 → 确认 → 取代；报表页 + 图表 + 下单 vs 售出 | **新增** — `reports.py`、`web/` 报表页；多块乱表（06）待做 |
+| 品牌知识库：上传 → 两遍蒸馏（文本；视觉模型同时看页面图）→ 批准 | 已接入 — `knowledge.py`、`web/` 知识页；扫描页需要选 Qwen |
+| 长期记忆：记忆页 + 每轮 PO 对话读入 | **新增** — `memory.py`、`web/` 记忆页 |
 | 聊天里的合同 specialist | 已接入 — 附上协议文件即抽取并入库；只有文件名、没有文件内容时会要求重传 |
 | 聊天里的报表 specialist | 占位 — 设计和 prompt 在 `docs/porting/06-report-core.md` |
 | 聊天里引用知识库 / 合同 / 报表数据 | 待做 — 数据已在库里并按产品关联，prompt 侧还没接 |
@@ -128,8 +130,8 @@ dev catalog
 之后不需要 activate，用 `dev.bat`：
 
 ```
-dev            桌面（聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆）   http://localhost:8501
-dev api        HTTP API          http://127.0.0.1:8000/docs（可选）
+dev            桌面（聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆）   http://localhost:5173
+dev api        HTTP API          http://127.0.0.1:8000/docs（`dev` 会一并拉起）
 dev db         建库，首次运行需要
 dev catalog    导入产品目录（data/off/ 的快照；--dry-run 只统计不写库）
 dev test       全部测试，不联网（模型；数据库是真的）

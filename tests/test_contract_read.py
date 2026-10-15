@@ -85,7 +85,8 @@ def test_chat_files_the_attached_agreement_and_ignores_a_bare_name(db):
     named = FakeLLM(json_replies=[_route()])
     ev = list(service.handle_message(db, named, sid, "see the attached agreement", attachments=["agreement.pdf"]))
     assert ev[0]["specialist"] == "contract" and "Attach the agreement" in ev[1]["text"]
-    assert db.active_contract("ps-1") is None and len(named.calls) == 1
+    assert db.active_contract("ps-1") is None
+    assert len([c for c in named.calls if c["kind"] == "json"]) == 1
 
     llm = FakeLLM(json_replies=[_route(), dict(EXTRACTION)])
     ev = list(service.handle_message(db, llm, sid, "please file this", documents=[("agreement.txt", AGREEMENT.encode())]))

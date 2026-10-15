@@ -1,9 +1,8 @@
 """The one seam between the agent and a model.
 
-Two operations are all the PO agent needs: a structured JSON completion (extract, resolve,
-classify) and a streamed text completion (the reply). Everything else — prompts, merging,
-validation — lives in the modules that call this, so a test can swap in `FakeLLM` and the
-app can point at OpenAI, Ollama or GLM by changing three env vars.
+Three operations: structured JSON (extract, classify), streamed text (PO reply), and a
+plain chat completion that may return native `tool_calls` (the orchestrator loop).
+Everything else — prompts, merging, validation — lives in the modules that call this.
 """
 
 from __future__ import annotations
@@ -19,6 +18,34 @@ from .config import LLMSettings, llm_settings, model_timeout, resolve_model_id
 Message = dict[str, Any]
 
 _FENCE = re.compile(r"^```(?:json)?\s*([\s\S]*?)\s*```$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AssistantTurn:
+    """One `choices[0].message` — either prose, or one or more native function calls."""
+
+    content: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+    def as_message(self) -> Message:
+        msg: Message = {"role": "assistant", "content": self.content}
+        if self.tool_calls:
+            msg["tool_calls"] = [
+                {
+                    "id": c.id,
+                    "type": "function",
+                    "function": {"name": c.name, "arguments": json.dumps(c.arguments, ensure_ascii=False)},
+                }
+                for c in self.tool_calls
+            ]
+        return msg
 
 
 def parse_json_loose(text: str) -> Any:
@@ -47,6 +74,16 @@ class LLM(Protocol):
         temperature: float = 0.7,
         max_tokens: int = 300,
     ) -> Iterator[str]: ...
+
+    def complete(
+        self,
+        *,
+        system: str,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 900,
+    ) -> AssistantTurn: ...
 
 
 class OpenAICompatLLM:
@@ -124,6 +161,35 @@ class OpenAICompatLLM:
             if text:
                 yield text
 
+    def complete(self, *, system, messages, tools=None, temperature=0.0, max_tokens=900):
+        kwargs: dict[str, Any] = {
+            "model": self.settings.model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "system", "content": system}, *messages],
+            "timeout": self.settings.timeout,
+            **self._glm_extra(),
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        resp = self._client.chat.completions.create(**kwargs)
+        msg = resp.choices[0].message
+        calls: list[ToolCall] = []
+        for tc in msg.tool_calls or []:
+            raw = tc.function.arguments
+            parsed: Any = {}
+            if isinstance(raw, dict):
+                parsed = raw
+            elif isinstance(raw, str) and raw.strip():
+                try:
+                    parsed = parse_json_loose(raw)
+                except json.JSONDecodeError:
+                    parsed = {}
+            args = parsed if isinstance(parsed, dict) else {}
+            calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
+        return AssistantTurn(content=msg.content, tool_calls=calls)
+
 
 @dataclass
 class FakeLLM:
@@ -131,6 +197,7 @@ class FakeLLM:
     word by word. Every call is recorded so a test can assert on the prompt it received."""
 
     json_replies: list[dict[str, Any]] = field(default_factory=list)
+    tool_replies: list[AssistantTurn] = field(default_factory=list)
     text_reply: str = "Got it."
     calls: list[dict[str, Any]] = field(default_factory=list)
     fail_json: bool = False
@@ -147,3 +214,9 @@ class FakeLLM:
         self.calls.append({"kind": "text", "system": system, "messages": messages})
         for i, word in enumerate(self.text_reply.split(" ")):
             yield (" " if i else "") + word
+
+    def complete(self, *, system, messages, tools=None, temperature=0.0, max_tokens=900):
+        self.calls.append({"kind": "complete", "system": system, "messages": messages, "tools": tools})
+        if self.tool_replies:
+            return self.tool_replies.pop(0)
+        return AssistantTurn()

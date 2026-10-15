@@ -7,18 +7,18 @@
 
 ## 命令
 
-不要直接调 `streamlit` / `uvicorn` / `pytest`，统一走 `dev.bat`（它用 `.venv` 里的 python，不需要 activate）：
+不要直接调 `uvicorn` / `pytest`，统一走 `dev.bat`（它用 `.venv` 里的 python，不需要 activate）。桌面是 `web/` 里的 Vite 应用，`dev` 会在 8000 没人听的时候拉起 API，再起前端：
 
 ```
-dev            桌面 UI（Streamlit）   http://localhost:8501
+dev            桌面 UI（Vite + React） http://localhost:5173
 dev api        HTTP API（FastAPI）    http://127.0.0.1:8000/docs
 dev db         建库（读 PARTNERDESK_DB_URL），首次运行需要
 dev catalog    把 data/off/ 的 Open Food Facts 快照导入产品目录（几十万行，不走 fixtures；快照用 scripts/fetch_off_products.py 拉）
-dev test       全部测试，不联网
+dev test       全部测试，不联网（Python）。前端单测在 web/ 里：npm test
 dev lint       ruff
 dev eval       评估，需要真实模型
 dev py ...     用 venv 的 python 跑任意命令
-dev kill       结束占用 8501 的进程
+dev kill       结束占用 5173 和 8000 的进程
 ```
 
 环境是 Windows + PowerShell。`dev.bat` 之外需要直接调解释器时用 `.venv\Scripts\python.exe`。
@@ -47,8 +47,8 @@ dev kill       结束占用 8501 的进程
 
 - **代码里的注释和 docstring 用英文**，README 和面向用户的文档用中文。跟着周围代码的密度走——
   这个库的注释解释的是"为什么"，不是"这行在干什么"。
-- **测试不调模型。** 模型调用一律用 `FakeLLM`（`llm.py` 是唯一的模型接缝），页面用 Streamlit 的 `AppTest` 无头驱动。
-  数据库不是假的：测试连真的本地 Postgres。
+- **测试不调模型。** 模型调用一律用 `FakeLLM`（`llm.py` 是唯一的模型接缝）。桌面页面的数据行为用
+  `tests/test_desk_api.py` 打 HTTP；展示用的纯函数在 `web/` 里用 Vitest。数据库不是假的：测试连真的本地 Postgres。
 - ruff：`line-length = 110`，规则集见 `pyproject.toml`。提交前 `dev lint`。
 
 ## 坑
@@ -58,8 +58,7 @@ dev kill       结束占用 8501 的进程
 - **时间戳是 `timestamptz`，写入的值一律是 UTC-aware 的 `datetime`**（`database.utcnow`），不要再写 ISO 字符串。
   但**纯日期**（合同期限、报表期间）仍然是 `YYYY-MM-DD` 文本，这是有意的——它们是日历标签，背后没有具体时刻。
   改这两类字段前先确认自己在改哪一类。
-- **Streamlit UI 计划被替换掉**（方向是 Vite + React + TypeScript + Vitest，对接 `app.py` 已有的 HTTP 端点）。
-  `ui.py` 和 `ui_pages/` 属于待拆除的部分——修 bug 可以，不要在上面做大的新投入。
-  领域逻辑不受影响：`service.py` 以下完全不认识任何 UI 框架。
+- **桌面是 `web/`（Vite + React + TypeScript + Vitest）**，只通过 `app.py` / `desk_api.py` 的 HTTP 跟后端说话。
+  领域逻辑不受影响：`service.py` 以下完全不认识任何 UI 框架。不要把页面逻辑写回 Python。
 - `app.py` 里的 pydantic 请求模型**必须定义在模块层**。因为有 `from __future__ import annotations`，
   定义在 `create_app` 内部的类会被 FastAPI 静默当成 query parameter（代码里有注释说明）。

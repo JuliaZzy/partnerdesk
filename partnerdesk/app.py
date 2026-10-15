@@ -1,9 +1,11 @@
-"""HTTP surface over service.py: sessions, a chat endpoint streamed as SSE, confirm, orders.
+"""HTTP surface over service.py: sessions, a chat endpoint streamed as SSE, confirm, orders,
+plus the desk pages (catalog, contracts, reports, knowledge, memory) in desk_api.py.
 
-    python -m partnerdesk.app            # http://127.0.0.1:8000  (API only — the page is ui.py)
+    python -m partnerdesk.app            # http://127.0.0.1:8000
 
-The PO specialist streams its reply token by token; the others answer in one piece.
-Confirmation is its own endpoint — the model is never on that path.
+The page is the Vite app in web/ (dev proxies /api here). The PO specialist streams its
+reply token by token; the others answer in one piece. Confirmation is its own endpoint —
+the model is never on that path.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from pydantic import BaseModel
 
 from . import service
 from .db import Database
+from .desk_api import mount_desk
 from .llm import LLM, OpenAICompatLLM
 
 
@@ -38,7 +41,7 @@ class InboundFile(BaseModel):
 class Inbound(BaseModel):
     message: str = ""
     images: list[str] = []       # data URLs — read by the PO extractor
-    attachments: list[str] = []  # file names — seen by the router only
+    attachments: list[str] = []  # file names — seen by the orchestrator only
     files: list[InboundFile] = []  # the document bytes, for the contract specialist
     model: str | None = None     # campus call name; default is LLM_MODEL
 
@@ -78,7 +81,7 @@ def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
 
     @app.get("/")
     def index() -> dict[str, str]:
-        return {"service": "partnerdesk", "ui": "streamlit run partnerdesk/ui.py", "docs": "/docs"}
+        return {"service": "partnerdesk", "ui": "http://localhost:5173", "docs": "/docs"}
 
     @app.get("/api/partnerships")
     def partnerships() -> list[dict[str, Any]]:
@@ -126,6 +129,7 @@ def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
     def orders(partnership_id: str | None = None) -> list[dict[str, Any]]:
         return service.orders(get_db(), partnership_id)
 
+    mount_desk(app, get_db, get_llm)
     return app
 
 
