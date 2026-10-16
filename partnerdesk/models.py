@@ -247,6 +247,22 @@ class ContractEvidence(BaseModel):
     char_start: int | None = None
 
 
+class ContractChunk(BaseModel):
+    """One node from `split_chunks`, stored for reference and UI outline."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    chunk_id: str
+    parent_chunk_id: str | None = None
+    number: str = ""
+    title: str = ""
+    body: str = ""
+    path: str = ""
+    page_start: int
+    page_end: int
+    sibling_order: int = 0
+
+
 class ContractTerms(BaseModel):
     discount_rules: list[ContractDiscountRule] = Field(default_factory=list)
     moqs: list[ContractMoq] = Field(default_factory=list)
@@ -290,6 +306,7 @@ class ContractRecord(BaseModel):
     terms: ContractTerms = Field(default_factory=ContractTerms)
     derived_rules: list[CommercialRule] = Field(default_factory=list)
     product_moq_units: dict[str, int] = Field(default_factory=dict)  # sku → units
+    chunks: list[ContractChunk] = Field(default_factory=list)
 
 
 # --- brand knowledge base ----------------------------------------------------------

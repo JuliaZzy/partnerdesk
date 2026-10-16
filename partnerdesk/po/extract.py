@@ -70,13 +70,24 @@ EXTRACT_SCHEMA: dict[str, Any] = {
 }
 
 
-def build_extract_prompt(manifest: str, current: PoSlots, has_images: bool, operating_context: str | None) -> str:
+def build_extract_prompt(
+    manifest: str, current: PoSlots, has_images: bool, operating_context: str | None, contract_discount: str | None = None,
+) -> str:
+    rate = ""
+    if contract_discount and contract_discount.strip():
+        rate = (
+            "\n=== CONTRACT DISCOUNT (already on this order — code settled it) ===\n"
+            + contract_discount.strip()
+            + "\nLeave discount_kind null unless the customer explicitly names a different discount or says there is none. "
+            "Do not ask them to request or negotiate this rate.\n"
+        )
     return fill(
         EXTRACT,
         image_block=("\n" + IMAGE_RULES) if has_images else "",
         context_block=context_block(operating_context),
         manifest=manifest or "(no catalog products available)",
         slots=json.dumps(current.model_dump(), ensure_ascii=False, indent=2),
+        contract_discount=rate,
     )
 
 
@@ -139,10 +150,11 @@ def extract_turn(
     message: str,
     images: list[str] | None = None,
     operating_context: str | None = None,
+    contract_discount: str | None = None,
 ) -> Extraction:
     """Throws on model/parse failure — the caller degrades (keeps the previous slots)."""
     images = images or []
-    system = build_extract_prompt(manifest, current, bool(images), operating_context)
+    system = build_extract_prompt(manifest, current, bool(images), operating_context, contract_discount)
     text = message[:MAX_MESSAGE_CHARS]
     # Images ride along as extra content parts on the same call — only this turn's
     # images; history stays text so an old photo cannot keep re-billing.

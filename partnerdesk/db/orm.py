@@ -307,6 +307,25 @@ class ContractEvidence(Base):
     char_start: Mapped[int | None] = mapped_column(Integer)
 
 
+class ContractChunk(Base):
+    """Heading tree for one agreement — deterministic from `contract.chunks.split_chunks`."""
+
+    __tablename__ = "contract_chunks"
+    __table_args__ = (UniqueConstraint("contract_id", "chunk_id", name="uq_contract_chunk"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    contract_id: Mapped[str] = mapped_column(ForeignKey("contracts.id", ondelete="CASCADE"), index=True)
+    chunk_id: Mapped[str] = mapped_column(String(16))
+    parent_chunk_id: Mapped[str | None] = mapped_column(String(16))
+    number: Mapped[str] = mapped_column(String(64), default="")
+    title: Mapped[str] = mapped_column(String(200), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    path: Mapped[str] = mapped_column(String(500), default="")
+    page_start: Mapped[int] = mapped_column(Integer)
+    page_end: Mapped[int] = mapped_column(Integer)
+    sibling_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
 # --- conversations ---------------------------------------------------------------
 
 class ChatSession(Base):

@@ -1,7 +1,7 @@
 """Live ping against the campus catalog. Needs LLM_API_KEY and campus net / VPN.
 
-    .venv\\Scripts\\python tests/ping_llm.py
-    .venv\\Scripts\\python tests/ping_llm.py --model qwen
+    ./dev py tests/ping_llm.py
+    ./dev py tests/ping_llm.py --model qwen
 """
 
 from __future__ import annotations

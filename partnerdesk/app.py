@@ -1,7 +1,7 @@
 """HTTP surface over service.py: sessions, a chat endpoint streamed as SSE, confirm, orders,
 plus the desk pages (catalog, contracts, reports, knowledge, memory) in desk_api.py.
 
-    python -m partnerdesk.app            # http://127.0.0.1:8000
+    ./dev api                            # http://127.0.0.1:8000/docs
 
 The page is the Vite app in web/ (dev proxies /api here). The PO specialist streams its
 reply token by token; the others answer in one piece. Confirmation is its own endpoint —
@@ -143,4 +143,4 @@ app = default_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("partnerdesk.app:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("partnerdesk.app:app", host="0.0.0.0", port=8000, reload=False)

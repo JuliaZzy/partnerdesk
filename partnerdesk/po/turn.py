@@ -1,6 +1,6 @@
 """One turn of the PO conversation, and the confirm gate.
 
-    extract (LLM) → merge → contract discount (code) → code-check (code, + LLM resolver fallback) → draft → reply (LLM, streamed)
+    contract discount (code) → extract (LLM) → merge → code-check (code, + LLM resolver fallback) → draft → reply (LLM, streamed)
 
 The reply is streamed as `token` events; the draft table, gaps and ledger arrive in the
 final `done` event — the UI renders them from code, never from the model.
@@ -105,28 +105,28 @@ def run_po_turn(
     current = PoSlots(**session["slots"]) if session.get("slots") else PoSlots()
     history: list[dict[str, str]] = list(session.get("history") or [])
 
-    # 1. Extract this turn into the slot template; merge, never replace.
+    # 1. The contract rate is known as soon as this is an order, before any product is named.
+    #    Pre-filled once (source="contract"); whatever the customer says afterwards overrides it.
+    applied = None
+    if current.discount is None:
+        cd = contract_discount_for_next_order(db, bundle.partnership.id)
+        if cd:
+            current.discount = Discount(
+                kind="percent" if cd.percent > 0 else "none", value=cd.percent if cd.percent > 0 else None,
+                source="contract", note=cd.note,
+            )
+            applied = cd.note
+
+    # 2. Extract this turn into the slot template; merge, never replace.
     try:
         ex = extract_turn(
             llm, manifest=bundle.catalog.manifest(), current=current, history=history, message=message,
-            images=images, operating_context=bundle.settings.operating_context,
+            images=images, operating_context=bundle.settings.operating_context, contract_discount=applied,
         )
         slots, language = merge_slots(current, ex.slots), ex.reply_language
     except Exception as err:
         yield {"type": "warning", "message": f"extraction failed: {err}"}
         slots, language = current, "English"
-
-    # 2. The partnership's contract settles the discount before anyone is asked. Pre-filled
-    #    once (source="contract"); whatever the customer says afterwards overrides it.
-    applied = None
-    if slots.discount is None and slots.line_items:
-        cd = contract_discount_for_next_order(db, bundle.partnership.id)
-        if cd:
-            slots.discount = Discount(
-                kind="percent" if cd.percent > 0 else "none", value=cd.percent if cd.percent > 0 else None,
-                source="contract", note=cd.note,
-            )
-            applied = cd.note
 
     # 3. Deterministic gate.
     check = _check(bundle, slots, llm)

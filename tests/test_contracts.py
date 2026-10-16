@@ -131,6 +131,20 @@ EXTRACT_NO_DISCOUNT_MENTIONED = {
 }
 
 
+def test_contract_rate_is_known_on_the_first_order_turn_before_any_product(db):
+    ingest_extraction(db, EXTRACTION, brand_id="brand-1", partnership_id="ps-1")
+    llm = FakeLLM(json_replies=[{
+        "line_items": [], "discount_kind": None, "user_confirmed": False, "reply_language": "English",
+    }], text_reply="ok")
+    s = db.create_session("s1", "ps-1")
+    done = list(run_po_turn(db, llm, load_bundle(db, "ps-1"), s, "I want to place an order"))[-1]
+    assert done["slots"]["line_items"] == []
+    assert done["slots"]["discount"]["source"] == "contract" and done["slots"]["discount"]["value"] == 5.0
+    extract, reply = llm.calls[0]["system"], llm.calls[-1]["system"]
+    assert "1st container" in extract and "Leave discount_kind null" in extract
+    assert "contract rate" in reply and "1st container" in reply
+
+
 def test_turn_prefills_the_contract_rate_and_reply_is_told(db):
     ingest_extraction(db, EXTRACTION, brand_id="brand-1", partnership_id="ps-1")
     llm = FakeLLM(json_replies=[dict(EXTRACT_NO_DISCOUNT_MENTIONED)], text_reply="ok")

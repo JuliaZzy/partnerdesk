@@ -1,6 +1,6 @@
 """Snapshot the Open Food Facts products the catalog can use into `data/off/products.parquet`.
 
-    dev py scripts/fetch_off_products.py
+    ./dev py scripts/fetch_off_products.py
 
 Kept: an English name, a name in the label's own language (for English labels that is the
 same name), a brand, and some pack-size text. Everything else in the 4.75 M-row export is

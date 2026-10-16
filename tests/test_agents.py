@@ -30,7 +30,7 @@ def test_registry_modules_import_and_have_prompt_strings():
 
 
 def test_fill_leaves_json_braces_and_fills_slots():
-    text = fill(EXTRACT, image_block="", context_block="", manifest="FO-100", slots='{"line_items": []}')
+    text = fill(EXTRACT, image_block="", context_block="", manifest="FO-100", slots='{"line_items": []}', contract_discount="")
     assert "FO-100" in text and "{{manifest}}" not in text
     assert '{"line_items"' in text
 

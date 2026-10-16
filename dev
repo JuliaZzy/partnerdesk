@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# One entry point: every command runs inside Docker Compose. Nothing starts on the host.
+#   ./dev            desk (Vite) + API + Postgres     http://localhost:5173
+#   ./dev api        API + Postgres                   http://127.0.0.1:8000/docs
+#   ./dev kill       stop the stack (keeps the Postgres volume)
+#   ./dev db         start Postgres and wait until it is ready
+#   ./dev catalog    import the Open Food Facts snapshot into the product catalog
+#   ./dev test       pytest (Python). Frontend: ./dev test-web
+#   ./dev lint       ruff
+#   ./dev eval       evals/run_po_extract.py (needs a real model)
+#   ./dev py ...     python inside the api container
+#   ./dev build      rebuild images
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+export PATH="/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:${PATH:-}"
+
+compose() {
+  docker compose "$@"
+}
+
+need_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker is not installed (or not on PATH). Install Docker Desktop, then retry." >&2
+    exit 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker is not running. Start Docker Desktop, then retry." >&2
+    exit 1
+  fi
+}
+
+need_env() {
+  if [[ ! -f "$ROOT/.env" ]]; then
+    echo "No .env — copy .env.example to .env and fill in the model key." >&2
+    echo "  cp .env.example .env" >&2
+    exit 1
+  fi
+}
+
+cmd="${1:-ui}"
+if (($#)); then shift; fi
+
+need_docker
+
+case "$cmd" in
+  ui|web|up)
+    need_env
+    compose up "$@"
+    ;;
+  api)
+    need_env
+    compose up postgres api "$@"
+    ;;
+  kill|stop|down)
+    compose down "$@"
+    ;;
+  build)
+    compose build "$@"
+    ;;
+  db)
+    compose up -d postgres
+    compose exec postgres pg_isready -U partnerdesk -d partnerdesk
+    ;;
+  catalog)
+    compose run --rm api python scripts/build_catalog.py "$@"
+    ;;
+  test)
+    compose run --rm api python -m pytest -q "$@"
+    ;;
+  test-web)
+    compose run --rm --no-deps web npm test "$@"
+    ;;
+  lint)
+    compose run --rm --no-deps api python -m ruff check partnerdesk tests evals scripts
+    ;;
+  eval)
+    need_env
+    compose run --rm api python evals/run_po_extract.py "$@"
+    ;;
+  py)
+    compose run --rm api python "$@"
+    ;;
+  *)
+    echo "Unknown command: $cmd   (use: ui api kill db catalog test test-web lint eval py build)" >&2
+    exit 1
+    ;;
+esac

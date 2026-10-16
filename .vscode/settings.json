@@ -1,9 +1,15 @@
 {
-  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
-  "python.terminal.activateEnvironment": true,
-  "python.testing.pytestEnabled": true,
-  "python.testing.pytestArgs": ["tests"],
-  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "python.terminal.activateEnvironment": false,
+  "python.testing.pytestEnabled": false,
+  "terminal.integrated.env.osx": {
+    "PATH": "${workspaceFolder}:/Applications/Docker.app/Contents/Resources/bin:${env:PATH}"
+  },
+  "terminal.integrated.env.linux": {
+    "PATH": "${workspaceFolder}:${env:PATH}"
+  },
+  "terminal.integrated.env.windows": {
+    "PATH": "${workspaceFolder};${env:PATH}"
+  },
   "terminal.integrated.profiles.windows": {
     "PowerShell": {
       "source": "PowerShell",

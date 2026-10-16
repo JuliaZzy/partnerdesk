@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from partnerdesk.contract.chunks import split_chunks
+from partnerdesk.contract.chunks import flatten_chunk_tree, nest_chunk_rows, split_chunks
 
 AGREEMENT = [
     (1, """本协议由双方于 2026-01-01 签订。
@@ -59,6 +59,14 @@ def test_markdown_heading_marks_are_ignored():
     (node,) = split_chunks(pages)
     assert node["number"] == "第一条" and node["title"] == "区域"
     assert node["page_start"] == 3 and node["page_end"] == 3 and "挪威" in node["body"]
+
+
+def test_flatten_and_nest_round_trip():
+    tree = split_chunks(AGREEMENT)
+    flat = flatten_chunk_tree(tree)
+    back = nest_chunk_rows(flat)
+    assert [n["id"] for n in back] == [n["id"] for n in tree]
+    assert back[1]["children"][0]["number"] == "1.1"
 
 
 def test_english_article_keeps_decimal_children():

@@ -21,6 +21,8 @@
 ## 目录结构
 
 ```
+compose.yaml / Dockerfile / web/Dockerfile   Docker Compose：Postgres + API + Vite
+dev / dev.bat      所有命令的入口（容器里跑，不在宿主机起服务）
 partnerdesk/
   prompts/         每个 agent 一个 py（po.py、contract.py…），常量 + registry.json；填槽用 prompts.fill
   mcp/             SocialCrawl MCP（多平台社交/电商数据）：servers.json + runtime → 并入 tools=
@@ -51,13 +53,13 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 
 所有业务数据都进数据库，按真实的表建模（列、外键、索引），不再有 JSON blob 表：
 
-- **引擎**：SQLAlchemy 2.0 + PostgreSQL，没有第二个引擎。`PARTNERDESK_DB_URL` 是必填的，
-  首次用 `dev db` 建库。不保留 SQLite 回落是刻意的：双引擎意味着每个 schema 决策都要在两边都成立，
+- **引擎**：SQLAlchemy 2.0 + PostgreSQL，没有第二个引擎。连接串由 Docker Compose 注入
+  （`PARTNERDESK_DB_URL`），`postgres:17-alpine` 镜像会建好库本身。不保留 SQLite 回落是刻意的：双引擎意味着每个 schema 决策都要在两边都成立，
   原生类型（`timestamptz`、`jsonb`、数组、枚举）就一直用不上；而静默回落会让配置错误的部署
   在一个空库上正常启动，而不是当场失败。
 - **schema 由 Alembic 版本化**（`partnerdesk/db/migrations`）。`Database()` 构造时自动升到 head，
   测试每个临时库也走同一套 migration；`tests/test_db.py` 会在模型和 migration 不一致时直接失败。
-  改表：改 `db/orm.py` → `.venv\Scripts\alembic revision --autogenerate -m "..."` → 检查生成文件。
+  改表：改 `db/orm.py` → `dev py -m alembic revision --autogenerate -m "..."` → 检查生成文件。
 - **合同**：`contracts` 一行一份协议；`contract_extractions` 原样保存每次抽取的 JSON（审计 / 重跑）；
   折扣阶梯、MOQ、价格表、区域、原文证据各有自己的表；由合同派生的规则通过 `commercial_rules.contract_id` 追溯。
   下单时 `contract.contract_discount_for_next_order` 按合同年内已下单数选档，预填到订单里
@@ -73,7 +75,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
   标签原语言名（`product_name_native`，英文标签就等于英文名）和包装规格的产品。名称、品牌、类目、规格、标签是原数据；
   箱规、箱价、MOQ、托盘、箱重是按真实规格和类目**确定性推导**的（同一条码每次算出一样的数）；
   `product_status`（正品 / 赠品 / 样品 / 停产）里只有 OFF 标了 obsolete 的停产是真的，其余是推导的；
-  `restricted_territories` 留空——原数据没有，不编。量大，所以不走 fixtures：`dev catalog` 用 COPY 一次性替换整张表，
+  `restricted_territories` 留空——原数据没有，不编。量大，所以不走 fixtures：`./dev catalog` 用 COPY 一次性替换整张表，
   产品页的搜索、计数、分页都在数据库里做（名称和 SKU 有 trigram 索引）。目录不依赖合作关系；下单仍然要。
 - **长期记忆**：`memories` 按合作关系存偏好 / 指令 / 事实 / 事件，`is_active` 控制是否读入；
   `po/turn.py::load_bundle` 每轮把 active 记忆追加到品牌 operating context 之后——只是上下文，进不了 code-check。
@@ -104,42 +106,50 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 
 ## 运行
 
-第一次（只做一次）：
+本机只需要 **Docker Desktop**。不要再起 PostgreSQL、Python venv 或 Vite。
+
+第一次：`cp .env.example .env`，填模型 key（默认交大校园 API，需校园网或 VPN；也有 OpenAI / Ollama / GLM）。
+**不要**填 `PARTNERDESK_DB_URL`——Compose 会注入容器内网地址。Ollama 在宿主机上时，写成
+`LLM_BASE_URL=http://host.docker.internal:11434/v1`。
+
+然后：
 
 ```
-python -m venv .venv
-.venv\Scripts\python -m pip install -e ".[contract,dev]"
+./dev
 ```
 
-然后 `copy .env.example .env`，填两样东西：一个模型的 key（默认是交大校园 API，需校园网或 VPN；
-也有 OpenAI / Ollama / GLM），以及本地 PostgreSQL 的连接串（`PARTNERDESK_DB_URL` 和
-`PARTNERDESK_TEST_DB_URL`，后者跑测试要用）。最后建库：
+| | |
+|---|---|
+| 桌面 | http://localhost:5173 |
+| API | http://127.0.0.1:8000/docs |
+| 停掉 | `Ctrl+C`，或另开终端 `./dev kill`（数据卷保留） |
+
+Postgres 只在 Compose 网络里，不往本机暴露 5432。镜像已经 build 过的话，`./dev` 只是起三个容器。
+
+产品目录可选（约半小时拉数据 + 几分钟入库）：
 
 ```
-dev db
+./dev py scripts/fetch_off_products.py
+./dev catalog
 ```
 
-产品目录另外导入（可选，约半小时拉数据 + 几分钟入库）：
+其它命令（Windows 用 `dev.bat`）：
 
 ```
-dev py scriptsetch_off_products.py
-dev catalog
+./dev api        只起 API + Postgres     http://127.0.0.1:8000/docs
+./dev db         只起 Postgres
+./dev catalog    导入产品目录（data/off/ 快照；--dry-run 只统计不写库）
+./dev test       pytest（假模型，真 Postgres）
+./dev test-web   前端 Vitest
+./dev lint       ruff
+./dev eval       评估（需要真模型）
+./dev py ...     容器里的 python
+./dev build      依赖变了才需要（pyproject.toml / web/package.json）
+./dev kill       停掉栈，保留 Postgres 数据卷
 ```
 
-之后不需要 activate，用 `dev.bat`：
-
-```
-dev            桌面（聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆）   http://localhost:5173
-dev api        HTTP API          http://127.0.0.1:8000/docs（`dev` 会一并拉起）
-dev db         建库，首次运行需要
-dev catalog    导入产品目录（data/off/ 的快照；--dry-run 只统计不写库）
-dev test       全部测试，不联网（模型；数据库是真的）
-dev lint       ruff
-dev eval       评估（需要真实模型）
-dev py -m partnerdesk.contract extraction.json --brand brand-aurora --partnership ps-aurora-nordic --apply
-```
-
-（VS Code 打开这个目录会自动选中 `.venv`，新终端里直接 `python` 就是它。）
+基础镜像默认 DaoCloud，pip / npm 默认清华和 npmmirror。能直连 docker.io 时，把
+`POSTGRES_IMAGE` / `PYTHON_IMAGE` / `NODE_IMAGE` 改回官方名即可。
 
 ## 可选依赖
 
@@ -147,3 +157,4 @@ dev py -m partnerdesk.contract extraction.json --brand brand-aurora --partnershi
 |---|---|
 | `contract` | Word 用 python-docx；PDF 页图用 PyMuPDF。PDF 正文走 GLM-OCR（`GLM_OCR_API_KEY`） |
 | `dev` | pytest、httpx、ruff |
+| `catalog` | pyarrow：拉 Open Food Facts 快照、导入产品目录 |

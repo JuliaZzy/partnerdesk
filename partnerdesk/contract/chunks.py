@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 TITLE_MAX = 80
 
@@ -160,3 +161,55 @@ def split_chunks(pages: list[tuple[int, str]]) -> list[dict]:
                 roots.insert(0, preamble)
             preamble.body.append((page, line))
     return _emit(roots, "", [0])
+
+
+def flatten_chunk_tree(roots: list[dict]) -> list[dict[str, Any]]:
+    """Depth-first rows for PostgreSQL — `chunk_id` matches the tree node's `id`."""
+    rows: list[dict[str, Any]] = []
+
+    def walk(nodes: list[dict], parent: str | None) -> None:
+        for order, node in enumerate(nodes):
+            rows.append({
+                "chunk_id": node["id"],
+                "parent_chunk_id": parent,
+                "number": node.get("number") or "",
+                "title": node.get("title") or "",
+                "body": node.get("body") or "",
+                "path": node.get("path") or "",
+                "page_start": int(node["page_start"]),
+                "page_end": int(node["page_end"]),
+                "sibling_order": order,
+            })
+            walk(node.get("children") or [], node["id"])
+
+    walk(roots, None)
+    return rows
+
+
+def nest_chunk_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rebuild the heading tree from flat `contract_chunks` rows."""
+    nodes: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        nodes[row["chunk_id"]] = {
+            "id": row["chunk_id"],
+            "number": row.get("number") or "",
+            "title": row.get("title") or "",
+            "body": row.get("body") or "",
+            "path": row.get("path") or "",
+            "page_start": row["page_start"],
+            "page_end": row["page_end"],
+            "order": row.get("sibling_order", 0),
+            "children": [],
+        }
+    roots: list[dict[str, Any]] = []
+    for row in sorted(rows, key=lambda r: (r.get("parent_chunk_id") or "", r.get("sibling_order", 0))):
+        node = nodes[row["chunk_id"]]
+        parent = row.get("parent_chunk_id")
+        if parent and parent in nodes:
+            nodes[parent]["children"].append(node)
+        else:
+            roots.append(node)
+    for node in nodes.values():
+        node["children"].sort(key=lambda c: c["order"])
+    roots.sort(key=lambda n: n["order"])
+    return roots

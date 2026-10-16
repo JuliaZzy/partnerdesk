@@ -1,9 +1,11 @@
 """Read an agreement file into the extraction `ingest.ingest_extraction` already stores.
 
-The model fills the fixed form (dates, tiers, MOQs, territories, verbatim quotes). It does
-not derive PO rules and it does not decide that a term applies — `ingest.derive_rules`
-does that from the normalized rows. A quote that is not actually in the text is dropped.
-Scanned pages (no text layer) go along as images, the same way an order photo does.
+`split_chunks` builds a heading tree (stored in PostgreSQL on ingest). The model sees the
+whole outline and names the chunks to read; only those bodies are sent for the form.
+Fields still empty are retried against chunks not yet read, up to three passes total.
+A pass that scores its own completeness at 0.9 or higher stops the loop early.
+It does not derive PO rules — `ingest.derive_rules` does that. Quotes not in the document
+are dropped. Scanned pages (no text layer) go along as images, the same way an order photo does.
 """
 
 from __future__ import annotations
@@ -17,11 +19,15 @@ from typing import Any
 from ..db import Database
 from ..documents import SUPPORTED_EXTS, load_pages, render_pdf_images
 from ..llm import LLM
-from ..prompts.contract import EXTRACT
+from ..models import ContractChunk
+from ..prompts.contract import EXTRACT, REFLECT, SELECT
+from .chunks import flatten_chunk_tree, split_chunks
 from .ingest import ingest_extraction, record_from_extraction
 
-MAX_BATCH_CHARS = 24_000
 MAX_SCAN_IMAGES = 6
+MAX_READ_PASSES = 3
+# A pass at or above this score says the empty fields are absent, not hiding in unread chunks.
+CONFIDENCE_STOP = 0.9
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 SCALAR_KEYS = (
@@ -35,6 +41,21 @@ LIST_KEYS = (
 )
 
 EXTRACT_SYSTEM = EXTRACT
+SELECT_SYSTEM = SELECT
+REFLECT_SYSTEM = REFLECT
+# Form slots a later pass may still find in an unread chunk. Confidence and notes are about
+# the pass itself, not a clause the model failed to open.
+_GAP_FIELDS = (*(k for k in SCALAR_KEYS if k not in {"confidence_score", "extraction_notes"}), *LIST_KEYS)
+
+SELECT_SCHEMA: dict[str, Any] = {
+    "name": "contract_chunk_select",
+    "strict": False,
+    "schema": {
+        "type": "object",
+        "properties": {"selected_ids": {"type": "array", "items": {"type": "string"}}},
+        "required": ["selected_ids"],
+    },
+}
 
 _TIER = {
     "type": "object",
@@ -168,45 +189,131 @@ def _has_terms(extraction: dict[str, Any]) -> bool:
     ))
 
 
-def _content(file_name: str, pages: list[tuple[int, str]], images: dict[int, bytes]) -> Any:
-    parts_text = [f"Source file: {file_name}. Pages {pages[0][0]}–{pages[-1][0]}."]
-    used = len(parts_text[0])
-    for n, text in pages:
-        block = f"--- Page {n} ---\n{(text or '(no text on this page — see the attached image)')[:8000]}"
-        if used + len(block) > MAX_BATCH_CHARS:
-            parts_text.append(f"--- Page {n} --- (omitted: batch too long)")
+def _index_chunks(nodes: list[dict]) -> dict[str, dict]:
+    """Every node in the tree, depth-first. Insertion order is the outline order."""
+    index: dict[str, dict] = {}
+
+    def walk(level: list[dict]) -> None:
+        for node in level:
+            index[node["id"]] = node
+            walk(node.get("children") or [])
+
+    walk(nodes)
+    return index
+
+
+def _outline_title(node: dict) -> str:
+    """Heading words the model matches on. A short title is stored on the node; a heading
+    that was a whole sentence lives as the first body line and would otherwise be invisible."""
+    title = (node.get("title") or "").strip()
+    if title:
+        return title
+    first = next((line.strip() for line in (node.get("body") or "").splitlines() if line.strip()), "")
+    if len(first) > 160:
+        return first[:160].rstrip() + "…"
+    return first
+
+
+def _outline(index: dict[str, dict]) -> list[dict[str, Any]]:
+    """Number plus heading text. Later body lines stay out until the model names the id."""
+    return [{
+        "id": node["id"],
+        "number": node.get("number") or "",
+        "title": _outline_title(node),
+        "path": node.get("path") or "",
+        "has_children": bool(node.get("children")),
+    } for node in index.values()]
+
+
+def _latest_confidence(parts: list[dict[str, Any]]) -> float | None:
+    """The newest pass's score. An earlier low score must not hide a later 'this is enough'."""
+    for part in reversed(parts):
+        score = part.get("confidence_score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            return float(score)
+    return None
+
+
+def _missing_fields(extraction: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for key in _GAP_FIELDS:
+        value = extraction.get(key)
+        if value is None or value in ("", [], {}):
+            missing.append(key)
+    return missing
+
+
+def _chosen_chunks(raw: dict[str, Any], allowed: dict[str, dict]) -> list[dict]:
+    picked = raw.get("selected_ids") if isinstance(raw.get("selected_ids"), list) else []
+    chosen: list[dict] = []
+    seen: set[str] = set()
+    for cid in picked:
+        if not isinstance(cid, str) or cid in seen or cid not in allowed:
             continue
-        parts_text.append(block)
-        used += len(block)
-    text = "\n\n".join(parts_text)
-    if not images:
+        seen.add(cid)
+        node = allowed[cid]
+        if (node.get("body") or "").strip():
+            chosen.append(node)
+    return chosen
+
+
+def _select_chunks(llm: LLM, index: dict[str, dict]) -> list[dict]:
+    """One selection over the full outline. A single chunk has nothing to choose."""
+    readable = {cid: node for cid, node in index.items() if (node.get("body") or "").strip()}
+    if len(index) <= 1:
+        return list(readable.values())
+    raw = llm.complete_json(
+        system=SELECT_SYSTEM,
+        messages=[{"role": "user", "content": json.dumps({"outline": _outline(index)}, ensure_ascii=False)}],
+        schema=SELECT_SCHEMA,
+        temperature=0,
+        max_tokens=800,
+    )
+    return _chosen_chunks(raw, readable)
+
+
+def _reflect_chunks(llm: LLM, missing: list[str], unread: dict[str, dict]) -> list[dict]:
+    """Second and third pass: only chunks not yet read, aimed at fields still empty."""
+    raw = llm.complete_json(
+        system=REFLECT_SYSTEM,
+        messages=[{
+            "role": "user",
+            "content": json.dumps(
+                {"missing_fields": missing, "unread_outline": _outline(unread)},
+                ensure_ascii=False,
+            ),
+        }],
+        schema=SELECT_SCHEMA,
+        temperature=0,
+        max_tokens=800,
+    )
+    return _chosen_chunks(raw, unread)
+
+
+def _chunk_extract_content(file_name: str, chunk: dict, *, images: dict[int, bytes]) -> Any:
+    text = (
+        f"Source file: {file_name}\n"
+        f"Section id: {chunk['id']}\n"
+        f"Section path: {chunk.get('path') or 'preamble'}\n"
+        f"Pages {chunk['page_start']}–{chunk['page_end']}.\n\n"
+        f"{chunk.get('body') or ''}"
+    )
+    lo, hi = int(chunk["page_start"]), int(chunk["page_end"])
+    batch_images = {n: jpeg for n, jpeg in images.items() if lo <= n <= hi}
+    if not batch_images:
         return text
     import base64
+
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-    for n, _ in pages:
-        jpeg = images.get(n)
-        if not jpeg:
-            continue
-        url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+    for n in sorted(batch_images):
+        url = "data:image/jpeg;base64," + base64.b64encode(batch_images[n]).decode()
         content.append({"type": "text", "text": f"Image of page {n}."})
         content.append({"type": "image_url", "image_url": {"url": url}})
     return content
 
 
-def _batches(pages: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
-    batches: list[list[tuple[int, str]]] = []
-    cur: list[tuple[int, str]] = []
-    size = 0
-    for page in pages:
-        n = len(page[1]) + 20
-        if cur and size + n > MAX_BATCH_CHARS:
-            batches.append(cur)
-            cur, size = [], 0
-        cur.append(page)
-        size += n
-    if cur:
-        batches.append(cur)
-    return batches or [[]]
+def _chunk_models(tree: list[dict]) -> list[ContractChunk]:
+    return [ContractChunk(**row) for row in flatten_chunk_tree(tree)]
 
 
 def _merge(parts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -224,9 +331,9 @@ def _merge(parts: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def read_agreement(llm: LLM, file_name: str, data: bytes) -> dict[str, Any]:
-    """The extraction dict, sanitized. Raises ValueError when the file cannot be read or
-    contains no terms the code can enforce — nothing is written in that case."""
+def read_agreement(llm: LLM, file_name: str, data: bytes) -> tuple[dict[str, Any], list[dict]]:
+    """Sanitized extraction plus the heading tree. Raises ValueError when the file cannot be
+    read or contains no enforceable terms — nothing is written in that case."""
     if not file_name.lower().endswith(SUPPORTED_EXTS):
         raise ValueError(f"Unsupported agreement: {file_name} (use {', '.join(SUPPORTED_EXTS)})")
     pages = load_pages(file_name, data)
@@ -235,30 +342,53 @@ def read_agreement(llm: LLM, file_name: str, data: bytes) -> dict[str, Any]:
     blank = [n for n, t in pages if not (t or "").strip()]
     images = render_pdf_images(data, blank[:MAX_SCAN_IMAGES]) if file_name.lower().endswith(".pdf") and blank else {}
     image_pages = set(images)
+    tree = split_chunks(pages)
+    index = _index_chunks(tree)
+    unread = {cid: node for cid, node in index.items() if (node.get("body") or "").strip()}
     parts: list[dict[str, Any]] = []
-    for batch in _batches(pages):
-        batch_images = {n: images[n] for n, _ in batch if n in images}
-        raw = llm.complete_json(
-            system=EXTRACT_SYSTEM,
-            messages=[{"role": "user", "content": _content(file_name, batch, batch_images)}],
-            schema=EXTRACT_SCHEMA, temperature=0, max_tokens=2500,
-        )
-        parts.append(sanitize_extraction(raw, pages, image_pages))
+
+    def take(chunks: list[dict]) -> None:
+        for chunk in chunks:
+            unread.pop(chunk["id"], None)
+            raw = llm.complete_json(
+                system=EXTRACT_SYSTEM,
+                messages=[{"role": "user", "content": _chunk_extract_content(file_name, chunk, images=images)}],
+                schema=EXTRACT_SCHEMA,
+                temperature=0,
+                max_tokens=2500,
+            )
+            parts.append(sanitize_extraction(raw, pages, image_pages))
+
+    first = _select_chunks(llm, index)
+    if not first:
+        raise ValueError(f"No agreement sections selected for reading in {file_name!r}.")
+    take(first)
+    for _ in range(MAX_READ_PASSES - 1):
+        extraction = _merge(parts) if len(parts) > 1 else parts[0]
+        missing = _missing_fields(extraction)
+        score = _latest_confidence(parts)
+        if not missing or not unread or (score is not None and score >= CONFIDENCE_STOP):
+            break
+        more = _reflect_chunks(llm, missing, unread)
+        if not more:
+            break
+        take(more)
     extraction = _merge(parts) if len(parts) > 1 else parts[0]
     if not _has_terms(extraction):
         raise ValueError(f"No enforceable terms found in {file_name!r}.")
-    return extraction
+    return extraction, tree
 
 
 def read_and_ingest(
     db: Database, llm: LLM, *, brand_id: str, partnership_id: str, file_name: str, data: bytes, title: str | None = None,
 ) -> Any:
     """Read the file and write the contract, its terms and the derived PO rules."""
-    extraction = read_agreement(llm, file_name, data)
+    extraction, tree = read_agreement(llm, file_name, data)
     model = getattr(getattr(llm, "settings", None), "model", None)
     return ingest_extraction(
         db, extraction, brand_id=brand_id, partnership_id=partnership_id,
         title=title or file_name, file_name=file_name, file_sha256=hashlib.sha256(data).hexdigest(), model=model,
+        chunks=_chunk_models(tree),
     )
 
 
@@ -303,8 +433,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.apply:
         rec = read_and_ingest(Database(), llm, brand_id=args.brand, partnership_id=args.partnership, file_name=Path(args.file).name, data=data, title=args.title)
     else:
-        extraction = read_agreement(llm, Path(args.file).name, data)
-        rec = record_from_extraction(extraction, brand_id=args.brand, partnership_id=args.partnership, title=args.title, file_name=Path(args.file).name)
+        extraction, tree = read_agreement(llm, Path(args.file).name, data)
+        rec = record_from_extraction(
+            extraction, brand_id=args.brand, partnership_id=args.partnership, title=args.title,
+            file_name=Path(args.file).name, chunks=_chunk_models(tree),
+        )
     print(json.dumps({
         "contract_id": rec.contract.id, "written": args.apply, "summary": summarize(rec), "skipped": rec.skipped,
     }, ensure_ascii=False, indent=2))

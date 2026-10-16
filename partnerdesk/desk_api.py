@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from . import knowledge, reports, service
 from .config import chat_models, default_model_id
 from .contract import contract_discount_for_next_order, ingest_extraction, read_and_ingest
+from .contract.chunks import nest_chunk_rows
 from .db import Database
 from .knowledge import SEED_TYPES
 from .llm import LLM, OpenAICompatLLM
@@ -158,11 +159,13 @@ def mount_desk(app: FastAPI, get_db: Callable[[], Database], get_llm: Callable[[
                     "percent": nxt.percent, "note": nxt.note, "container_index": nxt.container_index,
                     "rule_title": nxt.rule_title,
                 }
+        flat = [c.model_dump() for c in store.contract_chunks(cid)]
         return {
             "contract": _dump(found),
             "terms": _dump(store.contract_terms(cid)),
             "rules": [_dump(r) for r in store.derived_rules(cid)],
             "extractions": store.contract_extractions(cid),
+            "outline": nest_chunk_rows(flat) if flat else [],
             "next_discount": discount,
         }
 

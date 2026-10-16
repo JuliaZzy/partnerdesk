@@ -28,6 +28,10 @@ dev = [
   "httpx>=0.27",
   "ruff>=0.5",
 ]
+# Open Food Facts snapshot → product catalog (scripts/fetch_off_products.py, build_catalog.py)
+catalog = [
+  "pyarrow>=17",
+]
 
 [tool.setuptools.packages.find]
 include = ["partnerdesk*"]

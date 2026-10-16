@@ -1,6 +1,6 @@
 """Create the database named in PARTNERDESK_DB_URL, if it is not there yet.
 
-    dev db
+    ./dev db
 
 Alembic owns the schema, but it cannot create the database that holds it. This is the one
 step that has to happen before `Database()` can migrate anything, so it lives here rather

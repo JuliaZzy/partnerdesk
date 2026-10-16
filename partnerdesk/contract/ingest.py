@@ -34,6 +34,7 @@ from ..db import Database
 from ..models import (
     CommercialRule,
     Contract,
+    ContractChunk,
     ContractDiscountRule,
     ContractDiscountTier,
     ContractEvidence,
@@ -189,6 +190,7 @@ def derive_rules(terms: ContractTerms, *, partnership_id: str | None, contract_l
 def record_from_extraction(
     extraction: dict[str, Any], *, brand_id: str, partnership_id: str, contract_id: str | None = None,
     title: str | None = None, file_name: str | None = None, file_sha256: str | None = None, model: str | None = None,
+    chunks: list[ContractChunk] | None = None,
 ) -> ContractRecord:
     """Pure: the full record one ingestion writes. Nothing here touches the database."""
     terms, skipped = terms_from_extraction(extraction)
@@ -207,7 +209,7 @@ def record_from_extraction(
     return ContractRecord(
         contract=contract, extraction_raw=extraction, model=model, confidence_score=_num(extraction.get("confidence_score")),
         extraction_notes=_str(extraction.get("extraction_notes")), skipped=[*skipped, *more_skipped], terms=terms,
-        derived_rules=rules, product_moq_units=moq_units,
+        derived_rules=rules, product_moq_units=moq_units, chunks=list(chunks or ()),
     )
 
 

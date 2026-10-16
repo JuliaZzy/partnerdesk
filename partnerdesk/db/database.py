@@ -28,6 +28,7 @@ from ..models import (
     BrandDocument,
     CommercialRule,
     Contract,
+    ContractChunk,
     ContractDiscountRule,
     ContractDiscountTier,
     ContractEvidence,
@@ -295,10 +296,15 @@ class Database:
                 extraction_notes=rec.extraction_notes, raw=rec.extraction_raw, skipped=list(rec.skipped), extracted_at=ts,
             ))
             # Terms are replaced wholesale by the newest extraction of this contract.
-            for cls in (orm.ContractDiscountRule, orm.ContractMoq, orm.ContractPriceEntry, orm.ContractTerritory, orm.ContractEvidence):
+            for cls in (
+                orm.ContractDiscountRule, orm.ContractMoq, orm.ContractPriceEntry, orm.ContractTerritory,
+                orm.ContractEvidence, orm.ContractChunk,
+            ):
                 for row in s.scalars(select(cls).where(cls.contract_id == c.id)):
                     s.delete(row)
             s.flush()
+            for ch in rec.chunks:
+                s.add(orm.ContractChunk(contract_id=c.id, **ch.model_dump()))
             for i, dr in enumerate(rec.terms.discount_rules):
                 s.add(orm.ContractDiscountRule(
                     contract_id=c.id, position=i, title=dr.title, section_reference=dr.section_reference, applies_per=dr.applies_per,
@@ -372,6 +378,15 @@ class Database:
                 territories=[ContractTerritory(**d) for d in rows(orm.ContractTerritory)],
                 evidence=[ContractEvidence(**d) for d in rows(orm.ContractEvidence)],
             )
+
+    def contract_chunks(self, contract_id: str) -> list[ContractChunk]:
+        with self.tx() as s:
+            rows = s.scalars(
+                select(orm.ContractChunk)
+                .where(orm.ContractChunk.contract_id == contract_id)
+                .order_by(orm.ContractChunk.page_start, orm.ContractChunk.sibling_order, orm.ContractChunk.id),
+            ).all()
+            return [ContractChunk(**_row_dict(r)) for r in rows]
 
     def contract_extractions(self, contract_id: str) -> list[dict[str, Any]]:
         with self.tx() as s:

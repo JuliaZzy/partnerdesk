@@ -17,4 +17,4 @@
 
 运行：
 
-    python evals/run_po_extract.py --model gpt-4.1
+    ./dev eval --model gpt-4.1

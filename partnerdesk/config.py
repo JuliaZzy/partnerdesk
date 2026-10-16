@@ -165,8 +165,9 @@ def db_url() -> str:
     url = env("PARTNERDESK_DB_URL")
     if not url:
         raise RuntimeError(
-            "PARTNERDESK_DB_URL is not set. Copy .env.example to .env and point it at a local "
-            "PostgreSQL, e.g. postgresql+psycopg://postgres:PASSWORD@127.0.0.1:5432/partnerdesk"
+            "PARTNERDESK_DB_URL is not set. Run via ./dev (Docker Compose injects it). "
+            "If you are inside a container without compose, set it to "
+            "postgresql+psycopg://partnerdesk:partnerdesk@postgres:5432/partnerdesk"
         )
     return url
 FIXTURES_DIR = REPO_ROOT / "fixtures"

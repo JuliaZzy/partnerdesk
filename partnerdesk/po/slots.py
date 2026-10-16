@@ -8,9 +8,10 @@ build a valid, rule-compliant PO.
 Which slots gate the conversation vs. which auto-default:
   - line_items ........ REQUIRED — must resolve to catalog SKUs, be priced, pass MOQ + rules.
   - discount .......... REQUIRED to ADDRESS — None means "nothing has settled it yet".
-                        The partnership's contract settles it first (turn.py pre-fills the
-                        agreed rate, source="contract"); only without a contract rate does
-                        the agent ask (money-sensitive). Whatever the customer then says
+                        The partnership's contract settles it on the first order turn, before
+                        any product is named (turn.py pre-fills the agreed rate, source="contract",
+                        and both the extract and reply models are told). Only without a contract
+                        rate does the agent ask (money-sensitive). Whatever the customer then says
                         (source="customer") overrides the pre-fill; {"kind": "none"} once
                         they say the order is at list price.
   - payment_terms / incoterms / shipping_method / eta_date .... have defaults; they are

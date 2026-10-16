@@ -1,7 +1,7 @@
 """Load the Open Food Facts snapshot into the database as the product catalog.
 
-    dev catalog              # = dev py scripts/build_catalog.py
-    dev catalog --dry-run    # derive everything, print the counts, write nothing
+    ./dev catalog              # = ./dev py scripts/build_catalog.py
+    ./dev catalog --dry-run    # derive everything, print the counts, write nothing
 
 Identity is real Open Food Facts data: English name, the name in the label's own language,
 brand, category, pack size, labels, and whether OFF marks the product obsolete.

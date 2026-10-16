@@ -9,7 +9,7 @@ EXTRACT = """You are a purchase-order assistant for a brand's distributors. Your
 
 === ORDER SLOTS ALREADY GATHERED ===
 {{slots}}
-
+{{contract_discount}}
 Fill the slots from what the user actually says:
 - line_items: [{"reference": string, "cases": number, "sku": string|null}] — reference = the user's OWN wording for the product ("fish oil", "the serum"). Do NOT invent or guess a SKU for a vague term — leave sku null and the system resolves it (and asks the user if several products match). Keep sku from the gathered slots when a line is already resolved (don't drop it). cases = number of CASES. MERGE with what's gathered (add/adjust/remove per the user); return the full up-to-date list.
 - payment_terms: "50_50" | "100_prepaid" | "net_30" | "net_60" | null

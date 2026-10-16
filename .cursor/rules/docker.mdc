@@ -1,0 +1,19 @@
+---
+description: 运行、测试、lint 一律走 Docker Compose，不要在宿主机起 Postgres / API / Vite
+alwaysApply: true
+---
+
+# 运行环境
+
+本仓库的运行时是 Docker Compose，入口是仓库根目录的 `dev`（macOS/Linux）或 `dev.bat`（Windows）。不要在宿主机装/起 PostgreSQL、不要用系统或 `.venv` 的 Python 跑服务、不要在宿主机 `npm run dev`。
+
+- 新开的集成终端会把仓库根目录放进 `PATH`，直接 `dev` / `dev test` / `dev lint`
+- 若提示 `Docker is not running`：先开 Docker Desktop
+- 若提示没有 `.env`：`cp .env.example .env`，只填模型 key；**不要**填 `PARTNERDESK_DB_URL`（compose 会注入容器内网地址）
+- 常用命令：
+  - `dev` — 桌面 + API + Postgres（http://localhost:5173）
+  - `dev test` — pytest（容器里连 compose 的 Postgres）
+  - `dev lint` — ruff
+  - `dev py ...` — 容器里的 python（改表：`dev py -m alembic revision --autogenerate -m "..."`）
+- 不要用系统自带的 `python` / `pip` / `pytest` / `uvicorn`，也不要再创建 `.venv` 来启动项目
+- 依赖变了（`pyproject.toml` / `web/package.json`）才需要 `dev build`

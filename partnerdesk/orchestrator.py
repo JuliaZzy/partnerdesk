@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .claims import handle_post_submit
-from .contract import run_contract_turn
+from .contract import file_contract
 from .db import Database
 from .llm import LLM, AssistantTurn
 from .po.turn import load_bundle, run_po_turn
@@ -202,9 +202,12 @@ def _one_shot(db: Database, session: dict[str, Any], text: str, extra: dict[str,
     }
 
 
-def _answer_directly(db: Database, llm: LLM, session: dict[str, Any], text: str) -> Iterator[dict[str, Any]]:
+def _answer_directly(
+    db: Database, llm: LLM, session: dict[str, Any], text: str, *,
+    prompt_text: str | None = None, extra: dict[str, Any] | None = None,
+) -> Iterator[dict[str, Any]]:
     history = list(session.get("history") or [])
-    messages = [*history[-8:], {"role": "user", "content": text}]
+    messages = [*history[-8:], {"role": "user", "content": prompt_text or text}]
     parts: list[str] = []
     for chunk in llm.stream_text(system=ANSWER, messages=messages):
         parts.append(chunk)
@@ -215,7 +218,19 @@ def _answer_directly(db: Database, llm: LLM, session: dict[str, Any], text: str)
     yield {
         "type": "done", "stage": session.get("stage"), "slots": session.get("slots"), "draft": None,
         "gaps": [], "gaps_detail": [], "advisories": [], "steps": [], "confirm_token": None, "submitted": None,
+        **(extra or {}),
     }
+
+
+def _contract_prompt(text: str, filed: dict[str, Any]) -> str:
+    """The chat model quotes this table. It does not recompute the filing."""
+    return (
+        f"{text}\n\n"
+        "=== CONTRACT FILING (from code — quote these figures, do not recompute or invent terms) ===\n"
+        f"{json.dumps(filed, ensure_ascii=False)}\n"
+        "If status is need_file, ask for the agreement file. If failed, say what went wrong. "
+        "If filed, tell them what was stored, including skipped rows."
+    )
 
 
 def _agent_names(tasks: list[PlanTask]) -> set[str]:
@@ -277,7 +292,18 @@ def handle_message(
 
     if "contract" in agents:
         db.update_session(session_id, specialist="contract")
-        yield from run_contract_turn(db, llm, session, documents, text)
+        filed = file_contract(db, llm, session, documents)
+        yield {
+            "type": "contract",
+            "status": filed["status"],
+            "contract_id": filed["contract_id"],
+            "table": filed["table"],
+        }
+        yield from _answer_directly(
+            db, llm, session, text,
+            prompt_text=_contract_prompt(text, filed),
+            extra={"contract_id": filed["contract_id"], "contract": filed["table"]},
+        )
         return
 
     if "report" in agents:
