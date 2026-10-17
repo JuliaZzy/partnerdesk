@@ -16,7 +16,7 @@ Tag meanings:
 - po — purchase orders: price, quote, discount, stock, place/change an order, status, invoice, payment, shipping, returns, damage.
 - contract — distribution agreements, renewals, exclusivity, territory, governing terms (not a single order's price).
 - report — sell-through / sales data the distributor is submitting or asking how to report.
-- brand — brand story, product specs as knowledge, marketing assets, approved knowledge-base material.
+- brand — brand story, product specs, marketing material.
 - data — read our stored numbers: orders already placed, confirmed report facts, contract discount in force, catalog lookup. Not placing a new order.
 
 Rules:

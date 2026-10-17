@@ -21,7 +21,7 @@
 ## 目录结构
 
 ```
-compose.yaml / Dockerfile / web/Dockerfile   Docker Compose：Postgres + API + Vite
+compose.yaml / Dockerfile / web/Dockerfile   Docker Compose：Postgres + Redis + Milvus + API + Vite
 dev / dev.bat      所有命令的入口（容器里跑，不在宿主机起服务）
 partnerdesk/
   prompts/         每个 agent 一个 py（po.py、contract.py…），常量 + registry.json；填槽用 prompts.fill
@@ -32,16 +32,14 @@ partnerdesk/
   contract/        协议：read 填条款表 → ingest 入库并派生 PO 规则 → turn 聊天归档
   documents.py     PDF / Word / 文本 → 逐页文本；PDF 页渲染成 JPEG，给视觉模型看
   reports.py       销售报表：整洁表格 → 事实（代码读格子，模型不碰数字）→ 草稿 → 人确认 → 同期重发即取代
-  knowledge.py     品牌知识库：品牌资料 → 两遍蒸馏（扫描类型 → 抽片段）→ 草稿片段 → 人批准后才进 prompt
   memory.py        长期记忆：跨会话记住的偏好 / 指令 / 事实，每轮 PO 对话作为上下文读入（只能提醒，不能放宽规则）
   catalog.py       产品索引 + 给 prompt 的目录清单
   llm.py           唯一的模型接缝：complete_json / stream_text / complete（tools=）；测试用 FakeLLM
-  db/              数据层：orm.py（表结构）、database.py（唯一入口）、migrations/（Alembic）、seed.py（fixtures 入库）
+  db/              数据层：orm.py（表结构）、database.py（唯一入口）、migrations/（Alembic）
   service.py       业务操作，不依赖传输层：handle_message（转发 orchestrator）/ confirm / orders
   app.py           service.py 的 HTTP 适配层（FastAPI）：SSE 聊天、确认、订单
-  desk_api.py      桌面其余页面的 HTTP：产品目录、合同、报表、品牌知识、记忆
-web/               桌面（Vite + React + TypeScript）：聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆，只调上面的 HTTP
-fixtures/          演示用的品牌、经销商、合作关系、规则、设置、一份合同抽取——每次启动时 upsert 进数据库
+  desk_api.py      桌面其余页面的 HTTP：产品目录、合同、报表、记忆
+web/               桌面（Vite + React + TypeScript）：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆，只调上面的 HTTP
 scripts/           fetch_off_products.py 拉 Open Food Facts 快照到 data/off/；build_catalog.py（dev catalog）把它导入产品目录
 data/              大数据集（Open Food Facts 快照），gitignore，不进仓库
 tests/             不联网的测试（FakeLLM；页面行为由 HTTP 测试和 web/ 的 Vitest 覆盖）
@@ -64,9 +62,8 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
   折扣阶梯、MOQ、价格表、区域、原文证据各有自己的表；由合同派生的规则通过 `commercial_rules.contract_id` 追溯。
   下单时 `contract.contract_discount_for_next_order` 按合同年内已下单数选档，预填到订单里
   （假设：一张已提交的 PO = 一柜）。经销商在对话里说的折扣覆盖预填；超过合同最高档走审批规则。
-- **品牌知识库**：`brand_documents` 一行一份上传的资料，`brand_document_pages` 逐页文本（片段引用的依据），
-  `brand_document_sections` 是第一遍扫描找到的内容类型，`knowledge_fragments` 是可复用的知识片段
-  （开放的 type slug、可选 `product_id` 关联目录产品、`status` draft → approved → archived）。只有 approved 的片段会给模型看。
+- **品牌资料**：`brand_documents` 一行一份上传的文件（含原文件字节），`brand_document_pages` 是逐页文本。
+  蒸馏成片段的链路已去掉。问答走 `brand_knowledge/rag.py`：问题原样做向量检索，现有文本模型只根据命中的段落作答。解析仍走 `documents.py`。
 - **销售报表**：`sales_reports` 一行一份文件，`report_extractions` 记录每次读取（列映射、跳过了什么），
   `report_facts` 按原生粒度存每个数字（metric_key / 渠道 / SKU / `product_id` / 期间 / 来源单元格）。
   事实是 draft，`Database.confirm_report` 才变 confirmed；同一合作关系同一测量同一期间的旧事实自动 superseded——重发不会翻倍。
@@ -75,7 +72,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
   标签原语言名（`product_name_native`，英文标签就等于英文名）和包装规格的产品。名称、品牌、类目、规格、标签是原数据；
   箱规、箱价、MOQ、托盘、箱重是按真实规格和类目**确定性推导**的（同一条码每次算出一样的数）；
   `product_status`（正品 / 赠品 / 样品 / 停产）里只有 OFF 标了 obsolete 的停产是真的，其余是推导的；
-  `restricted_territories` 留空——原数据没有，不编。量大，所以不走 fixtures：`./dev catalog` 用 COPY 一次性替换整张表，
+  `restricted_territories` 留空——原数据没有，不编。量大，所以 `./dev catalog` 用 COPY 一次性替换整张表，
   产品页的搜索、计数、分页都在数据库里做（名称和 SKU 有 trigram 索引）。目录不依赖合作关系；下单仍然要。
 - **长期记忆**：`memories` 按合作关系存偏好 / 指令 / 事实 / 事件，`is_active` 控制是否读入；
   `po/turn.py::load_bundle` 每轮把 active 记忆追加到品牌 operating context 之后——只是上下文，进不了 code-check。
@@ -90,18 +87,18 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 | 草稿 + 摘要 + hash | 已移植 — `po/draft.py` |
 | 流式回复 | 已移植 — `po/reply.py` |
 | 一轮对话 + 确认门 + 提交 | 已移植 — `po/turn.py`、`po/submit.py`、`service.py` |
-| 多页桌面：聊天 / 产品 / 订单 / 合同 / 报表 / 品牌知识 / 记忆 | **新增** — `web/`（Vite + React），对接 `app.py` / `desk_api.py` |
+| 多页桌面：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆 | **新增** — `web/`（Vite + React），对接 `app.py` / `desk_api.py` |
 | 产品目录：Open Food Facts 真实食品 + 推导的批发字段，多品牌；产品页库内搜索分页 | **新增** — `scripts/`、`web/` 产品页；全目录进 prompt 待改成检索（RAG） |
 | 意图 / 聊天入口 | 已改 — `session_open`（首次 title+tags）+ `PLAN`（tools/MCP/agents）；无代码侧 route |
 | 提交后的收货 / 付款 / 索赔 | 已移植 — `claims.py` |
 | 合同全量入库 + 条款 → PO 规则 + 合同折扣预填 | **新增** — `contract/`、`db/` |
 | 合同页：上传协议（PDF / Word / 文本）或导入抽取 JSON；条款 / 派生规则 / 证据 | 已接入 — `contract/`、`web/` 合同页；模型填条款，代码派生规则 |
 | 报表：整洁表格 → 事实 → 确认 → 取代；报表页 + 图表 + 下单 vs 售出 | **新增** — `reports.py`、`web/` 报表页；多块乱表（06）待做 |
-| 品牌知识库：上传 → 两遍蒸馏（文本；视觉模型同时看页面图）→ 批准 | 已接入 — `knowledge.py`、`web/` 知识页；扫描页需要选 Qwen |
+| 品牌资料：文件 + 逐页文本留在库里；问答时按品牌做向量检索 | 最小 RAG — `brand_knowledge/rag.py`；需先 `index_brand`，embedding 与聊天模型分开配 |
 | 长期记忆：记忆页 + 每轮 PO 对话读入 | **新增** — `memory.py`、`web/` 记忆页 |
 | 聊天里的合同 specialist | 已接入 — 附上协议文件即抽取并入库；只有文件名、没有文件内容时会要求重传 |
 | 聊天里的报表 specialist | 占位 — 设计和 prompt 在 `docs/porting/06-report-core.md` |
-| 聊天里引用知识库 / 合同 / 报表数据 | 待做 — 数据已在库里并按产品关联，prompt 侧还没接 |
+| 聊天里引用品牌资料 | 已接入最小链路 — orchestrator 的 `brand` agent 把原问题交给 Milvus；合同 / 报表数字的引用仍待做 |
 | 评估 | 脚手架 — `evals/` |
 
 ## 运行
@@ -109,7 +106,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 本机只需要 **Docker Desktop**。不要再起 PostgreSQL、Python venv 或 Vite。
 
 第一次：`cp .env.example .env`，填模型 key（默认交大校园 API，需校园网或 VPN；也有 OpenAI / Ollama / GLM）。
-**不要**填 `PARTNERDESK_DB_URL`——Compose 会注入容器内网地址。Ollama 在宿主机上时，写成
+**不要**填 `PARTNERDESK_DB_URL`、`PARTNERDESK_REDIS_URL`、`MILVUS_URI`——Compose 会注入容器内网地址。Ollama 在宿主机上时，写成
 `LLM_BASE_URL=http://host.docker.internal:11434/v1`。
 
 然后：
@@ -124,7 +121,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 | API | http://127.0.0.1:8000/docs |
 | 停掉 | `Ctrl+C`，或另开终端 `./dev kill`（数据卷保留） |
 
-Postgres 只在 Compose 网络里，不往本机暴露 5432。镜像已经 build 过的话，`./dev` 只是起三个容器。
+Postgres、Redis、Milvus 只在 Compose 网络里，不往本机暴露端口。镜像已经 build 过的话，`./dev` 只是起容器。Milvus 第一次要拉一个比较大的镜像，起来也比 Postgres 慢。
 
 产品目录可选（约半小时拉数据 + 几分钟入库）：
 
@@ -136,7 +133,7 @@ Postgres 只在 Compose 网络里，不往本机暴露 5432。镜像已经 build
 其它命令（Windows 用 `dev.bat`）：
 
 ```
-./dev api        只起 API + Postgres     http://127.0.0.1:8000/docs
+./dev api        只起 API + Postgres + Redis + Milvus     http://127.0.0.1:8000/docs
 ./dev db         只起 Postgres
 ./dev catalog    导入产品目录（data/off/ 快照；--dry-run 只统计不写库）
 ./dev test       pytest（假模型，真 Postgres）
@@ -149,7 +146,7 @@ Postgres 只在 Compose 网络里，不往本机暴露 5432。镜像已经 build
 ```
 
 基础镜像默认 DaoCloud，pip / npm 默认清华和 npmmirror。能直连 docker.io 时，把
-`POSTGRES_IMAGE` / `PYTHON_IMAGE` / `NODE_IMAGE` 改回官方名即可。
+`POSTGRES_IMAGE` / `REDIS_IMAGE` / `MILVUS_IMAGE` / `PYTHON_IMAGE` / `NODE_IMAGE` 改回官方名即可。
 
 ## 可选依赖
 

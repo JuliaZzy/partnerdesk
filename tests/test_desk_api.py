@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import json
-
 from fastapi.testclient import TestClient
 
 from partnerdesk.app import create_app
-from partnerdesk.config import FIXTURES_DIR
-from partnerdesk.knowledge import add_fragment
+from partnerdesk.contract import ingest_extraction
 from partnerdesk.llm import FakeLLM
 from partnerdesk.models import Partnership, Product
 
@@ -76,14 +73,19 @@ def test_orders_include_the_submitted_day(db):
 
 
 def test_contract_detail_shows_the_next_discount_and_derived_rules(db, partnership: Partnership):
-    fixture = json.loads((FIXTURES_DIR / "contracts.json").read_text(encoding="utf-8"))[0]
-    from partnerdesk.contract import ingest_extraction
-
     rec = ingest_extraction(
-        db, fixture["extraction"], brand_id=partnership.brand_id, partnership_id=partnership.id, title="Aurora × Nordic 2026",
+        db,
+        {
+            "minimum_order_quantities": [{"quantity": 500, "unit": "USD", "applies_per": "per_order"}],
+            "commercial_discount_rules": [{
+                "title": "Container sequence discount",
+                "tiers": [{"from_container": 1, "to_container": 2, "discount_percent": 3}],
+            }],
+        },
+        brand_id=partnership.brand_id, partnership_id=partnership.id, title="Distribution 2026",
     )
     body = client(db).get(f"/api/contracts/{rec.contract.id}").json()
-    assert body["contract"]["title"] == "Aurora × Nordic 2026"
+    assert body["contract"]["title"] == "Distribution 2026"
     assert body["next_discount"]["percent"] == 3
     assert len(body["terms"]["discount_rules"]) == 1
     assert any(r["rule_type"] == "min_order_value" for r in body["rules"])
@@ -124,23 +126,3 @@ def test_report_confirm_and_delete(db, partnership: Partnership):
     assert len(facts) == 4
     assert c.delete(f"/api/reports/{saved['id']}").status_code == 204
     assert db.report(saved["id"]) is None
-
-
-def test_knowledge_approve(db):
-    frag = add_fragment(
-        db, brand_id="brand-1", type="product", title="Deep Sea Fish Oil",
-        content="1000 mg omega-3 per softgel.", product_name="FO-100", products=db.products("brand-1"), status="draft",
-    )
-    c = client(db)
-    listed = c.get("/api/brands/brand-1/fragments").json()
-    assert listed[0]["content"] == "1000 mg omega-3 per softgel."
-    assert c.post(f"/api/fragments/{frag.id}/status", json={"status": "approved"}).json()["status"] == "approved"
-    assert db.fragments("brand-1")[0].status == "approved"
-
-    uploaded = c.post(
-        "/api/brands/brand-1/documents",
-        files={"file": ("note.txt", b"Fish oil, 1000 mg.", "text/plain")},
-        data={"title": "Note"},
-    )
-    assert uploaded.status_code == 200
-    assert uploaded.json()["title"] == "Note"

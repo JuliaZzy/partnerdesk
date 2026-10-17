@@ -155,6 +155,46 @@ def llm_settings(task: str | None = None) -> LLMSettings:
     )
 
 
+@dataclass(frozen=True)
+class EmbeddingSettings:
+    """Not the chat model. Milvus only stores vectors; this endpoint computes them."""
+
+    base_url: str | None
+    api_key: str
+    model: str
+    dimensions: int
+
+
+def embedding_settings() -> EmbeddingSettings:
+    raw = env("EMBEDDING_DIMENSIONS") or "1024"
+    try:
+        dimensions = int(raw)
+    except ValueError:
+        dimensions = 1024
+    return EmbeddingSettings(
+        base_url=env("EMBEDDING_BASE_URL") or None,
+        api_key=env("EMBEDDING_API_KEY") or env("LLM_API_KEY") or env("OPENAI_API_KEY") or "",
+        model=env("EMBEDDING_MODEL") or "text-embedding-v4",
+        dimensions=dimensions,
+    )
+
+
+def redis_url() -> str:
+    """Redis, from `PARTNERDESK_REDIS_URL`. Compose injects `redis://redis:6379/0`."""
+    url = env("PARTNERDESK_REDIS_URL")
+    if not url:
+        raise RuntimeError(
+            "PARTNERDESK_REDIS_URL is not set. Run via ./dev (Docker Compose injects it). "
+            "Inside the stack it is redis://redis:6379/0"
+        )
+    return url
+
+
+def milvus_uri() -> str:
+    """Milvus, from `MILVUS_URI`. Compose injects `http://milvus:19530`."""
+    return env("MILVUS_URI")
+
+
 def db_url() -> str:
     """The application database, from `PARTNERDESK_DB_URL`. PostgreSQL only.
 
@@ -170,4 +210,3 @@ def db_url() -> str:
             "postgresql+psycopg://partnerdesk:partnerdesk@postgres:5432/partnerdesk"
         )
     return url
-FIXTURES_DIR = REPO_ROOT / "fixtures"

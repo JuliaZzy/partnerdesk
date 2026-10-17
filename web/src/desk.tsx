@@ -9,7 +9,6 @@ export type Meta = {
   default_model: string;
   product_statuses: string[];
   memory_kinds: Record<string, string>;
-  fragment_types: Record<string, string>;
   max_images: number;
 };
 
@@ -50,7 +49,6 @@ const NAV = [
   ["/orders", "Orders"],
   ["/contracts", "Contracts"],
   ["/reports", "Reports"],
-  ["/knowledge", "Knowledge"],
   ["/memory", "Memory"],
 ] as const;
 

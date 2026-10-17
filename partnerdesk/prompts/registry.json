@@ -31,21 +31,15 @@
     },
     {
       "id": "brand",
-      "kind": "tool",
-      "module": "partnerdesk.prompts.rag",
-      "notes": "Retrieve approved knowledge fragments. Distillation lives in prompts.knowledge. Has REFLECT placeholder."
+      "kind": "chat",
+      "module": "partnerdesk.prompts.brand",
+      "notes": "Retrieval is brand_knowledge.rag. The chat model only sees the passages."
     },
     {
       "id": "data",
       "kind": "tool",
       "module": "partnerdesk.prompts.data_query",
       "notes": "Has REFLECT placeholder (query plan / result completeness)."
-    },
-    {
-      "id": "knowledge",
-      "kind": "tool",
-      "module": "partnerdesk.prompts.knowledge",
-      "notes": "Distillation pipeline only; brand is the retrieval agent."
     },
     {
       "id": "socialcrawl",

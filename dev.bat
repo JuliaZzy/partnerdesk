@@ -1,7 +1,7 @@
 @echo off
 rem One entry point: every command runs inside Docker Compose. Nothing starts on the host.
-rem   dev            desk (Vite) + API + Postgres     http://localhost:5173
-rem   dev api        API + Postgres                   http://127.0.0.1:8000/docs
+rem   dev            desk (Vite) + API + Postgres + Redis + Milvus   http://localhost:5173
+rem   dev api        API + Postgres + Redis + Milvus                 http://127.0.0.1:8000/docs
 rem   dev kill       stop the stack (keeps the Postgres volume)
 rem   dev db         start Postgres and wait until it is ready
 rem   dev catalog    import the Open Food Facts snapshot into the product catalog
@@ -61,7 +61,7 @@ exit /b
 :api
 call :needenv
 if errorlevel 1 exit /b 1
-docker compose up postgres api %2 %3 %4
+docker compose up postgres redis milvus api %2 %3 %4
 exit /b
 
 :down

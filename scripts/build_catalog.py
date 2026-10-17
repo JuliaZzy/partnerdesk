@@ -108,7 +108,7 @@ def is_latin(text: str) -> bool:
 
 
 def brand_id(tag: str) -> str:
-    # Own namespace: OFF has a real "Aurora" brand, and `brand-aurora` is the demo one.
+    # Own namespace, so a catalog brand never shares an id with one created in the app.
     bid = f"off-{tag}"
     if len(bid) <= ID_MAX:
         return bid

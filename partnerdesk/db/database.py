@@ -15,14 +15,13 @@ import json
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import Engine, func, inspect, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, sessionmaker
 
-from ..config import FIXTURES_DIR, db_url
+from ..config import db_url
 from ..models import (
     AgentSettings,
     BrandDocument,
@@ -37,8 +36,6 @@ from ..models import (
     ContractRecord,
     ContractTerms,
     ContractTerritory,
-    DocumentSection,
-    KnowledgeFragment,
     Memory,
     Partnership,
     Product,
@@ -78,7 +75,7 @@ class Database:
         """`with db.tx() as s:` — commits on exit, rolls back on error."""
         return self._sessions.begin()
 
-    # --- upserts (seeding, admin, tests) -------------------------------------------
+    # --- upserts (admin, tests) ----------------------------------------------------
     def _upsert(self, s: Session, cls: type, pk: Any, values: dict[str, Any]) -> None:
         ts = utcnow()
         row = s.get(cls, pk)
@@ -107,7 +104,7 @@ class Database:
 
     def upsert_partnership(self, p: Partnership) -> None:
         """Creates the brand and distributor rows from the names on the model when they
-        don't exist yet, so a partnership can be seeded from one record."""
+        don't exist yet, so a partnership can be written from one record."""
         with self.tx() as s:
             if s.get(orm.Brand, p.brand_id) is None:
                 self._upsert(s, orm.Brand, p.brand_id, {"id": p.brand_id, "name": p.brand_name, "preferred_currency": p.currency})
@@ -119,8 +116,7 @@ class Database:
         self.upsert_products(brand_id, [p])
 
     def upsert_products(self, brand_id: str, products: list[Product]) -> None:
-        """One transaction for a whole catalog — the seed runs on every start, and a few
-        thousand products each in their own transaction is a visibly slow launch."""
+        """One transaction for a batch of products."""
         with self.tx() as s:
             # Load the existing rows up front so `_upsert`'s get() is an identity-map hit, not a query each.
             s.scalars(select(orm.Product).where(orm.Product.id.in_([p.id for p in products]))).all()
@@ -167,11 +163,6 @@ class Database:
             row = s.get(orm.BrandAgentSettings, brand_id)
             d = _row_dict(row) if row else {}
             return AgentSettings(**{k: v for k, v in d.items() if v is not None and k != "brand_id"})
-
-    def seed_from_fixtures(self, fixtures_dir: Path = FIXTURES_DIR) -> None:
-        from .seed import seed_from_fixtures  # lazy: seed imports contract.ingest, which imports this package
-
-        seed_from_fixtures(self, fixtures_dir)
 
     # --- catalog: every brand's products at once -------------------------------------------
     def replace_catalog(self, brands: Iterable[dict[str, Any]], products: Iterable[dict[str, Any]]) -> dict[str, int]:
@@ -501,10 +492,10 @@ class Database:
             return [{"kind": r.kind, "data": r.data, "created_at": r.created_at} for r in rows]
 
 
-    # --- brand knowledge base --------------------------------------------------------
+    # --- brand documents -------------------------------------------------------------
     def save_document(self, doc: BrandDocument, pages: list[tuple[int, str]], *, file_bytes: bytes | None = None) -> str:
-        """The uploaded file as a row plus its text per page; nothing distilled yet.
-        `file_bytes` is the original upload, kept so distillation can render page images."""
+        """The uploaded file as a row plus its text per page.
+        `file_bytes` is the original upload, kept so a later index can render page images."""
         values = doc.model_dump(exclude={"created_at", "updated_at"})
         if file_bytes is not None:
             values["file_bytes"] = file_bytes
@@ -516,28 +507,6 @@ class Database:
             s.flush()
             s.add_all(orm.BrandDocumentPage(document_id=doc.id, page_number=n, text=t) for n, t in pages)
         return doc.id
-
-    def save_distillation(
-        self, document_id: str, *, summary: str | None, model: str | None, pages_processed: int | None,
-        sections: list[DocumentSection], fragments: list[KnowledgeFragment], status: str = "distilled",
-    ) -> None:
-        """One transaction: the document's scan result, its sections, and its fragments.
-        Fragments a person already approved (or archived) survive a re-run; drafts are replaced."""
-        ts = utcnow()
-        with self.tx() as s:
-            row = s.get(orm.BrandDocument, document_id)
-            if row is None:
-                raise KeyError(f"document {document_id} not found")
-            row.summary, row.model, row.pages_processed, row.status, row.distilled_at, row.updated_at = summary, model, pages_processed, status, ts, ts
-            for sec in s.scalars(select(orm.BrandDocumentSection).where(orm.BrandDocumentSection.document_id == document_id)):
-                s.delete(sec)
-            for fr in s.scalars(select(orm.KnowledgeFragment).where(orm.KnowledgeFragment.document_id == document_id, orm.KnowledgeFragment.status == "draft")):
-                s.delete(fr)
-            s.flush()
-            for i, sec in enumerate(sections):
-                s.add(orm.BrandDocumentSection(document_id=document_id, position=i, **sec.model_dump()))
-            for f in fragments:
-                self._upsert(s, orm.KnowledgeFragment, f.id, {**f.model_dump(exclude={"created_at", "updated_at"}), "document_id": document_id})
 
     def documents(self, brand_id: str) -> list[BrandDocument]:
         with self.tx() as s:
@@ -559,47 +528,10 @@ class Database:
             rows = s.scalars(select(orm.BrandDocumentPage).where(orm.BrandDocumentPage.document_id == document_id).order_by(orm.BrandDocumentPage.page_number)).all()
             return [(r.page_number, r.text) for r in rows]
 
-    def document_sections(self, document_id: str) -> list[DocumentSection]:
-        with self.tx() as s:
-            rows = s.scalars(select(orm.BrandDocumentSection).where(orm.BrandDocumentSection.document_id == document_id).order_by(orm.BrandDocumentSection.position)).all()
-            return [DocumentSection(**_row_dict(r)) for r in rows]
-
     def delete_document(self, id: str) -> None:
-        """Pages and sections go with it; fragments stay, with document_id set to NULL."""
+        """Pages go with the document (ON DELETE CASCADE)."""
         with self.tx() as s:
             row = s.get(orm.BrandDocument, id)
-            if row is not None:
-                s.delete(row)
-
-    def fragments(
-        self, brand_id: str, *, status: str | None = None, type: str | None = None, document_id: str | None = None,
-    ) -> list[KnowledgeFragment]:
-        with self.tx() as s:
-            q = select(orm.KnowledgeFragment).where(orm.KnowledgeFragment.brand_id == brand_id)
-            if status:
-                q = q.where(orm.KnowledgeFragment.status == status)
-            if type:
-                q = q.where(orm.KnowledgeFragment.type == type)
-            if document_id:
-                q = q.where(orm.KnowledgeFragment.document_id == document_id)
-            rows = s.scalars(q.order_by(orm.KnowledgeFragment.type, orm.KnowledgeFragment.title)).all()
-            return [KnowledgeFragment(**_row_dict(r)) for r in rows]
-
-    def upsert_fragment(self, f: KnowledgeFragment) -> str:
-        with self.tx() as s:
-            self._upsert(s, orm.KnowledgeFragment, f.id, f.model_dump(exclude={"created_at", "updated_at"}))
-        return f.id
-
-    def set_fragment_status(self, id: str, status: str) -> None:
-        with self.tx() as s:
-            row = s.get(orm.KnowledgeFragment, id)
-            if row is None:
-                raise KeyError(f"fragment {id} not found")
-            row.status, row.updated_at = status, utcnow()
-
-    def delete_fragment(self, id: str) -> None:
-        with self.tx() as s:
-            row = s.get(orm.KnowledgeFragment, id)
             if row is not None:
                 s.delete(row)
 

@@ -16,7 +16,6 @@ WORKDIR /app
 
 COPY pyproject.toml README.md alembic.ini ./
 COPY partnerdesk ./partnerdesk
-COPY fixtures ./fixtures
 COPY scripts ./scripts
 COPY tests ./tests
 COPY evals ./evals

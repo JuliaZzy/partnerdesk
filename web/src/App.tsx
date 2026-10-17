@@ -3,7 +3,6 @@ import { Route, Routes } from "react-router-dom";
 import { DeskProvider, Shell } from "./desk";
 import { Chat } from "./pages/Chat";
 import { Contracts } from "./pages/Contracts";
-import { Knowledge } from "./pages/Knowledge";
 import { MemoryPage } from "./pages/Memory";
 import { Orders } from "./pages/Orders";
 import { Products } from "./pages/Products";
@@ -19,7 +18,6 @@ export function App() {
           <Route path="/orders" element={<Orders />} />
           <Route path="/contracts" element={<Contracts />} />
           <Route path="/reports" element={<Reports />} />
-          <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/memory" element={<MemoryPage />} />
         </Routes>
       </Shell>

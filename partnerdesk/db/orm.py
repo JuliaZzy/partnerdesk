@@ -416,10 +416,11 @@ class PoEvent(Base):
     created_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
-# --- brand knowledge base -------------------------------------------------------------
-# A brand's own material (decks, catalogues, brand books) kept as a document row plus its
-# text per page, and distilled into typed, self-contained fragments. A person approves a
-# fragment before any prompt may quote it — the same gate a contract term goes through.
+# --- brand documents ------------------------------------------------------------------
+# A brand's own material (decks, catalogues, brand books): one row per file, its text
+# per page, and the original bytes so a later index can render page images. Retrieval
+# reads the page text (`brand_knowledge.rag`), not these bytes. Deferred bytes: listing
+# documents must not pull the file.
 
 class BrandDocument(Base):
     __tablename__ = "brand_documents"
@@ -429,23 +430,16 @@ class BrandDocument(Base):
     title: Mapped[str | None] = mapped_column(String(200))
     file_name: Mapped[str] = mapped_column(String(255))
     file_sha256: Mapped[str | None] = mapped_column(String(64))
-    # The upload itself, so a later distillation can render page images. Deferred: listing
-    # documents must not pull the bytes.
     file_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     media_type: Mapped[str | None] = mapped_column(String(100))
     size_bytes: Mapped[int | None] = mapped_column(Integer)
     page_count: Mapped[int | None] = mapped_column(Integer)
-    pages_processed: Mapped[int | None] = mapped_column(Integer)
-    summary: Mapped[str | None] = mapped_column(Text)
-    model: Mapped[str | None] = mapped_column(String(100))
-    status: Mapped[str] = mapped_column(String(16), default="uploaded")  # uploaded | distilled | failed
-    distilled_at: Mapped[datetime | None] = mapped_column(TimestampCol)
     created_at: Mapped[datetime] = mapped_column(TimestampCol)
     updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 class BrandDocumentPage(Base):
-    """The text layer of one page — what the reader saw, and what a fragment cites."""
+    """The text layer of one page."""
 
     __tablename__ = "brand_document_pages"
     __table_args__ = (UniqueConstraint("document_id", "page_number", name="uq_document_page"),)
@@ -454,41 +448,6 @@ class BrandDocumentPage(Base):
     document_id: Mapped[str] = mapped_column(ForeignKey("brand_documents.id", ondelete="CASCADE"), index=True)
     page_number: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
-
-
-class BrandDocumentSection(Base):
-    """Pass 1 of the distillation: what kinds of content the document holds, and where."""
-
-    __tablename__ = "brand_document_sections"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    document_id: Mapped[str] = mapped_column(ForeignKey("brand_documents.id", ondelete="CASCADE"), index=True)
-    position: Mapped[int] = mapped_column(Integer, default=0)
-    type: Mapped[str] = mapped_column(String(64))
-    label: Mapped[str] = mapped_column(String(200))
-    description: Mapped[str | None] = mapped_column(Text)
-    page_numbers: Mapped[list[int]] = mapped_column(JSONCol, default=list)
-
-
-class KnowledgeFragment(Base):
-    __tablename__ = "knowledge_fragments"
-    __table_args__ = (Index("ix_knowledge_fragments_brand_type", "brand_id", "type"),)
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    brand_id: Mapped[str] = mapped_column(ForeignKey("brands.id"), index=True)
-    # NULL when a person typed the fragment in by hand.
-    document_id: Mapped[str | None] = mapped_column(ForeignKey("brand_documents.id", ondelete="SET NULL"), index=True)
-    # Set when the fragment is about a catalog product — the join a PO conversation uses.
-    product_id: Mapped[str | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), index=True)
-    type: Mapped[str] = mapped_column(String(64))  # product | brand_story | proof | audience | … (open slug)
-    title: Mapped[str] = mapped_column(String(200))
-    content: Mapped[str] = mapped_column(Text)
-    product_name: Mapped[str | None] = mapped_column(String(200))
-    source_pages: Mapped[list[int]] = mapped_column(JSONCol, default=list)
-    tags: Mapped[list[str]] = mapped_column(JSONCol, default=list)
-    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | approved | archived
-    created_at: Mapped[datetime] = mapped_column(TimestampCol)
-    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
 # --- sales reports -------------------------------------------------------------------

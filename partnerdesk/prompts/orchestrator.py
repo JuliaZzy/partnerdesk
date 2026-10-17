@@ -16,7 +16,7 @@ Schedule only these agents when THIS turn needs them:
 - po — place or change a purchase order; continues an open order. Writes only after human confirm.
 - contract — read an agreement file into terms. Needs the file bytes, not just a name.
 - report — write or ingest a sales report.
-- brand — retrieve approved brand-knowledge fragments. Read-only.
+- brand — a question about the brand's own materials (story, specifications, marketing). Read-only. The runtime retrieves passages and answers from those passages only.
 - data — read orders, facts, contract discounts from our database. Read-only.
 
 Rules:

@@ -13,11 +13,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
+from .brand_knowledge import RagUnavailable, evidence_prompt, retrieve
 from .claims import handle_post_submit
 from .contract import file_contract
 from .db import Database
 from .llm import LLM, AssistantTurn
 from .po.turn import load_bundle, run_po_turn
+from .prompts.brand import ANSWER as BRAND_ANSWER
 from .prompts.orchestrator import ANSWER, PLAN, REACT
 from .prompts.session_open import OPEN
 from .tools import all_schemas, all_tools
@@ -204,12 +206,12 @@ def _one_shot(db: Database, session: dict[str, Any], text: str, extra: dict[str,
 
 def _answer_directly(
     db: Database, llm: LLM, session: dict[str, Any], text: str, *,
-    prompt_text: str | None = None, extra: dict[str, Any] | None = None,
+    prompt_text: str | None = None, system: str | None = None, extra: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     history = list(session.get("history") or [])
     messages = [*history[-8:], {"role": "user", "content": prompt_text or text}]
     parts: list[str] = []
-    for chunk in llm.stream_text(system=ANSWER, messages=messages):
+    for chunk in llm.stream_text(system=system or ANSWER, messages=messages):
         parts.append(chunk)
         yield {"type": "token", "text": chunk}
     reply = "".join(parts).strip() or "How can I help?"
@@ -309,6 +311,25 @@ def handle_message(
     if "report" in agents:
         db.update_session(session_id, specialist="report")
         yield from _answer_directly(db, llm, session, text)
+        return
+
+    if "brand" in agents:
+        # The user's words are the query. No rewrite, no images — pages are already text.
+        db.update_session(session_id, specialist="brand")
+        try:
+            hits = retrieve(text, bundle.partnership.brand_id)
+        except RagUnavailable as err:
+            yield from _one_shot(db, session, str(err))
+            return
+        yield from _answer_directly(
+            db, llm, session, text,
+            prompt_text=evidence_prompt(text, hits),
+            system=BRAND_ANSWER,
+            extra={"brand_hits": [
+                {"cid": h.get("cid"), "doc": h.get("doc"), "page": h.get("page"), "score": h.get("score")}
+                for h in hits
+            ]},
+        )
         return
 
     # No write agent: native tools + MCP via tools= / tool_choice=auto.

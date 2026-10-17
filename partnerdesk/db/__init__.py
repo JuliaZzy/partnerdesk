@@ -1,5 +1,5 @@
-"""Persistence: SQLAlchemy models (`orm`), the engine + Alembic migrations (`engine`), the
-`Database` facade the rest of the code talks to (`database`) and fixture seeding (`seed`).
+"""Persistence: SQLAlchemy models (`orm`), the engine + Alembic migrations (`engine`), and the
+`Database` facade the rest of the code talks to (`database`).
 """
 
 from __future__ import annotations

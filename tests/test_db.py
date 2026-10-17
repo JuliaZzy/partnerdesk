@@ -1,13 +1,10 @@
-"""The data layer itself: migrations are the schema, seeding is idempotent, and the demo
-fixture wires a contract discount into the first order."""
+"""The data layer itself: migrations are the schema, and a reopened database keeps what it has."""
 
 from __future__ import annotations
 
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 
-from partnerdesk.config import FIXTURES_DIR
-from partnerdesk.contract import contract_discount_for_next_order
 from partnerdesk.db.orm import Base
 
 
@@ -22,21 +19,6 @@ def test_migrations_match_the_models(make_db):
 def test_reopening_a_database_is_a_noop(make_db):
     make_db("twice").upsert_brand("b", "Brand")
     assert make_db("twice").partnerships() == []  # second open migrates nothing, loses nothing
-
-
-def test_seed_is_idempotent_and_wires_the_demo_contract(make_db):
-    db = make_db("seed")
-    db.seed_from_fixtures(FIXTURES_DIR)
-    db.seed_from_fixtures(FIXTURES_DIR)
-    (p,) = db.partnerships()
-    assert p.brand_name == "Aurora Botanicals" and p.distributor_name == "Nordic Beauty Distribution"
-    contract = db.active_contract(p.id)
-    assert contract and contract.id == "ct-aurora-nordic-2026" and len(db.contract_extractions(contract.id)) == 1
-    # Fixture rules + the two derived from the contract (min order value, discount approval), once.
-    rules = db.rules(p.brand_id)
-    assert len(rules) == 7 and len([r for r in rules if "(from" in r.name]) == 2
-    d = contract_discount_for_next_order(db, p.id)
-    assert d and d.percent == 3.0 and d.container_index == 1
 
 
 def test_foreign_keys_are_enforced(make_db):

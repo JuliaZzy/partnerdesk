@@ -9,13 +9,13 @@
 
 不要在宿主机调 `uvicorn` / `pytest` / `npm`，也不要创建 `.venv` 来跑这个项目。统一走 `./dev`
 （Windows 是 `dev.bat`）：它把每条命令送到 Docker Compose。桌面是 `web/` 里的 Vite 应用，
-`./dev` 会拉起 Postgres + API + 前端：
+`./dev` 会拉起 Postgres + Redis + Milvus + API + 前端：
 
 ```
 ./dev            桌面 UI（Vite + React） http://localhost:5173
 ./dev api        HTTP API（FastAPI）    http://127.0.0.1:8000/docs
 ./dev db         只起 Postgres，等到可连
-./dev catalog    把 data/off/ 的 Open Food Facts 快照导入产品目录（几十万行，不走 fixtures；快照用 scripts/fetch_off_products.py 拉）
+./dev catalog    把 data/off/ 的 Open Food Facts 快照导入产品目录（几十万行；快照用 scripts/fetch_off_products.py 拉）
 ./dev test       全部测试，不联网（Python）。前端单测：./dev test-web
 ./dev lint       ruff
 ./dev eval       评估，需要真实模型
@@ -32,6 +32,7 @@
   Postgres 的原生类型就一直用不上（时间戳卡在字符串上很久，就是那段历史留下的）。不要为了"方便测试"把它加回来。
 - Postgres 跑在 Compose 服务 `postgres` 里（镜像 `postgres:17`，库名 `partnerdesk`），**不往本机暴露 5432**。
   连接串由 compose 注入，不要在 `.env` 里写 `PARTNERDESK_DB_URL`（宿主机上的 `127.0.0.1:5432` 在容器里是错的）。
+  Redis（`PARTNERDESK_REDIS_URL`）和 Milvus（`MILVUS_URI`）同样由 compose 注入，不要写成 `127.0.0.1`。
 - 测试用 `PARTNERDESK_TEST_DB_URL`（同样由 compose 注入，指向容器内的 `postgres` 库当管理连接）。
   每个测试建一个一次性库、结束丢弃。测试拿数据库只有一个入口：
   `tests/conftest.py` 的 `make_db` 夹具，不要在测试里直接构造 `Database(...)`。没设这个变量测试会 skip，不会静默换引擎。

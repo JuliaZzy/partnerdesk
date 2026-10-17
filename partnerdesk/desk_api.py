@@ -1,6 +1,6 @@
 """HTTP routes for the desk pages.
 
-The chat stream stays in app.py. Catalog, contracts, reports, brand knowledge and memory
+The chat stream stays in app.py. Catalog, contracts, reports and memory
 used to be called in-process by the Streamlit pages; the web client only speaks HTTP,
 so those operations are exposed here. Numbers and rule results still come from the
 deterministic code underneath — these handlers only move bytes and records.
@@ -16,12 +16,11 @@ from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from . import knowledge, reports, service
+from . import reports, service
 from .config import chat_models, default_model_id
 from .contract import contract_discount_for_next_order, ingest_extraction, read_and_ingest
 from .contract.chunks import nest_chunk_rows
 from .db import Database
-from .knowledge import SEED_TYPES
 from .llm import LLM, OpenAICompatLLM
 from .memory import KIND_LABELS, memory_block, remember
 from .models import PRODUCT_STATUS_VALUES, Partnership
@@ -30,7 +29,6 @@ _MAX_FILE_BYTES = 20 * 1024 * 1024
 
 # pending
 _MATRIX = {"units", "revenue", "stock"}
-_FRAGMENT_STATUS = {"draft", "approved", "archived"}
 
 
 class MemoryIn(BaseModel):
@@ -40,18 +38,6 @@ class MemoryIn(BaseModel):
 
 class MemoryActive(BaseModel):
     active: bool
-
-
-class FragmentStatus(BaseModel):
-    status: str
-
-
-class FragmentIn(BaseModel):
-    type: str
-    title: str
-    content: str
-    product_name: str | None = None
-    tags: list[str] = []
 
 
 def _dump(obj: Any) -> Any:
@@ -111,7 +97,6 @@ def mount_desk(app: FastAPI, get_db: Callable[[], Database], get_llm: Callable[[
             "default_model": default_model_id(),
             "product_statuses": list(PRODUCT_STATUS_VALUES),
             "memory_kinds": KIND_LABELS,
-            "fragment_types": SEED_TYPES,
             "max_images": service.MAX_IMAGES,
         }
 
@@ -279,96 +264,6 @@ def mount_desk(app: FastAPI, get_db: Callable[[], Database], get_llm: Callable[[
     def confirmed_facts(pid: str) -> list[dict[str, Any]]:
         partnership(pid)
         return [_dump(f) for f in db().confirmed_facts(pid)]
-
-    @router.get("/api/brands/{brand_id}/documents")
-    def documents(brand_id: str) -> list[dict[str, Any]]:
-        store = db()
-        out = []
-        for doc in store.documents(brand_id):
-            row = _dump(doc)
-            row["sections"] = [_dump(s) for s in store.document_sections(doc.id)]
-            out.append(row)
-        return out
-
-    @router.get("/api/brands/{brand_id}/fragments")
-    def fragments(brand_id: str) -> list[dict[str, Any]]:
-        return [_dump(f) for f in db().fragments(brand_id)]
-
-    @router.get("/api/documents/{doc_id}")
-    def document_detail(doc_id: str) -> dict[str, Any]:
-        store = db()
-        found = store.document(doc_id)
-        if not found:
-            raise HTTPException(404, "document not found")
-        return {
-            "document": _dump(found),
-            "pages": [{"n": n, "text": text} for n, text in store.document_pages(doc_id)],
-            "sections": [_dump(s) for s in store.document_sections(doc_id)],
-        }
-
-    @router.post("/api/brands/{brand_id}/documents")
-    async def upload_document(
-        brand_id: str, file: UploadFile = File(...), title: str = Form(""),
-    ) -> dict[str, Any]:
-        name, data = await _upload(file)
-        try:
-            doc = knowledge.ingest_document(
-                db(), brand_id=brand_id, file_name=name, data=data, title=title.strip() or None,
-                media_type=file.content_type,
-            )
-        except Exception as err:
-            raise HTTPException(400, f"Could not read the file: {err}") from err
-        return _dump(doc)
-
-    @router.post("/api/documents/{doc_id}/distill")
-    def distill_document(doc_id: str, model: str | None = None) -> dict[str, Any]:
-        store = db()
-        found = store.document(doc_id)
-        if not found:
-            raise HTTPException(404, "document not found")
-        try:
-            result = knowledge.distill_document(
-                store, _llm_for(get_llm, model), doc_id, products=store.products(found.brand_id),
-            )
-        except Exception as err:
-            raise HTTPException(400, str(err)) from err
-        return {
-            "summary": result.summary,
-            "sections": len(result.sections),
-            "fragments": len(result.fragments),
-            "pages_processed": result.pages_processed,
-            "skipped": result.skipped,
-            "model": result.model,
-        }
-
-    @router.delete("/api/documents/{doc_id}", status_code=204)
-    def delete_document(doc_id: str) -> Response:
-        db().delete_document(doc_id)
-        return Response(status_code=204)
-
-    @router.post("/api/fragments/{fid}/status")
-    def set_fragment_status(fid: str, body: FragmentStatus) -> dict[str, str]:
-        if body.status not in _FRAGMENT_STATUS:
-            raise HTTPException(400, "status must be draft, approved or archived")
-        db().set_fragment_status(fid, body.status)
-        return {"id": fid, "status": body.status}
-
-    @router.delete("/api/fragments/{fid}", status_code=204)
-    def delete_fragment(fid: str) -> Response:
-        db().delete_fragment(fid)
-        return Response(status_code=204)
-
-    @router.post("/api/brands/{brand_id}/fragments")
-    def add_fragment(brand_id: str, body: FragmentIn) -> dict[str, Any]:
-        if not body.title.strip() or not body.content.strip():
-            raise HTTPException(400, "A title and content are needed.")
-        store = db()
-        frag = knowledge.add_fragment(
-            store, brand_id=brand_id, type=body.type, title=body.title, content=body.content,
-            product_name=(body.product_name or "").strip() or None, tags=[t.strip() for t in body.tags if t.strip()],
-            products=store.products(brand_id),
-        )
-        return _dump(frag)
 
     @router.get("/api/partnerships/{pid}/memories")
     def memories(pid: str) -> dict[str, Any]:

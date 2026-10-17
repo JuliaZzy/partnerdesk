@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One entry point: every command runs inside Docker Compose. Nothing starts on the host.
-#   ./dev            desk (Vite) + API + Postgres     http://localhost:5173
-#   ./dev api        API + Postgres                   http://127.0.0.1:8000/docs
+#   ./dev            desk (Vite) + API + Postgres + Redis + Milvus   http://localhost:5173
+#   ./dev api        API + Postgres + Redis + Milvus                 http://127.0.0.1:8000/docs
 #   ./dev kill       stop the stack (keeps the Postgres volume)
 #   ./dev db         start Postgres and wait until it is ready
 #   ./dev catalog    import the Open Food Facts snapshot into the product catalog
@@ -51,7 +51,7 @@ case "$cmd" in
     ;;
   api)
     need_env
-    compose up postgres api "$@"
+    compose up postgres redis milvus api "$@"
     ;;
   kill|stop|down)
     compose down "$@"

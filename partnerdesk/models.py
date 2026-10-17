@@ -309,10 +309,9 @@ class ContractRecord(BaseModel):
     chunks: list[ContractChunk] = Field(default_factory=list)
 
 
-# --- brand knowledge base ----------------------------------------------------------
-# A brand's decks and catalogues are distilled into typed fragments. A
-# fragment is a self-contained thing the agent may say about the brand or a product; it
-# is draft until a person approves it. The type is an open slug (see knowledge.SEED_TYPES).
+# --- brand documents ---------------------------------------------------------------
+# One uploaded file and its text per page. The original bytes stay on the row so a
+# later index can render page images. Nothing here is a distilled fragment.
 
 
 class BrandDocument(BaseModel):
@@ -326,40 +325,6 @@ class BrandDocument(BaseModel):
     media_type: str | None = None
     size_bytes: int | None = None
     page_count: int | None = None
-    pages_processed: int | None = None
-    summary: str | None = None
-    model: str | None = None
-    status: Literal["uploaded", "distilled", "failed"] = "uploaded"
-    distilled_at: datetime | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-class DocumentSection(BaseModel):
-    """One kind of content the reader found in a document (pass 1 of the distillation)."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    type: str
-    label: str
-    description: str | None = None
-    page_numbers: list[int] = Field(default_factory=list)
-
-
-class KnowledgeFragment(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    id: str
-    brand_id: str
-    document_id: str | None = None
-    product_id: str | None = None
-    type: str
-    title: str
-    content: str
-    product_name: str | None = None
-    source_pages: list[int] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
-    status: Literal["draft", "approved", "archived"] = "draft"
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

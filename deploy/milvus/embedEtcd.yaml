@@ -1,0 +1,7 @@
+# Embedded etcd for the single-container Milvus standalone.
+# Same file the upstream standalone_embed.sh writes before `milvus run standalone`.
+listen-client-urls: http://0.0.0.0:2379
+advertise-client-urls: http://0.0.0.0:2379
+quota-backend-bytes: 4294967296
+auto-compaction-mode: revision
+auto-compaction-retention: "1000"

@@ -1,5 +1,5 @@
 """HTTP surface over service.py: sessions, a chat endpoint streamed as SSE, confirm, orders,
-plus the desk pages (catalog, contracts, reports, knowledge, memory) in desk_api.py.
+plus the desk pages (catalog, contracts, reports, memory) in desk_api.py.
 
     ./dev api                            # http://127.0.0.1:8000/docs
 
@@ -71,7 +71,6 @@ def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
     def get_db() -> Database:
         if state["db"] is None:
             state["db"] = Database()
-            state["db"].seed_from_fixtures()
         return state["db"]
 
     def get_llm() -> LLM:
