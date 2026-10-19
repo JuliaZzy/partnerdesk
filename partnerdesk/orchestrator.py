@@ -23,9 +23,8 @@ from .po.turn import load_bundle, run_po_turn
 from .prompts.brand import ANSWER as BRAND_ANSWER
 from .prompts.data_query import ANSWER as DATA_ANSWER
 from .prompts.orchestrator import ANSWER, FOLLOWUP, PLAN, REACT
-from .prompts.report import REFLECT as REPORT_REFLECT
-from .prompts.report import WITH_DATA as REPORT_WITH_DATA
 from .prompts.session_open import OPEN
+from .report import draft_report
 from .text2sql import answer_question
 from .tools import all_schemas, all_tools
 
@@ -246,6 +245,14 @@ def _save_reply(
     mark = (extra or {}).get("data_query")
     if isinstance(mark, dict) and mark.get("log_id"):
         assistant["data_query"] = {"log_id": mark["log_id"], "ok": bool(mark.get("ok"))}
+    charts = (extra or {}).get("charts")
+    if isinstance(charts, list) and charts:
+        assistant["charts"] = charts
+    notes = (extra or {}).get("web_notes")
+    if isinstance(notes, list) and notes:
+        assistant["web_notes"] = notes
+    if (extra or {}).get("report_draft"):
+        assistant["report_draft"] = True
     db.update_session(session["id"], history=[*history, {"role": "user", "content": text}, assistant][-16:])
     return {
         "type": "done", "stage": session.get("stage"), "slots": session.get("slots"), "draft": None,
@@ -358,70 +365,39 @@ def _data_prompt(question: str, result: Any) -> str:
     )
 
 
-def _report_reflect_schema() -> dict[str, Any]:
-    return {
-        "name": "report_reflect", "strict": True,
-        "schema": {
-            "type": "object", "additionalProperties": False,
-            "properties": {
-                "grounded": {"type": "boolean"},
-                "problems": {"type": "array", "items": {"type": "string"}},
-                "requery": {"type": "string"},
-            },
-            "required": ["grounded", "problems", "requery"],
-        },
-    }
+def _planner_question(tasks: list[PlanTask], name: str) -> str | None:
+    for task in tasks:
+        if task.name != name:
+            continue
+        raw = task.input.get("question") or task.input.get("text") or ""
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()[:2000]
+    return None
 
 
-def _stream_text(llm: LLM, *, system: str, messages: list[dict[str, Any]]) -> str:
-    return "".join(llm.stream_text(system=system, messages=messages)).strip()
-
-
-def _answer_report(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, result: Any, *,
-    partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
+def _run_report(
+    db: Database, llm: LLM, session: dict[str, Any], text: str, tasks: list[PlanTask], *,
+    partnership_id: str, brand_id: str, distributor_id: str,
 ) -> Iterator[dict[str, Any]]:
-    """Draft from the rows, then one check. A missing figure may be queried once more."""
-    shown = result
-    prompt = _data_prompt(text, shown)
-    draft = _stream_text(llm, system=REPORT_WITH_DATA, messages=_chat_messages(session, prompt))
-    final = draft
-    try:
-        raw = llm.complete_json(
-            system=REPORT_REFLECT,
-            messages=[{"role": "user", "content": json.dumps({
-                "question": text, "data": {"row_count": shown.row_count, "rows": shown.rows}, "draft": draft,
-            }, ensure_ascii=False)}],
-            schema=_report_reflect_schema(), temperature=0, max_tokens=400,
-        )
-    except Exception:
-        raw = {}
-    requery = str(raw.get("requery") or "").strip()[:2000]
-    problems = [str(item).strip() for item in (raw.get("problems") or []) if isinstance(item, str) and str(item).strip()][:8]
-    grounded = bool(raw.get("grounded", True))
-    if requery and requery.casefold() != text.casefold():
-        second = answer_question(
-            db, llm, question=requery, partnership_id=partnership_id, brand_id=brand_id,
-            distributor_id=distributor_id, session_id=session_id, reflect=False,
-        )
-        if second.ok:
-            shown = second
-            prompt = _data_prompt(text, shown)
-            grounded = False
-    if not grounded:
-        note = "\n".join(f"- {item}" for item in problems) or "- Drop any figure that is not in DATA."
-        rewritten = _stream_text(
-            llm, system=REPORT_WITH_DATA,
-            messages=_chat_messages(session, (
-                f"{prompt}\n\n=== REWRITE ===\nThe previous draft was not fully grounded.\n{note}\n"
-                "Write the report again. Every figure must appear in DATA."
-            )),
-        )
-        if rewritten:
-            final = rewritten
-    reply = final or "How can I help?"
+    """One draft. The report package queries; this function only streams and saves it."""
+    draft = draft_report(
+        db, llm, message=text, history=list(session.get("history") or []),
+        partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
+        session_id=session["id"],
+        hint=_planner_question(tasks, "data") or _planner_question(tasks, "report"),
+    )
+    for warning in draft.warnings:
+        yield {"type": "warning", "message": warning}
+    reply = draft.text
     yield {"type": "token", "text": reply}
-    yield _save_reply(db, session, text, reply, {"data_query": _query_mark(shown)})
+    extra: dict[str, Any] = {"report_draft": True}
+    if draft.charts:
+        extra["charts"] = draft.charts
+    if draft.web_notes:
+        extra["web_notes"] = draft.web_notes
+    if draft.data_query:
+        extra["data_query"] = draft.data_query
+    yield _save_reply(db, session, text, reply, extra)
 
 
 def handle_message(
@@ -493,34 +469,30 @@ def handle_message(
         )
         return
 
+    if "report" in agents:
+        # The draft queries for itself. A co-scheduled data task is only a hint.
+        db.update_session(session_id, specialist="report")
+        yield from _run_report(
+            db, llm, session, text, tasks,
+            partnership_id=bundle.partnership.id, brand_id=bundle.partnership.brand_id,
+            distributor_id=bundle.partnership.distributor_id,
+        )
+        return
+
     if "data" in agents:
-        # Read-only. A report scheduled on the same turn narrates these rows; it does not
-        # get a second query. Brand retrieval is a different agent and does not run here.
-        db.update_session(session_id, specialist="report" if "report" in agents else "data")
+        db.update_session(session_id, specialist="data")
         result = answer_question(
             db, llm, question=_task_question(tasks, "data", text),
             partnership_id=bundle.partnership.id, brand_id=bundle.partnership.brand_id,
             distributor_id=bundle.partnership.distributor_id, session_id=session_id,
         )
         yield {"type": "data", "ok": result.ok, "row_count": result.row_count, "log_id": result.log_id}
-        if "report" in agents:
-            yield from _answer_report(
-                db, llm, session, text, result,
-                partnership_id=bundle.partnership.id, brand_id=bundle.partnership.brand_id,
-                distributor_id=bundle.partnership.distributor_id, session_id=session_id,
-            )
-        else:
-            yield from _answer_directly(
-                db, llm, session, text,
-                prompt_text=_data_prompt(text, result),
-                system=DATA_ANSWER,
-                extra={"data_query": _query_mark(result)},
-            )
-        return
-
-    if "report" in agents:
-        db.update_session(session_id, specialist="report")
-        yield from _answer_directly(db, llm, session, text)
+        yield from _answer_directly(
+            db, llm, session, text,
+            prompt_text=_data_prompt(text, result),
+            system=DATA_ANSWER,
+            extra={"data_query": _query_mark(result)},
+        )
         return
 
     if "brand" in agents:

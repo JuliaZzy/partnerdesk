@@ -164,13 +164,24 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
             {"id": "d", "kind": "agent", "name": "data", "input": {"question": "order total"}, "depends_on": []},
             {"id": "r", "kind": "agent", "name": "report", "input": {}, "depends_on": ["d"]},
         ]},
+        {"questions": ["order total"], "searches": []},
         {"tables": ["purchase_orders"]},
         {"sql": "SELECT total_amount FROM purchase_orders"},
+        {"charts": [{
+            "query_id": "q1", "chart_type": "bar", "x": "total_amount", "y": "total_amount", "title": "Order total",
+        }]},
     ], text_reply="Report: 1000.")
-    list(service.handle_message(db, report_llm, sid, "write a short sales note"))
+    events = list(service.handle_message(db, report_llm, sid, "write a short sales note"))
     report_call = next(call for call in report_llm.calls if call["kind"] == "text")
     assert report_call["system"] == WITH_DATA
-    assert "1000" in report_call["messages"][-1]["content"]
+    body = report_call["messages"][-1]["content"]
+    assert "1000" in body and "SELECT" not in body
+    done = events[-1]
+    assert done["report_draft"] is True
+    assert done["charts"][0]["title"] == "Order total"
+    assert done["charts"][0]["points"][0]["y"] == 1000
+    saved = db.session(sid)["history"][-1]
+    assert saved["report_draft"] is True and saved["charts"][0]["points"][0]["y"] == 1000
 
 
 def test_badcase_groups_failures_and_keeps_corrections_for_review():
@@ -236,28 +247,6 @@ def test_reflection_asks_again_when_the_rows_do_not_answer(db):
         partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert result.ok and result.rows == [{"total_amount": 1000}]
-
-
-def test_report_reflection_rewrites_an_ungrounded_draft(db):
-    db.insert_po(_po(), [], [])
-    sid = db.create_session("sess-reflect", "ps-1")["id"]
-    llm = FakeLLM(json_replies=[
-        {"tags": ["report", "data"], "title": "report"},
-        {"tasks": [
-            {"id": "d", "kind": "agent", "name": "data", "input": {"question": "order total"}, "depends_on": []},
-            {"id": "r", "kind": "agent", "name": "report", "input": {}, "depends_on": ["d"]},
-        ]},
-        {"tables": ["purchase_orders"]},
-        {"sql": "SELECT total_amount FROM purchase_orders"},
-        {"complete": True, "retry_question": ""},
-        {"grounded": False, "problems": ["the draft invents a second order"], "requery": ""},
-    ], text_reply="Report: 1000.")
-    list(service.handle_message(db, llm, sid, "write a short sales note"))
-    text_calls = [call for call in llm.calls if call["kind"] == "text"]
-    assert len(text_calls) == 2
-    assert text_calls[0]["system"] == WITH_DATA
-    assert "REWRITE" in text_calls[1]["messages"][-1]["content"]
-    assert "1000" in text_calls[1]["messages"][-1]["content"]
 
 
 def test_data_feedback_endpoint_stamps_the_session_and_rejects_another(db):

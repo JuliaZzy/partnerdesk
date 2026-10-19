@@ -30,6 +30,40 @@ export function citationSources(raw: unknown): Citation[] | undefined {
   return sources.length ? sources : undefined;
 }
 
+export type ReportChart = {
+  title: string;
+  chartType: "bar" | "line";
+  points: { x: string; y: number }[];
+};
+
+/** Charts the report runtime already bound to query rows. Junk specs are dropped. */
+export function reportCharts(raw: unknown): ReportChart[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const charts = raw.flatMap((item): ReportChart[] => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as { title?: unknown; chart_type?: unknown; points?: unknown };
+    const title = String(row.title ?? "").trim();
+    const chartType = row.chart_type === "line" || row.chart_type === "bar" ? row.chart_type : "";
+    if (!title || !chartType || !Array.isArray(row.points)) return [];
+    const points = row.points.flatMap((point) => {
+      if (!point || typeof point !== "object") return [];
+      const cell = point as { x?: unknown; y?: unknown };
+      const x = typeof cell.x === "string" ? cell.x.trim() : "";
+      if (!x || typeof cell.y !== "number" || !Number.isFinite(cell.y)) return [];
+      return [{ x, y: cell.y }];
+    }).slice(0, 12);
+    return points.length ? [{ title, chartType, points }] : [];
+  }).slice(0, 3);
+  return charts.length ? charts : undefined;
+}
+
+/** Titles of public pages consulted while drafting. Empty and non-strings are dropped. */
+export function webNotes(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const notes = raw.map((item) => String(item ?? "").trim()).filter(Boolean).slice(0, 4);
+  return notes.length ? notes : undefined;
+}
+
 /** The query a data answer can be rated against. Missing or junk ids are dropped. */
 export function dataQueryMark(raw: unknown): DataQueryMark | undefined {
   if (!raw || typeof raw !== "object") return undefined;

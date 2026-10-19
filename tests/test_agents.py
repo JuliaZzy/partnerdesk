@@ -40,4 +40,5 @@ def test_build_extract_prompt_uses_the_po_constants(catalog):
     assert PLAN.startswith("You are the orchestrator")
     assert OPEN.startswith("You open a new chat")
     assert "PLACEHOLDER" not in data_query.REFLECT and '"complete"' in data_query.REFLECT
-    assert "PLACEHOLDER" not in report.REFLECT and '"grounded"' in report.REFLECT
+    assert "PLACEHOLDER" not in report.SPLIT and '"questions"' in report.SPLIT
+    assert '"charts"' in report.CHART and not hasattr(report, "REFLECT")

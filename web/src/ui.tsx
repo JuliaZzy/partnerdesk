@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import type { ReportChart } from "./format";
+
 const TONE: Record<string, string> = {
   active: "ok",
   approved: "ok",
@@ -100,6 +102,54 @@ export function PageHead({ title, caption }: { title: string; caption?: string }
       <h1>{title}</h1>
       {caption && <p>{caption}</p>}
     </header>
+  );
+}
+
+export function ReportFigure({ chart }: { chart: ReportChart }) {
+  return (
+    <figure className="chart-block">
+      <figcaption>{chart.title}</figcaption>
+      {chart.chartType === "line" ? <LineFigure points={chart.points} /> : <ChartBars points={chart.points} />}
+    </figure>
+  );
+}
+
+function ChartBars({ points }: { points: { x: string; y: number }[] }) {
+  const max = Math.max(1, ...points.map((point) => Math.abs(point.y)));
+  return (
+    <div className="bars">
+      {points.map((point, index) => (
+        <div className="bar-row" key={`${point.x}-${index}`}>
+          <span>{point.x}</span>
+          <div className="bar-track"><div className="bar-fill" style={{ width: `${(Math.abs(point.y) / max) * 100}%` }} /></div>
+          <span>{point.y.toLocaleString("en-US")}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LineFigure({ points }: { points: { x: string; y: number }[] }) {
+  const ys = points.map((point) => point.y);
+  const min = Math.min(0, ...ys);
+  const max = Math.max(0, ...ys);
+  const span = Math.max(1e-9, max - min);
+  const coords = points.map((point, index) => {
+    const x = points.length === 1 ? 50 : (index / (points.length - 1)) * 100;
+    const y = 36 - ((point.y - min) / span) * 32;
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <>
+      <svg className="chart-line" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points={coords} fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      </svg>
+      <ul className="chart-values">
+        {points.map((point, index) => (
+          <li key={`${point.x}-${index}`}>{point.x}: {point.y.toLocaleString("en-US")}</li>
+        ))}
+      </ul>
+    </>
   );
 }
 

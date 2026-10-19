@@ -11,10 +11,14 @@ import {
   greeting,
   lineFlag,
   money,
+  reportCharts,
+  webNotes,
   type DataQueryMark,
   type DraftLine,
+  type ReportChart,
   type Step,
 } from "../format";
+import { ReportFigure } from "../ui";
 
 type Turn = {
   role: "user" | "assistant";
@@ -25,6 +29,9 @@ type Turn = {
   warnings?: string[];
   sources?: { n: number; source: string }[];
   dataQuery?: DataQueryMark;
+  charts?: ReportChart[];
+  webNotes?: string[];
+  reportDraft?: boolean;
 };
 
 type Gap = { message: string; candidates?: { name: string; sku: string }[] };
@@ -59,7 +66,15 @@ type SessionRow = {
   title?: string | null;
   tags?: string[];
   confirm_token?: string | null;
-  history?: { role: string; content?: string; sources?: { n: number; source: string }[]; data_query?: unknown }[];
+  history?: {
+    role: string;
+    content?: string;
+    sources?: { n: number; source: string }[];
+    data_query?: unknown;
+    charts?: unknown;
+    web_notes?: unknown;
+    report_draft?: boolean;
+  }[];
 };
 
 const snaps = new Map<string, Snap>();
@@ -84,7 +99,10 @@ function fromSession(session: SessionRow, hello: string): Snap {
     if ((message.role === "user" || message.role === "assistant") && !SKIP.has(text)) {
       const sources = message.role === "assistant" ? citationSources(message.sources) : undefined;
       const dataQuery = message.role === "assistant" ? dataQueryMark(message.data_query) : undefined;
-      turns.push({ role: message.role, text, sources, dataQuery });
+      const charts = message.role === "assistant" ? reportCharts(message.charts) : undefined;
+      const notes = message.role === "assistant" ? webNotes(message.web_notes) : undefined;
+      const reportDraft = message.role === "assistant" && message.report_draft === true;
+      turns.push({ role: message.role, text, sources, dataQuery, charts, webNotes: notes, reportDraft });
     }
   }
   const stage = session.stage || "gathering";
@@ -240,6 +258,9 @@ function ChatDesk() {
           warnings,
           sources: citationSources(done?.brand_hits),
           dataQuery: dataQueryMark(done?.data_query),
+          charts: reportCharts(done?.charts),
+          webNotes: webNotes(done?.web_notes),
+          reportDraft: done?.report_draft === true,
         }],
         stage: done ? String(done.stage ?? base.stage) : base.stage,
         draft: done ? ((done.draft as Draft | null) ?? null) : base.draft,
@@ -319,7 +340,12 @@ function ChatDesk() {
             <div className={`turn ${turn.role}`} key={index}>
               <div className="bubble">
                 {turn.model && <div className="who">{models.find((item) => item.id === turn.model)?.short || turn.model}</div>}
+                {turn.reportDraft && <div className="draft-tag">Draft</div>}
                 <p>{turn.text}</p>
+                {turn.charts?.map((chart, chartIndex) => (
+                  <ReportFigure key={`${chart.title}-${chartIndex}`} chart={chart} />
+                ))}
+                {turn.webNotes?.map((note) => <div className="source" key={note}>Public context · {note}</div>)}
                 {turn.files?.map((name) => <div className="who" key={name}>📎 {name}</div>)}
                 {turn.images?.map((src) => <img key={src.slice(0, 32)} alt="" src={src} />)}
                 {turn.sources?.map((source) => (

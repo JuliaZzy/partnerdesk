@@ -6,6 +6,8 @@ import {
   citationSources,
   confirmReady,
   dataQueryMark,
+  reportCharts,
+  webNotes,
   discountText,
   greeting,
   lastMonth,
@@ -32,6 +34,20 @@ describe("desk formatters", () => {
     ])).toBe(false);
     expect(confirmReady(buildLedger("confirm"))).toBe(true);
     expect(confirmReady(buildLedger("gathering"))).toBe(false);
+  });
+
+  it("keeps report charts whose points are finite numbers", () => {
+    expect(reportCharts([{
+      title: "Units",
+      chart_type: "bar",
+      points: [{ x: "Tmall", y: 10 }, { x: "", y: 4 }, { x: "JD", y: "4" }],
+    }, {
+      title: "Bad",
+      chart_type: "pie",
+      points: [{ x: "A", y: 1 }],
+    }])).toEqual([{ title: "Units", chartType: "bar", points: [{ x: "Tmall", y: 10 }] }]);
+    expect(reportCharts(null)).toBeUndefined();
+    expect(webNotes([" Black Friday ", "", 618])).toEqual(["Black Friday", "618"]);
   });
 
   it("keeps a data-query rating only when the log id is a positive integer", () => {

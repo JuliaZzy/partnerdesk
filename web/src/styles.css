@@ -211,6 +211,11 @@ tr:last-child td { border-bottom: 0; }
 .bubble p { margin: 0; white-space: pre-wrap; }
 .bubble .who { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 .bubble .source { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.draft-tag { color: var(--wait); font-size: 12px; margin-bottom: 4px; }
+.chart-block { margin: 10px 0 0; }
+.chart-block figcaption { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.chart-line { width: 100%; height: 72px; display: block; color: var(--copper); }
+.chart-values { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
 .rate { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
 .rate-note { width: 100%; min-height: 48px; resize: vertical; }
 .bubble img { max-width: 160px; border-radius: 8px; display: block; margin-top: 8px; }

@@ -27,7 +27,7 @@
       "id": "report",
       "kind": "chat",
       "module": "partnerdesk.prompts.report",
-      "notes": "When data ran on the same turn, REFLECT checks the draft against those rows and may ask for one more query."
+      "notes": "One pass: standard outline, text2sql, web_search always, charts from those rows, then a draft. A bare request still uses the standard questions. A person reviews it in the chat. No reflection loop."
     },
     {
       "id": "brand",
