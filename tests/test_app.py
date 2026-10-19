@@ -6,8 +6,8 @@ import json
 
 from fastapi.testclient import TestClient
 
-from partnerdesk.app import create_app
-from partnerdesk.llm import FakeLLM
+from backend.app import create_app
+from backend.llm import FakeLLM
 
 EXTRACT = {"line_items": [{"reference": "fish oil", "cases": 10, "sku": None}], "discount_kind": "none", "user_confirmed": False, "reply_language": "English"}
 

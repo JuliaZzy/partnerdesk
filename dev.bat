@@ -36,8 +36,8 @@ if /i "%CMD%"=="build" ( docker compose build %2 %3 %4 & exit /b )
 if /i "%CMD%"=="db"   goto :db
 if /i "%CMD%"=="catalog" ( docker compose run --rm api python scripts/build_catalog.py %2 %3 %4 & exit /b )
 if /i "%CMD%"=="test" ( docker compose run --rm api python -m pytest -q %2 %3 %4 & exit /b )
-if /i "%CMD%"=="test-web" ( docker compose run --rm --no-deps web npm test %2 %3 %4 & exit /b )
-if /i "%CMD%"=="lint" ( docker compose run --rm --no-deps api python -m ruff check partnerdesk tests scripts & exit /b )
+if /i "%CMD%"=="test-web" ( docker compose run --rm --no-deps frontend npm test %2 %3 %4 & exit /b )
+if /i "%CMD%"=="lint" ( docker compose run --rm --no-deps api python -m ruff check backend tests scripts & exit /b )
 if /i "%CMD%"=="py"   ( docker compose run --rm api python %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
 echo Unknown command: %CMD%   (use: ui api kill db catalog test test-web lint py build)
 exit /b 1

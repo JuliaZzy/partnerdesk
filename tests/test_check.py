@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from partnerdesk.po.check import MAX_CASES_PER_LINE, run_code_check
-from partnerdesk.po.slots import Discount, LineItemSlot, PoSlots
+from backend.po.check import MAX_CASES_PER_LINE, run_code_check
+from backend.po.slots import Discount, LineItemSlot, PoSlots
 
 NO_DISCOUNT = Discount(kind="none")
 

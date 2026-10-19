@@ -37,7 +37,7 @@ import pyarrow.parquet as pq
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from partnerdesk.db import Database  # noqa: E402
+from backend.db import Database  # noqa: E402
 
 SNAPSHOT = ROOT / "data" / "off" / "products.parquet"
 

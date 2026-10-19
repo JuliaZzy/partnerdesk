@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from partnerdesk.llm import FakeLLM
-from partnerdesk.orchestrator import TOPIC_KEYS, make_plan, open_session
+from backend.llm import FakeLLM
+from backend.orchestrator import TOPIC_KEYS, make_plan, open_session
 
 
 def test_open_session_returns_title_and_tags():

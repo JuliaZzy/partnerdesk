@@ -6,18 +6,20 @@ import importlib
 import json
 from pathlib import Path
 
-from partnerdesk.po.extract import build_extract_prompt
-from partnerdesk.po.slots import PoSlots
-from partnerdesk.prompts import data_query, fill, report
-from partnerdesk.prompts.orchestrator import PLAN
-from partnerdesk.prompts.po import EXTRACT
-from partnerdesk.prompts.session_open import OPEN
+from backend.orchestrator.prompt.orchestrator import PLAN
+from backend.orchestrator.prompt.session_open import OPEN
+from backend.po.extract import build_extract_prompt
+from backend.po.prompt import fill
+from backend.po.prompt.po import EXTRACT
+from backend.po.slots import PoSlots
+from backend.report.prompt import report
+from backend.text2sql.prompt import data_query
 
-ROOT = Path(__file__).resolve().parents[1] / "partnerdesk"
+ROOT = Path(__file__).resolve().parents[1] / "backend"
 
 
 def test_registry_modules_import_and_have_prompt_strings():
-    registry = json.loads((ROOT / "prompts" / "registry.json").read_text(encoding="utf-8"))
+    registry = json.loads((ROOT / "orchestrator" / "registry.json").read_text(encoding="utf-8"))
     for agent in registry["agents"]:
         mod = importlib.import_module(agent["module"])
         strings = [v for k, v in vars(mod).items() if k.isupper() and isinstance(v, str)]

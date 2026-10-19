@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import pytest
 
-from partnerdesk import service
-from partnerdesk.llm import FakeLLM
-from partnerdesk.memory import memory_block, recall, remember, with_memory
-from partnerdesk.po.turn import load_bundle
+from backend import service
+from backend.llm import FakeLLM
+from backend.memory import memory_block, recall, remember, with_memory
+from backend.po.turn import load_bundle
 
 
 def open_meta():

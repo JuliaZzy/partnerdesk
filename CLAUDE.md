@@ -8,7 +8,7 @@
 ## 命令
 
 不要在宿主机调 `uvicorn` / `pytest` / `npm`，也不要创建 `.venv` 来跑这个项目。统一走 `./dev`
-（Windows 是 `dev.bat`）：它把每条命令送到 Docker Compose。桌面是 `web/` 里的 Vite 应用，
+（Windows 是 `dev.bat`）：它把每条命令送到 Docker Compose。桌面是 `frontend/` 里的 Vite 应用，
 `./dev` 会拉起 Postgres + Redis + Milvus + API + 前端：
 
 ```
@@ -53,7 +53,7 @@
 - **代码里的注释和 docstring 用英文**，README 和面向用户的文档用中文。跟着周围代码的密度走——
   这个库的注释解释的是"为什么"，不是"这行在干什么"。
 - **测试不调模型。** 模型调用一律用 `FakeLLM`（`llm.py` 是唯一的模型接缝）。桌面页面的数据行为用
-  `tests/test_desk_api.py` 打 HTTP；展示用的纯函数在 `web/` 里用 Vitest。数据库不是假的：测试连 Compose 里那份 Postgres。
+  `tests/test_desk_api.py` 打 HTTP；展示用的纯函数在 `frontend/` 里用 Vitest。数据库不是假的：测试连 Compose 里那份 Postgres。
 - ruff：`line-length = 110`，规则集见 `pyproject.toml`。提交前 `./dev lint`。
 
 ## 坑
@@ -63,7 +63,7 @@
 - **时间戳是 `timestamptz`，写入的值一律是 UTC-aware 的 `datetime`**（`database.utcnow`），不要再写 ISO 字符串。
   但**纯日期**（合同期限、报表期间）仍然是 `YYYY-MM-DD` 文本，这是有意的——它们是日历标签，背后没有具体时刻。
   改这两类字段前先确认自己在改哪一类。
-- **桌面是 `web/`（Vite + React + TypeScript + Vitest）**，只通过 `app.py` / `desk_api.py` 的 HTTP 跟后端说话。
+- **桌面是 `frontend/`（Vite + React + TypeScript + Vitest）**，只通过 `app.py` / `desk_api.py` 的 HTTP 跟后端说话。
   领域逻辑不受影响：`service.py` 以下完全不认识任何 UI 框架。不要把页面逻辑写回 Python。
 - `app.py` 里的 pydantic 请求模型**必须定义在模块层**。因为有 `from __future__ import annotations`，
   定义在 `create_app` 内部的类会被 FastAPI 静默当成 query parameter（代码里有注释说明）。

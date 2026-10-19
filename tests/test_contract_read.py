@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from partnerdesk import service
-from partnerdesk.contract import read_agreement, read_and_ingest, sanitize_extraction
-from partnerdesk.llm import FakeLLM
+from backend import service
+from backend.contract import read_agreement, read_and_ingest, sanitize_extraction
+from backend.llm import FakeLLM
 
 AGREEMENT = (
     "Distribution agreement.\n\n"

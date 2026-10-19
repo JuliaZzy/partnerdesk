@@ -16,4 +16,4 @@ alwaysApply: true
   - `dev lint` — ruff
   - `dev py ...` — 容器里的 python（改表：`dev py -m alembic revision --autogenerate -m "..."`）
 - 不要用系统自带的 `python` / `pip` / `pytest` / `uvicorn`，也不要再创建 `.venv` 来启动项目
-- 依赖变了（`pyproject.toml` / `web/package.json`）才需要 `dev build`
+- 依赖变了（`pyproject.toml` / `frontend/package.json`）才需要 `dev build`

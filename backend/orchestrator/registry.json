@@ -1,0 +1,52 @@
+{
+  "agents": [
+    {
+      "id": "orchestrator",
+      "kind": "planner",
+      "module": "backend.orchestrator.prompt.orchestrator",
+      "may_call": ["po", "contract", "report", "brand", "data", "socialcrawl"],
+      "parallel": true
+    },
+    {
+      "id": "session_open",
+      "kind": "meta",
+      "module": "backend.orchestrator.prompt.session_open",
+      "notes": "First turn only: session title + tags. Not scheduled by PLAN."
+    },
+    {
+      "id": "po",
+      "kind": "chat",
+      "module": "backend.po.prompt.po"
+    },
+    {
+      "id": "contract",
+      "kind": "chat",
+      "module": "backend.contract.prompt.contract"
+    },
+    {
+      "id": "report",
+      "kind": "chat",
+      "module": "backend.report.prompt.report",
+      "notes": "One pass: standard outline, text2sql, web_search always, charts from those rows, then a draft. A bare request still uses the standard questions. A person reviews it in the chat. No reflection loop."
+    },
+    {
+      "id": "brand",
+      "kind": "chat",
+      "module": "backend.brand_knowledge.prompt.brand",
+      "notes": "Answer prompt after retrieval. brand_knowledge.rag retrieves; a follow-up is rewritten by the orchestrator first. The chat model only sees the passages."
+    },
+    {
+      "id": "data",
+      "kind": "tool",
+      "module": "backend.text2sql.prompt.data_query",
+      "notes": "text2sql: one SELECT on partnership-scoped views, executed as text2sql_reader. REFLECT may request one follow-up query."
+    },
+    {
+      "id": "socialcrawl",
+      "kind": "mcp",
+      "mcp": "socialcrawl",
+      "module": "backend.mcp.prompt.socialcrawl",
+      "notes": "Multi-platform SocialCrawl MCP (not LinkedIn-only). Usually reached via tools=, not PLAN."
+    }
+  ]
+}

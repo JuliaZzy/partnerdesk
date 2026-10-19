@@ -14,7 +14,7 @@ import sys
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from partnerdesk.config import db_url
+from backend.config import db_url
 
 
 def main() -> int:

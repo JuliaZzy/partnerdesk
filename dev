@@ -69,10 +69,10 @@ case "$cmd" in
     compose run --rm api python -m pytest -q "$@"
     ;;
   test-web)
-    compose run --rm --no-deps web npm test "$@"
+    compose run --rm --no-deps frontend npm test "$@"
     ;;
   lint)
-    compose run --rm --no-deps api python -m ruff check partnerdesk tests scripts
+    compose run --rm --no-deps api python -m ruff check backend tests scripts
     ;;
   py)
     compose run --rm api python "$@"

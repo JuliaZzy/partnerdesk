@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from datetime import date
 
-from partnerdesk.models import AgentSettings
-from partnerdesk.po.extract import normalize_slots
-from partnerdesk.po.slots import Discount, LineItemSlot, PoSlots, merge_slots, with_defaults
+from backend.models import AgentSettings
+from backend.po.extract import normalize_slots
+from backend.po.slots import Discount, LineItemSlot, PoSlots, merge_slots, with_defaults
 
 SETTLED = PoSlots(
     line_items=[LineItemSlot(reference="fish oil", cases=20, sku="FO-100")],

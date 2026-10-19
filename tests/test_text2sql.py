@@ -5,17 +5,17 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from partnerdesk import service
-from partnerdesk.app import create_app
-from partnerdesk.db.orm import Base
-from partnerdesk.llm import FakeLLM
-from partnerdesk.models import Partnership, Product, PurchaseOrder
-from partnerdesk.prompts.data_query import ANSWER as DATA_ANSWER
-from partnerdesk.prompts.report import WITH_DATA
-from partnerdesk.text2sql import answer_question
-from partnerdesk.text2sql.analyze_badcase import analyze, classify_error
-from partnerdesk.text2sql.sql_validator import validate
-from partnerdesk.text2sql.table_metadata import EXCLUDED_TABLES, HIDDEN_COLUMNS, TABLES, scope_views
+from backend import service
+from backend.app import create_app
+from backend.db.orm import Base
+from backend.llm import FakeLLM
+from backend.models import Partnership, Product, PurchaseOrder
+from backend.report.prompt.report import WITH_DATA
+from backend.text2sql import answer_question
+from backend.text2sql.analyze_badcase import analyze, classify_error
+from backend.text2sql.prompt.data_query import ANSWER as DATA_ANSWER
+from backend.text2sql.sql_validator import validate
+from backend.text2sql.table_metadata import EXCLUDED_TABLES, HIDDEN_COLUMNS, TABLES, scope_views
 
 
 def _po(**over) -> PurchaseOrder:

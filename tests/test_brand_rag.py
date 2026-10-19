@@ -10,10 +10,10 @@ import math
 
 import pytest
 
-from partnerdesk import service
-from partnerdesk.brand_knowledge import RagUnavailable, chunks_from_pages, evidence_prompt
-from partnerdesk.brand_knowledge.chunk import CHUNK_CHARS
-from partnerdesk.brand_knowledge.rag import (
+from backend import service
+from backend.brand_knowledge import RagUnavailable, chunks_from_pages, evidence_prompt
+from backend.brand_knowledge.chunk import CHUNK_CHARS
+from backend.brand_knowledge.rag import (
     bm25_search,
     evaluate_retrieval,
     reciprocal_rank_fusion,
@@ -21,10 +21,10 @@ from partnerdesk.brand_knowledge.rag import (
     source_label,
     tokenize,
 )
-from partnerdesk.config import rerank_settings
-from partnerdesk.llm import FakeLLM
-from partnerdesk.models import BrandDocument
-from partnerdesk.prompts.orchestrator import FOLLOWUP
+from backend.config import rerank_settings
+from backend.llm import FakeLLM
+from backend.models import BrandDocument
+from backend.orchestrator.prompt.orchestrator import FOLLOWUP
 
 
 def _plan(name: str) -> dict:
@@ -208,7 +208,7 @@ def test_rerank_applies_the_cross_encoder_order(monkeypatch):
 
         return _Body()
 
-    monkeypatch.setattr("partnerdesk.brand_knowledge.rag.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("backend.brand_knowledge.rag.urllib.request.urlopen", fake_urlopen)
     hits = [
         {"cid": "a", "doc": "d", "page": 1, "text": "alpha", "score": 0.1},
         {"cid": "b", "doc": "d", "page": 2, "text": "beta", "score": 0.2},
@@ -245,7 +245,7 @@ def test_brand_question_is_retrieved_then_answered_by_the_text_model(db, monkeyp
         seen["brand"] = brand_id
         return [{"cid": "doc#p1-0", "doc": "doc", "page": 1, "text": "Runs 8 hours at 42 C.", "score": 0.9}]
 
-    monkeypatch.setattr("partnerdesk.orchestrator.retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.orchestrator.turn.retrieve", fake_retrieve)
     db.save_document(BrandDocument(id="doc", brand_id="brand-1", file_name="品牌手册.pdf"), [(1, "Runs 8 hours at 42 C.")])
     sid = service.new_session(db, "ps-1")["id"]
     llm = FakeLLM(
@@ -277,7 +277,7 @@ def test_a_follow_up_is_rewritten_for_retrieval_and_stored_as_typed(db, monkeypa
         seen.append((question, brand_id))
         return [{"cid": "doc#p1-0", "doc": "doc", "page": 1, "text": "冷萃 500ml，保质期十二个月。", "score": 0.9}]
 
-    monkeypatch.setattr("partnerdesk.orchestrator.retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.orchestrator.turn.retrieve", fake_retrieve)
     sid = service.new_session(db, "ps-1")["id"]
     llm = FakeLLM(
         json_replies=[
@@ -312,7 +312,7 @@ def test_unconfigured_retrieval_is_told_to_the_user(db, monkeypatch):
     def boom(question, brand_id):
         raise RagUnavailable("EMBEDDING_BASE_URL is not set.")
 
-    monkeypatch.setattr("partnerdesk.orchestrator.retrieve", boom)
+    monkeypatch.setattr("backend.orchestrator.turn.retrieve", boom)
     sid = service.new_session(db, "ps-1")["id"]
     llm = FakeLLM(json_replies=[{"tags": ["brand"], "title": "specs"}, _plan("brand")], text_reply="should not be used")
     events = list(service.handle_message(db, llm, sid, "What is the shelf life?"))

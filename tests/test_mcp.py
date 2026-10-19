@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from partnerdesk.mcp.runtime import (
+from backend.mcp.runtime import (
     _expand,
     _expand_env_map,
     load_server_configs,

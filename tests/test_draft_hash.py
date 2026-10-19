@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from datetime import date
 
-from partnerdesk.models import AgentSettings
-from partnerdesk.po.check import CheckResult, ResolvedLine
-from partnerdesk.po.draft import build_draft, hash_draft
-from partnerdesk.po.slots import Discount, LineItemSlot, PoSlots
+from backend.models import AgentSettings
+from backend.po.check import CheckResult, ResolvedLine
+from backend.po.draft import build_draft, hash_draft
+from backend.po.slots import Discount, LineItemSlot, PoSlots
 
 TERMS = AgentSettings()
 TODAY = date(2026, 10, 1)

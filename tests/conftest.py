@@ -16,10 +16,10 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from partnerdesk.catalog import Catalog
-from partnerdesk.config import env
-from partnerdesk.db import Database
-from partnerdesk.models import AgentSettings, CommercialRule, Partnership, Product
+from backend.config import env
+from backend.db import Database
+from backend.models import AgentSettings, CommercialRule, Partnership, Product
+from backend.po.catalog import Catalog
 
 # MOQ is stored in UNITS and enforced in CASES: 100 units / 12 per case = 9 cases.
 CATALOG_ROWS = [

@@ -7,9 +7,16 @@ import io
 
 import pytest
 
-from partnerdesk import reports
-from partnerdesk.models import Partnership, Product
-from partnerdesk.reports import analyze, coerce_numeric, header_currency, header_role, ingest, parse_period
+from backend.models import Partnership, Product
+from backend.report import spreadsheet as reports
+from backend.report.spreadsheet import (
+    analyze,
+    coerce_numeric,
+    header_currency,
+    header_role,
+    ingest,
+    parse_period,
+)
 
 PRODUCTS = [
     Product(id="p-fo", sku="FO-100", product_name_en="Deep Sea Fish Oil", product_name_native="深海鱼油omega-3"),

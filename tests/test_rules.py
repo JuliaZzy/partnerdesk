@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from partnerdesk.models import Product
-from partnerdesk.po.rules import EvalItem, POContext, evaluate_rules, is_rule_live, moq_minimum_cases
+from backend.models import Product
+from backend.po.rules import EvalItem, POContext, evaluate_rules, is_rule_live, moq_minimum_cases
 from tests.conftest import rule
 
 

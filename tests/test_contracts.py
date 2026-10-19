@@ -6,13 +6,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from partnerdesk.catalog import Catalog
-from partnerdesk.contract import contract_discount_for_next_order, ingest_extraction, record_from_extraction
-from partnerdesk.llm import FakeLLM
-from partnerdesk.po.check import run_code_check
-from partnerdesk.po.slots import Discount, LineItemSlot, PoSlots
-from partnerdesk.po.submit import create_and_submit_po
-from partnerdesk.po.turn import load_bundle, run_po_turn
+from backend.contract import contract_discount_for_next_order, ingest_extraction, record_from_extraction
+from backend.llm import FakeLLM
+from backend.po.catalog import Catalog
+from backend.po.check import run_code_check
+from backend.po.slots import Discount, LineItemSlot, PoSlots
+from backend.po.submit import create_and_submit_po
+from backend.po.turn import load_bundle, run_po_turn
 
 EXTRACTION = {
     "contract_type": "distribution_agreement",

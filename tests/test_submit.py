@@ -6,9 +6,9 @@ from __future__ import annotations
 import threading
 from datetime import UTC, datetime
 
-from partnerdesk.llm import FakeLLM
-from partnerdesk.models import CommercialRule
-from partnerdesk.po.turn import confirm_order, load_bundle, run_po_turn
+from backend.llm import FakeLLM
+from backend.models import CommercialRule
+from backend.po.turn import confirm_order, load_bundle, run_po_turn
 
 EXTRACT_OK = {
     "line_items": [{"reference": "fish oil", "cases": 10, "sku": None}],

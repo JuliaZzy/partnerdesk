@@ -1,5 +1,5 @@
-from partnerdesk.config import CHAT_MODELS, LLMSettings, chat_models, resolve_model_id
-from partnerdesk.llm import OpenAICompatLLM
+from backend.config import CHAT_MODELS, LLMSettings, chat_models, resolve_model_id
+from backend.llm import OpenAICompatLLM
 
 
 def test_campus_catalog_is_the_four_school_models():

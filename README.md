@@ -21,28 +21,36 @@
 ## 目录结构
 
 ```
-compose.yaml / Dockerfile / web/Dockerfile   Docker Compose：Postgres + Redis + Milvus + API + Vite
+compose.yaml / Dockerfile / frontend/Dockerfile   Docker Compose：Postgres + Redis + Milvus + API + Vite
 dev / dev.bat      所有命令的入口（容器里跑，不在宿主机起服务）
-partnerdesk/
-  prompts/         每个 agent 一个 py（po.py、contract.py…），常量 + registry.json；填槽用 prompts.fill
-  mcp/             SocialCrawl MCP（多平台社交/电商数据）：servers.json + runtime → 并入 tools=
-  orchestrator.py  聊天入口：先 native tools=，再意图分类 → po / contract / report / 弃权
+backend/
+  orchestrator/    聊天入口：session_open、PLAN、工具循环；registry.json 在这里
+    prompt/        编排器和开场的提示词
   po/              slots → 抽取（LLM）→ 校验（代码）→ 草稿 + hash → 回复（LLM）→ 确认门 → 提交
-  claims.py        提交之后：收货 / 付款 / 破损，落到订单状态上
+    prompt/        采购单提示词；`fill` 替换 `{{slot}}`
+    catalog.py     产品索引 + 给 prompt 的目录清单
+    claims.py      提交之后：收货 / 付款 / 破损，落到订单状态上
   contract/        协议：read 填条款表 → ingest 入库并派生 PO 规则 → turn 聊天归档
+    prompt/        合同抽取提示词
+  report/          聊天里的报告草稿（turn）+ 整洁表格 → 事实（spreadsheet.py）
+    prompt/        报告草稿的固定大纲
+  brand_knowledge/ 品牌资料检索
+    prompt/        只根据检索段落作答
+  text2sql/        自然语言 → 一条 SELECT，代码校验后执行
+    prompt/        选表、写 SQL
+  mcp/             SocialCrawl MCP（多平台社交/电商数据）：servers.json + runtime → 并入 tools=
+    prompt/        结构化检索表单；日常对话直接走 tools=
   documents.py     PDF / Word / 文本 → 逐页文本；PDF 页渲染成 JPEG，给视觉模型看
-  reports.py       销售报表：整洁表格 → 事实（代码读格子，模型不碰数字）→ 草稿 → 人确认 → 同期重发即取代
   memory.py        长期记忆：跨会话记住的偏好 / 指令 / 事实，每轮 PO 对话作为上下文读入（只能提醒，不能放宽规则）
-  catalog.py       产品索引 + 给 prompt 的目录清单
   llm.py           唯一的模型接缝：complete_json / stream_text / complete（tools=）；测试用 FakeLLM
   db/              数据层：orm.py（表结构）、database.py（唯一入口）、migrations/（Alembic）
   service.py       业务操作，不依赖传输层：handle_message（转发 orchestrator）/ confirm / orders
   app.py           service.py 的 HTTP 适配层（FastAPI）：SSE 聊天、确认、订单
   desk_api.py      桌面其余页面的 HTTP：产品目录、合同、报表、记忆
-web/               桌面（Vite + React + TypeScript）：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆，只调上面的 HTTP
+frontend/               桌面（Vite + React + TypeScript）：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆，只调上面的 HTTP
 scripts/           fetch_off_products.py 拉 Open Food Facts 快照到 data/off/；build_catalog.py（dev catalog）把它导入产品目录
 data/              大数据集（Open Food Facts 快照），gitignore，不进仓库
-tests/             不联网的测试（FakeLLM；页面行为由 HTTP 测试和 web/ 的 Vitest 覆盖）
+tests/             不联网的测试（FakeLLM；页面行为由 HTTP 测试和 frontend/ 的 Vitest 覆盖）
 docs/porting/      从第一版带过来了什么、为什么（01–06）
 ```
 
@@ -54,7 +62,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
   （`PARTNERDESK_DB_URL`），`postgres:17-alpine` 镜像会建好库本身。不保留 SQLite 回落是刻意的：双引擎意味着每个 schema 决策都要在两边都成立，
   原生类型（`timestamptz`、`jsonb`、数组、枚举）就一直用不上；而静默回落会让配置错误的部署
   在一个空库上正常启动，而不是当场失败。
-- **schema 由 Alembic 版本化**（`partnerdesk/db/migrations`）。`Database()` 构造时自动升到 head，
+- **schema 由 Alembic 版本化**（`backend/db/migrations`）。`Database()` 构造时自动升到 head，
   测试每个临时库也走同一套 migration；`tests/test_db.py` 会在模型和 migration 不一致时直接失败。
   改表：改 `db/orm.py` → `dev py -m alembic revision --autogenerate -m "..."` → 检查生成文件。
 - **合同**：`contracts` 一行一份协议；`contract_extractions` 原样保存每次抽取的 JSON（审计 / 重跑）；
@@ -86,15 +94,15 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 | 草稿 + 摘要 + hash | 已移植 — `po/draft.py` |
 | 流式回复 | 已移植 — `po/reply.py` |
 | 一轮对话 + 确认门 + 提交 | 已移植 — `po/turn.py`、`po/submit.py`、`service.py` |
-| 多页桌面：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆 | **新增** — `web/`（Vite + React），对接 `app.py` / `desk_api.py` |
-| 产品目录：Open Food Facts 真实食品 + 推导的批发字段，多品牌；产品页库内搜索分页 | **新增** — `scripts/`、`web/` 产品页；全目录进 prompt 待改成检索（RAG） |
+| 多页桌面：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆 | **新增** — `frontend/`（Vite + React），对接 `app.py` / `desk_api.py` |
+| 产品目录：Open Food Facts 真实食品 + 推导的批发字段，多品牌；产品页库内搜索分页 | **新增** — `scripts/`、`frontend/` 产品页；全目录进 prompt 待改成检索（RAG） |
 | 意图 / 聊天入口 | 已改 — `session_open`（首次 title+tags）+ `PLAN`（tools/MCP/agents）；无代码侧 route |
-| 提交后的收货 / 付款 / 索赔 | 已移植 — `claims.py` |
+| 提交后的收货 / 付款 / 索赔 | 已移植 — `po/claims.py` |
 | 合同全量入库 + 条款 → PO 规则 + 合同折扣预填 | **新增** — `contract/`、`db/` |
-| 合同页：上传协议（PDF / Word / 文本）或导入抽取 JSON；条款 / 派生规则 / 证据 | 已接入 — `contract/`、`web/` 合同页；模型填条款，代码派生规则 |
-| 报表：整洁表格 → 事实 → 确认 → 取代；报表页 + 图表 + 下单 vs 售出 | **新增** — `reports.py`、`web/` 报表页；多块乱表（06）待做 |
+| 合同页：上传协议（PDF / Word / 文本）或导入抽取 JSON；条款 / 派生规则 / 证据 | 已接入 — `contract/`、`frontend/` 合同页；模型填条款，代码派生规则 |
+| 报表：整洁表格 → 事实 → 确认 → 取代；报表页 + 图表 + 下单 vs 售出 | **新增** — `report/spreadsheet.py`、`frontend/` 报表页；多块乱表（06）待做 |
 | 品牌资料：文件 + 逐页文本留在库里；问答时按品牌做混合检索 | 最小 RAG — `brand_knowledge/rag.py`；需先 `index_brand`，embedding 与聊天模型分开配；重排默认 `BAAI/bge-reranker-v2-m3`；标注集用 `evaluate_retrieval` 打分 |
-| 长期记忆：记忆页 + 每轮 PO 对话读入 | **新增** — `memory.py`、`web/` 记忆页 |
+| 长期记忆：记忆页 + 每轮 PO 对话读入 | **新增** — `memory.py`、`frontend/` 记忆页 |
 | 聊天里的合同 specialist | 已接入 — 附上协议文件即抽取并入库；只有文件名、没有文件内容时会要求重传 |
 | 聊天里的报表 specialist | 占位 — 设计和 prompt 在 `docs/porting/06-report-core.md` |
 | 聊天里引用品牌资料 | 已接入 — 首问按原话检索；后续跟进由编排器补成独立问句再检索，原话照原样保存。回答下标出文件名和页码。合同 / 报表数字的引用仍待做 |
@@ -138,7 +146,7 @@ Postgres、Redis、Milvus 只在 Compose 网络里，不往本机暴露端口。
 ./dev test-web   前端 Vitest
 ./dev lint       ruff
 ./dev py ...     容器里的 python
-./dev build      依赖变了才需要（pyproject.toml / web/package.json）
+./dev build      依赖变了才需要（pyproject.toml / frontend/package.json）
 ./dev kill       停掉栈，保留 Postgres 数据卷
 ```
 

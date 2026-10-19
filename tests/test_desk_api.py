@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from partnerdesk.app import create_app
-from partnerdesk.contract import ingest_extraction
-from partnerdesk.llm import FakeLLM
-from partnerdesk.models import Partnership, Product
+from backend.app import create_app
+from backend.contract import ingest_extraction
+from backend.llm import FakeLLM
+from backend.models import Partnership, Product
 
 
 def client(db, llm=None) -> TestClient:
@@ -54,10 +54,10 @@ def test_sessions_list_is_newest_first(db):
 def test_orders_include_the_submitted_day(db):
     from datetime import timedelta
 
-    from partnerdesk.po.check import run_code_check
-    from partnerdesk.po.slots import Discount, LineItemSlot, PoSlots
-    from partnerdesk.po.submit import create_and_submit_po
-    from partnerdesk.po.turn import load_bundle
+    from backend.po.check import run_code_check
+    from backend.po.slots import Discount, LineItemSlot, PoSlots
+    from backend.po.submit import create_and_submit_po
+    from backend.po.turn import load_bundle
 
     bundle = load_bundle(db, "ps-1")
     slots = PoSlots(line_items=[LineItemSlot(reference="FO-100", cases=20)], discount=Discount(kind="none"))

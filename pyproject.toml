@@ -38,14 +38,14 @@ catalog = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["partnerdesk*"]
+include = ["backend*"]
 
 [tool.setuptools.package-data]
-partnerdesk = [
+backend = [
   "db/migrations/*.py",
   "db/migrations/*.mako",
   "db/migrations/versions/*.py",
-  "prompts/*.json",
+  "orchestrator/registry.json",
   "mcp/*.json",
 ]
 

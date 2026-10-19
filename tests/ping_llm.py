@@ -9,8 +9,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from partnerdesk.config import chat_models
-from partnerdesk.llm import OpenAICompatLLM
+from backend.config import chat_models
+from backend.llm import OpenAICompatLLM
 
 
 def ping(llm: OpenAICompatLLM) -> str:

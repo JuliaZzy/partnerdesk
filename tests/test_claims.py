@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from partnerdesk.claims import (
+from backend.llm import FakeLLM
+from backend.models import PurchaseOrder
+from backend.po.claims import (
     handle_post_submit,
     inspection_ok_outcome,
     match_claim_lines,
     pick_claim_target,
     prepayment_due_now,
 )
-from partnerdesk.llm import FakeLLM
-from partnerdesk.models import PurchaseOrder
 
 
 def po(**over) -> PurchaseOrder:
@@ -60,9 +60,9 @@ def test_match_claim_lines():
 # --- apply through the classifiers ------------------------------------------------
 
 def _po_in_db(db):
-    from partnerdesk.po.check import CheckResult, ResolvedLine
-    from partnerdesk.po.slots import Discount, LineItemSlot, PoSlots
-    from partnerdesk.po.submit import create_and_submit_po
+    from backend.po.check import CheckResult, ResolvedLine
+    from backend.po.slots import Discount, LineItemSlot, PoSlots
+    from backend.po.submit import create_and_submit_po
     line = ResolvedLine(reference="fish oil", sku="FO-100", cases=10, product_id="p-fo", product_name="Deep Sea Fish Oil", case_pack=12, case_price=100.0, line_total=1000.0)
     check = CheckResult(lines=[line], subtotal=1000.0, gaps=[], blocking=[], advisory=[], rule_results=[], ready=True)
     res = create_and_submit_po(db, partnership=db.partnership("ps-1"), settings=db.settings("brand-1"),

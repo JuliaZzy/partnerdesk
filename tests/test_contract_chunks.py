@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from partnerdesk.contract.chunks import flatten_chunk_tree, nest_chunk_rows, split_chunks
+from backend.contract.chunks import flatten_chunk_tree, nest_chunk_rows, split_chunks
 
 AGREEMENT = [
     (1, """本协议由双方于 2026-01-01 签订。

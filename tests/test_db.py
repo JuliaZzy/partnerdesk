@@ -5,7 +5,7 @@ from __future__ import annotations
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 
-from partnerdesk.db.orm import Base
+from backend.db.orm import Base
 
 
 def test_migrations_match_the_models(make_db):
@@ -25,7 +25,7 @@ def test_foreign_keys_are_enforced(make_db):
     import pytest
     from sqlalchemy.exc import IntegrityError
 
-    from partnerdesk.models import Product
+    from backend.models import Product
 
     db = make_db("fk")
     with pytest.raises(IntegrityError):

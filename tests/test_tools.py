@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import json
 
-from partnerdesk.llm import AssistantTurn, FakeLLM, ToolCall
-from partnerdesk.orchestrator import run_tool_calls
-from partnerdesk.tools import SCHEMAS, TOOLS
-from partnerdesk.tools.exchange_rate import quote
-from partnerdesk.tools.exchange_rate import run as fx_run
-from partnerdesk.tools.lang_translate import run as translate_run
-from partnerdesk.tools.send_email import run as email_run
-from partnerdesk.tools.send_email import send as email_send
-from partnerdesk.tools.web_search import run as search_run
-from partnerdesk.tools.web_search import search
+from backend.llm import AssistantTurn, FakeLLM, ToolCall
+from backend.orchestrator import run_tool_calls
+from backend.tools import SCHEMAS, TOOLS
+from backend.tools.exchange_rate import quote
+from backend.tools.exchange_rate import run as fx_run
+from backend.tools.lang_translate import run as translate_run
+from backend.tools.send_email import run as email_run
+from backend.tools.send_email import send as email_send
+from backend.tools.web_search import run as search_run
+from backend.tools.web_search import search
 
 
 def test_translate_returns_only_the_model_text():

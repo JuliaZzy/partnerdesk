@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from partnerdesk.llm import FakeLLM
-from partnerdesk.models import PurchaseOrder
-from partnerdesk.prompts.report import STANDARD_QUESTIONS, WITH_DATA
-from partnerdesk.report import draft_report
-from partnerdesk.report.charts import bind_charts
-from partnerdesk.report.turn import parse_split
+from backend.llm import FakeLLM
+from backend.models import PurchaseOrder
+from backend.report import draft_report
+from backend.report.charts import bind_charts
+from backend.report.prompt.report import STANDARD_QUESTIONS, WITH_DATA
+from backend.report.turn import parse_split
 
 
 def _po() -> PurchaseOrder:
