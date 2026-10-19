@@ -14,14 +14,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .brand_knowledge import RagUnavailable, evidence_prompt, retrieve
+from .brand_knowledge.rag import source_label
 from .claims import handle_post_submit
 from .contract import file_contract
 from .db import Database
 from .llm import LLM, AssistantTurn
 from .po.turn import load_bundle, run_po_turn
 from .prompts.brand import ANSWER as BRAND_ANSWER
-from .prompts.orchestrator import ANSWER, PLAN, REACT
+from .prompts.data_query import ANSWER as DATA_ANSWER
+from .prompts.orchestrator import ANSWER, FOLLOWUP, PLAN, REACT
+from .prompts.report import REFLECT as REPORT_REFLECT
+from .prompts.report import WITH_DATA as REPORT_WITH_DATA
 from .prompts.session_open import OPEN
+from .text2sql import answer_question
 from .tools import all_schemas, all_tools
 
 MAX_IMAGES = 3
@@ -56,6 +61,17 @@ def session_open_schema() -> dict[str, Any]:
                 "title": {"type": "string"},
             },
             "required": ["tags", "title"],
+        },
+    }
+
+
+def followup_schema() -> dict[str, Any]:
+    return {
+        "name": "brand_search_query", "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
         },
     }
 
@@ -204,24 +220,50 @@ def _one_shot(db: Database, session: dict[str, Any], text: str, extra: dict[str,
     }
 
 
-def _answer_directly(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, *,
-    prompt_text: str | None = None, system: str | None = None, extra: dict[str, Any] | None = None,
-) -> Iterator[dict[str, Any]]:
+def _chat_messages(session: dict[str, Any], prompt: str) -> list[dict[str, Any]]:
     history = list(session.get("history") or [])
-    messages = [*history[-8:], {"role": "user", "content": prompt_text or text}]
-    parts: list[str] = []
-    for chunk in llm.stream_text(system=system or ANSWER, messages=messages):
-        parts.append(chunk)
-        yield {"type": "token", "text": chunk}
-    reply = "".join(parts).strip() or "How can I help?"
-    new_history = [*history, {"role": "user", "content": text}, {"role": "assistant", "content": reply}]
-    db.update_session(session["id"], history=new_history[-16:])
-    yield {
+    messages = [
+        {"role": m.get("role"), "content": str(m.get("content") or "")}
+        for m in history[-8:]
+        if m.get("role") in ("user", "assistant")
+    ]
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
+def _query_mark(result: Any) -> dict[str, Any]:
+    return {"ok": result.ok, "row_count": result.row_count, "error": result.error, "log_id": result.log_id}
+
+
+def _save_reply(
+    db: Database, session: dict[str, Any], text: str, reply: str, extra: dict[str, Any] | None,
+) -> dict[str, Any]:
+    history = list(session.get("history") or [])
+    assistant: dict[str, Any] = {"role": "assistant", "content": reply}
+    sources = (extra or {}).get("brand_hits")
+    if sources:
+        assistant["sources"] = sources
+    mark = (extra or {}).get("data_query")
+    if isinstance(mark, dict) and mark.get("log_id"):
+        assistant["data_query"] = {"log_id": mark["log_id"], "ok": bool(mark.get("ok"))}
+    db.update_session(session["id"], history=[*history, {"role": "user", "content": text}, assistant][-16:])
+    return {
         "type": "done", "stage": session.get("stage"), "slots": session.get("slots"), "draft": None,
         "gaps": [], "gaps_detail": [], "advisories": [], "steps": [], "confirm_token": None, "submitted": None,
         **(extra or {}),
     }
+
+
+def _answer_directly(
+    db: Database, llm: LLM, session: dict[str, Any], text: str, *,
+    prompt_text: str | None = None, system: str | None = None, extra: dict[str, Any] | None = None,
+) -> Iterator[dict[str, Any]]:
+    parts: list[str] = []
+    for chunk in llm.stream_text(system=system or ANSWER, messages=_chat_messages(session, prompt_text or text)):
+        parts.append(chunk)
+        yield {"type": "token", "text": chunk}
+    reply = "".join(parts).strip() or "How can I help?"
+    yield _save_reply(db, session, text, reply, extra)
 
 
 def _contract_prompt(text: str, filed: dict[str, Any]) -> str:
@@ -235,8 +277,151 @@ def _contract_prompt(text: str, filed: dict[str, Any]) -> str:
     )
 
 
+_SKIP_HISTORY = {"(message)", "(confirm)"}
+
+
+def _prior_turns(history: list[dict[str, Any]]) -> list[dict[str, str]]:
+    turns = []
+    for message in history[-8:]:
+        role = message.get("role")
+        content = str(message.get("content") or "").strip()
+        if role in ("user", "assistant") and content and content not in _SKIP_HISTORY:
+            turns.append({"role": role, "content": content[:500]})
+    return turns
+
+
+def _search_query(llm: LLM, text: str, history: list[dict[str, Any]]) -> str:
+    """Standalone query for retrieval. The first turn is searched as typed.
+
+    A later turn is rewritten with the recent conversation. A failed or empty rewrite
+    falls back to the user's words so the answer still runs.
+    """
+    prior = _prior_turns(history)
+    if not prior:
+        return text
+    recent = "\n".join(f"{turn['role']}: {turn['content']}" for turn in prior)
+    try:
+        raw = llm.complete_json(
+            system=FOLLOWUP,
+            messages=[{"role": "user", "content": (
+                f"=== RECENT CONVERSATION ===\n{recent}\n\n=== LATEST MESSAGE ===\n{text[:4000]}"
+            )}],
+            schema=followup_schema(),
+            temperature=0,
+            max_tokens=200,
+        )
+    except Exception:
+        return text
+    query = str(raw.get("query") or "").strip()
+    return query[:500] if query else text
+
+
+def _with_sources(db: Database, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Number retrieved passages and name the file. The model cites [1]; the client shows `source`."""
+    named = []
+    for n, hit in enumerate(hits, start=1):
+        doc_id = str(hit.get("doc") or "")
+        row = db.document(doc_id) if doc_id else None
+        file_name = row.file_name if row is not None else None
+        title = ((row.title or "").strip() if row is not None else "") or file_name
+        named.append({
+            **hit,
+            "n": n,
+            "file_name": file_name,
+            "source": source_label(title, hit.get("page"), doc=doc_id or None),
+        })
+    return named
+
+
 def _agent_names(tasks: list[PlanTask]) -> set[str]:
     return {t.name for t in tasks if t.kind == "agent"}
+
+
+def _task_question(tasks: list[PlanTask], name: str, fallback: str) -> str:
+    """The planner may put the question on the task. The user's words are the fallback."""
+    for task in tasks:
+        if task.name != name:
+            continue
+        raw = task.input.get("question") or task.input.get("text") or ""
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()[:2000]
+    return fallback
+
+
+def _data_prompt(question: str, result: Any) -> str:
+    payload = {"ok": result.ok, "row_count": result.row_count, "rows": result.rows, "error": result.error}
+    return (
+        f"{question}\n\n"
+        "=== DATA (queried from our database for this partnership; "
+        "quote these figures, do not recompute or invent) ===\n"
+        f"{json.dumps(payload, ensure_ascii=False)}\n"
+    )
+
+
+def _report_reflect_schema() -> dict[str, Any]:
+    return {
+        "name": "report_reflect", "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "grounded": {"type": "boolean"},
+                "problems": {"type": "array", "items": {"type": "string"}},
+                "requery": {"type": "string"},
+            },
+            "required": ["grounded", "problems", "requery"],
+        },
+    }
+
+
+def _stream_text(llm: LLM, *, system: str, messages: list[dict[str, Any]]) -> str:
+    return "".join(llm.stream_text(system=system, messages=messages)).strip()
+
+
+def _answer_report(
+    db: Database, llm: LLM, session: dict[str, Any], text: str, result: Any, *,
+    partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
+) -> Iterator[dict[str, Any]]:
+    """Draft from the rows, then one check. A missing figure may be queried once more."""
+    shown = result
+    prompt = _data_prompt(text, shown)
+    draft = _stream_text(llm, system=REPORT_WITH_DATA, messages=_chat_messages(session, prompt))
+    final = draft
+    try:
+        raw = llm.complete_json(
+            system=REPORT_REFLECT,
+            messages=[{"role": "user", "content": json.dumps({
+                "question": text, "data": {"row_count": shown.row_count, "rows": shown.rows}, "draft": draft,
+            }, ensure_ascii=False)}],
+            schema=_report_reflect_schema(), temperature=0, max_tokens=400,
+        )
+    except Exception:
+        raw = {}
+    requery = str(raw.get("requery") or "").strip()[:2000]
+    problems = [str(item).strip() for item in (raw.get("problems") or []) if isinstance(item, str) and str(item).strip()][:8]
+    grounded = bool(raw.get("grounded", True))
+    if requery and requery.casefold() != text.casefold():
+        second = answer_question(
+            db, llm, question=requery, partnership_id=partnership_id, brand_id=brand_id,
+            distributor_id=distributor_id, session_id=session_id, reflect=False,
+        )
+        if second.ok:
+            shown = second
+            prompt = _data_prompt(text, shown)
+            grounded = False
+    if not grounded:
+        note = "\n".join(f"- {item}" for item in problems) or "- Drop any figure that is not in DATA."
+        rewritten = _stream_text(
+            llm, system=REPORT_WITH_DATA,
+            messages=_chat_messages(session, (
+                f"{prompt}\n\n=== REWRITE ===\nThe previous draft was not fully grounded.\n{note}\n"
+                "Write the report again. Every figure must appear in DATA."
+            )),
+        )
+        if rewritten:
+            final = rewritten
+    reply = final or "How can I help?"
+    yield {"type": "token", "text": reply}
+    yield _save_reply(db, session, text, reply, {"data_query": _query_mark(shown)})
 
 
 def handle_message(
@@ -308,26 +493,57 @@ def handle_message(
         )
         return
 
+    if "data" in agents:
+        # Read-only. A report scheduled on the same turn narrates these rows; it does not
+        # get a second query. Brand retrieval is a different agent and does not run here.
+        db.update_session(session_id, specialist="report" if "report" in agents else "data")
+        result = answer_question(
+            db, llm, question=_task_question(tasks, "data", text),
+            partnership_id=bundle.partnership.id, brand_id=bundle.partnership.brand_id,
+            distributor_id=bundle.partnership.distributor_id, session_id=session_id,
+        )
+        yield {"type": "data", "ok": result.ok, "row_count": result.row_count, "log_id": result.log_id}
+        if "report" in agents:
+            yield from _answer_report(
+                db, llm, session, text, result,
+                partnership_id=bundle.partnership.id, brand_id=bundle.partnership.brand_id,
+                distributor_id=bundle.partnership.distributor_id, session_id=session_id,
+            )
+        else:
+            yield from _answer_directly(
+                db, llm, session, text,
+                prompt_text=_data_prompt(text, result),
+                system=DATA_ANSWER,
+                extra={"data_query": _query_mark(result)},
+            )
+        return
+
     if "report" in agents:
         db.update_session(session_id, specialist="report")
         yield from _answer_directly(db, llm, session, text)
         return
 
     if "brand" in agents:
-        # The user's words are the query. No rewrite, no images — pages are already text.
+        # Retrieval may use a standalone rewrite of a follow-up. The saved turn and the
+        # answer prompt keep the user's words. Pages are already text.
         db.update_session(session_id, specialist="brand")
+        query = _search_query(llm, text, history)
         try:
-            hits = retrieve(text, bundle.partnership.brand_id)
+            hits = retrieve(query, bundle.partnership.brand_id)
         except RagUnavailable as err:
             yield from _one_shot(db, session, str(err))
             return
+        named = _with_sources(db, hits)
         yield from _answer_directly(
             db, llm, session, text,
-            prompt_text=evidence_prompt(text, hits),
+            prompt_text=evidence_prompt(text, named),
             system=BRAND_ANSWER,
             extra={"brand_hits": [
-                {"cid": h.get("cid"), "doc": h.get("doc"), "page": h.get("page"), "score": h.get("score")}
-                for h in hits
+                {
+                    "n": h["n"], "cid": h.get("cid"), "doc": h.get("doc"), "page": h.get("page"),
+                    "file_name": h.get("file_name"), "source": h["source"],
+                }
+                for h in named
             ]},
         )
         return

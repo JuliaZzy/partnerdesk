@@ -17,6 +17,8 @@ dependencies = [
   "mcp>=1.0",
   "redis>=5",
   "pymilvus>=2.4,<3",
+  "ranx>=0.3.16,<0.4",
+  "sqlglot>=25,<28",
 ]
 
 [project.optional-dependencies]

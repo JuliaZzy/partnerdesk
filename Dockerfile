@@ -18,7 +18,6 @@ COPY pyproject.toml README.md alembic.ini ./
 COPY partnerdesk ./partnerdesk
 COPY scripts ./scripts
 COPY tests ./tests
-COPY evals ./evals
 
 ARG PIP_INDEX_URL=https://pypi.org/simple
 RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" -e ".[contract,dev,catalog]"

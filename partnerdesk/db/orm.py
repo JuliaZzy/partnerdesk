@@ -542,3 +542,29 @@ class Memory(Base):
     last_recalled_at: Mapped[datetime | None] = mapped_column(TimestampCol)
     created_at: Mapped[datetime] = mapped_column(TimestampCol)
     updated_at: Mapped[datetime] = mapped_column(TimestampCol)
+
+
+# --- text2sql ----------------------------------------------------------------------
+# One attempt to answer a partnership-scoped question with SQL. The rows themselves are
+# not stored — bad-case review reads the question, the statement, and whether it ran.
+# Not exposed to the text2sql role's views: a query must not read or rewrite its own log.
+
+class Text2SQLLog(Base):
+    __tablename__ = "text2sql_logs"
+    __table_args__ = (Index("ix_text2sql_logs_partnership_created", "partnership_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    partnership_id: Mapped[str] = mapped_column(ForeignKey("partnerships.id"))
+    session_id: Mapped[str | None] = mapped_column(ForeignKey("sessions.id", ondelete="SET NULL"))
+    question: Mapped[str] = mapped_column(Text)
+    selected_tables: Mapped[list[str]] = mapped_column(JSONCol, default=list)
+    generated_sql: Mapped[str | None] = mapped_column(Text)
+    execution_success: Mapped[bool] = mapped_column(Boolean, default=False)
+    row_count: Mapped[int | None] = mapped_column(Integer)
+    execution_time_ms: Mapped[int | None] = mapped_column(Integer)
+    error_type: Mapped[str | None] = mapped_column(String(50))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    user_feedback: Mapped[str | None] = mapped_column(String(20))  # good | bad
+    feedback_reason: Mapped[str | None] = mapped_column(Text)
+    corrected_sql: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)

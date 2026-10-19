@@ -4,11 +4,14 @@ import { api, postJson, streamMessage } from "../api";
 import { NeedPartnership, useDesk } from "../desk";
 import {
   buildLedger,
+  citationSources,
   confirmReady,
+  dataQueryMark,
   discountText,
   greeting,
   lineFlag,
   money,
+  type DataQueryMark,
   type DraftLine,
   type Step,
 } from "../format";
@@ -20,6 +23,8 @@ type Turn = {
   files?: string[];
   model?: string;
   warnings?: string[];
+  sources?: { n: number; source: string }[];
+  dataQuery?: DataQueryMark;
 };
 
 type Gap = { message: string; candidates?: { name: string; sku: string }[] };
@@ -54,7 +59,7 @@ type SessionRow = {
   title?: string | null;
   tags?: string[];
   confirm_token?: string | null;
-  history?: { role: string; content?: string }[];
+  history?: { role: string; content?: string; sources?: { n: number; source: string }[]; data_query?: unknown }[];
 };
 
 const snaps = new Map<string, Snap>();
@@ -77,7 +82,9 @@ function fromSession(session: SessionRow, hello: string): Snap {
   for (const message of session.history ?? []) {
     const text = String(message.content ?? "");
     if ((message.role === "user" || message.role === "assistant") && !SKIP.has(text)) {
-      turns.push({ role: message.role, text });
+      const sources = message.role === "assistant" ? citationSources(message.sources) : undefined;
+      const dataQuery = message.role === "assistant" ? dataQueryMark(message.data_query) : undefined;
+      turns.push({ role: message.role, text, sources, dataQuery });
     }
   }
   const stage = session.stage || "gathering";
@@ -231,6 +238,8 @@ function ChatDesk() {
           text: reply || "(no reply from the model)",
           model: model || undefined,
           warnings,
+          sources: citationSources(done?.brand_hits),
+          dataQuery: dataQueryMark(done?.data_query),
         }],
         stage: done ? String(done.stage ?? base.stage) : base.stage,
         draft: done ? ((done.draft as Draft | null) ?? null) : base.draft,
@@ -279,6 +288,20 @@ function ChatDesk() {
     }
   }
 
+  function markFeedback(logId: number, feedback: "good" | "bad") {
+    setSnap((current) => {
+      if (!current || !sid) return current;
+      const next: Snap = {
+        ...current,
+        turns: current.turns.map((turn) => (
+          turn.dataQuery?.logId === logId ? { ...turn, dataQuery: { ...turn.dataQuery, feedback } } : turn
+        )),
+      };
+      snaps.set(sid, next);
+      return next;
+    });
+  }
+
   const ready = confirmReady(snap?.steps);
   const models = desk.meta?.models ?? [];
   const modelId = model || desk.meta?.default_model || models[0]?.id || "";
@@ -299,7 +322,17 @@ function ChatDesk() {
                 <p>{turn.text}</p>
                 {turn.files?.map((name) => <div className="who" key={name}>📎 {name}</div>)}
                 {turn.images?.map((src) => <img key={src.slice(0, 32)} alt="" src={src} />)}
+                {turn.sources?.map((source) => (
+                  <div className="source" key={source.n}>[{source.n}] {source.source}</div>
+                ))}
                 {turn.warnings?.map((warning) => <div className="warn" key={warning}>⚠ {warning}</div>)}
+                {turn.role === "assistant" && turn.dataQuery && sid && (
+                  <DataRating
+                    sid={sid}
+                    query={turn.dataQuery}
+                    onSaved={(feedback) => markFeedback(turn.dataQuery!.logId, feedback)}
+                  />
+                )}
               </div>
             </div>
           ))}
@@ -390,6 +423,66 @@ function ChatDesk() {
           )}
         </div>
       </aside>
+    </div>
+  );
+}
+
+function DataRating({
+  sid, query, onSaved,
+}: {
+  sid: string;
+  query: DataQueryMark;
+  onSaved: (feedback: "good" | "bad") => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [sql, setSql] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (query.feedback) {
+    return <div className="source">{query.feedback === "good" ? "Marked right" : "Marked wrong"}</div>;
+  }
+
+  async function send(feedback: "good" | "bad") {
+    setBusy(true);
+    setError(null);
+    try {
+      await postJson(`/api/sessions/${sid}/data-feedback`, {
+        log_id: query.logId,
+        feedback,
+        reason: feedback === "bad" ? reason : null,
+        corrected_sql: feedback === "bad" ? sql : null,
+      });
+      onSaved(feedback);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "could not save");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rate">
+      <button type="button" className="btn" disabled={busy} onClick={() => void send("good")}>Looks right</button>
+      <button type="button" className="btn" disabled={busy} onClick={() => setOpen(true)}>Wrong</button>
+      {open && (
+        <>
+          <textarea
+            className="rate-note"
+            value={reason}
+            placeholder="What was wrong (optional)"
+            onChange={(event) => setReason(event.target.value)}
+          />
+          <textarea
+            className="rate-note"
+            value={sql}
+            placeholder="Corrected SQL (optional)"
+            onChange={(event) => setSql(event.target.value)}
+          />
+          <button type="button" className="btn-primary" disabled={busy} onClick={() => void send("bad")}>Save</button>
+        </>
+      )}
+      {error && <div className="warn">{error}</div>}
     </div>
   );
 }

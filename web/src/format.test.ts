@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildLedger,
   chatTitle,
+  citationSources,
   confirmReady,
+  dataQueryMark,
   discountText,
   greeting,
   lastMonth,
@@ -32,10 +34,29 @@ describe("desk formatters", () => {
     expect(confirmReady(buildLedger("gathering"))).toBe(false);
   });
 
+  it("keeps a data-query rating only when the log id is a positive integer", () => {
+    expect(dataQueryMark({ log_id: 4, feedback: "bad" })).toEqual({ logId: 4, feedback: "bad" });
+    expect(dataQueryMark({ log_id: 4, feedback: "maybe" })).toEqual({ logId: 4, feedback: undefined });
+    expect(dataQueryMark({ log_id: 0 })).toBeUndefined();
+    expect(dataQueryMark(null)).toBeUndefined();
+  });
+
   it("titles a chat from the session title, else the first user line", () => {
     expect(chatTitle({ title: "10 cases fish oil" })).toBe("10 cases fish oil");
     expect(chatTitle({ title: null, history: [{ role: "user", content: "hello there" }] })).toBe("hello there");
     expect(chatTitle({ title: null, history: [{ role: "user", content: "(confirm)" }] })).toBe("New chat");
+  });
+
+  it("keeps numbered file citations and drops a blank one", () => {
+    expect(citationSources([
+      { n: 1, source: "品牌手册.pdf，第3页" },
+      { n: 2, source: "  " },
+      { n: "3", source: "价目表.pdf，第1页" },
+    ])).toEqual([
+      { n: 1, source: "品牌手册.pdf，第3页" },
+      { n: 3, source: "价目表.pdf，第1页" },
+    ]);
+    expect(citationSources(undefined)).toBeUndefined();
   });
 
   it("greets with the partnership names", () => {

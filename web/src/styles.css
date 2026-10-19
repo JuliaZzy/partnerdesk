@@ -210,6 +210,9 @@ tr:last-child td { border-bottom: 0; }
 .turn.user .bubble { background: #f8ebe3; border-color: #efd3c3; }
 .bubble p { margin: 0; white-space: pre-wrap; }
 .bubble .who { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.bubble .source { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.rate { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+.rate-note { width: 100%; min-height: 48px; resize: vertical; }
 .bubble img { max-width: 160px; border-radius: 8px; display: block; margin-top: 8px; }
 .composer { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .composer textarea { width: 100%; min-height: 72px; resize: vertical; }

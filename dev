@@ -7,7 +7,6 @@
 #   ./dev catalog    import the Open Food Facts snapshot into the product catalog
 #   ./dev test       pytest (Python). Frontend: ./dev test-web
 #   ./dev lint       ruff
-#   ./dev eval       evals/run_po_extract.py (needs a real model)
 #   ./dev py ...     python inside the api container
 #   ./dev build      rebuild images
 set -euo pipefail
@@ -73,17 +72,13 @@ case "$cmd" in
     compose run --rm --no-deps web npm test "$@"
     ;;
   lint)
-    compose run --rm --no-deps api python -m ruff check partnerdesk tests evals scripts
-    ;;
-  eval)
-    need_env
-    compose run --rm api python evals/run_po_extract.py "$@"
+    compose run --rm --no-deps api python -m ruff check partnerdesk tests scripts
     ;;
   py)
     compose run --rm api python "$@"
     ;;
   *)
-    echo "Unknown command: $cmd   (use: ui api kill db catalog test test-web lint eval py build)" >&2
+    echo "Unknown command: $cmd   (use: ui api kill db catalog test test-web lint py build)" >&2
     exit 1
     ;;
 esac

@@ -13,6 +13,33 @@ export type Partnership = {
 
 export type HistoryMessage = { role: string; content?: string };
 
+export type Citation = { n: number; source: string };
+
+export type DataQueryMark = { logId: number; feedback?: "good" | "bad" };
+
+/** The numbered file-and-page lines under a brand answer. Bad rows are dropped. */
+export function citationSources(raw: unknown): Citation[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const sources = raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as { n?: unknown; source?: unknown };
+    const n = Number(row.n);
+    const source = String(row.source ?? "").trim();
+    return Number.isInteger(n) && source ? [{ n, source }] : [];
+  });
+  return sources.length ? sources : undefined;
+}
+
+/** The query a data answer can be rated against. Missing or junk ids are dropped. */
+export function dataQueryMark(raw: unknown): DataQueryMark | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const row = raw as { log_id?: unknown; feedback?: unknown };
+  const logId = Number(row.log_id);
+  if (!Number.isInteger(logId) || logId <= 0) return undefined;
+  const feedback = row.feedback === "good" || row.feedback === "bad" ? row.feedback : undefined;
+  return { logId, feedback };
+}
+
 const SKIP_HISTORY = new Set(["(message)", "(confirm)"]);
 const TAG_LABEL: Record<string, string> = {
   po: "PO",

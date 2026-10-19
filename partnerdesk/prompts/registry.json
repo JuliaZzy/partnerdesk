@@ -27,19 +27,19 @@
       "id": "report",
       "kind": "chat",
       "module": "partnerdesk.prompts.report",
-      "notes": "Has REFLECT placeholder; will grow into deep research."
+      "notes": "When data ran on the same turn, REFLECT checks the draft against those rows and may ask for one more query."
     },
     {
       "id": "brand",
       "kind": "chat",
       "module": "partnerdesk.prompts.brand",
-      "notes": "Retrieval is brand_knowledge.rag. The chat model only sees the passages."
+      "notes": "Answer prompt after retrieval. brand_knowledge.rag retrieves; a follow-up is rewritten by the orchestrator first. The chat model only sees the passages."
     },
     {
       "id": "data",
       "kind": "tool",
       "module": "partnerdesk.prompts.data_query",
-      "notes": "Has REFLECT placeholder (query plan / result completeness)."
+      "notes": "text2sql: one SELECT on partnership-scoped views, executed as text2sql_reader. REFLECT may request one follow-up query."
     },
     {
       "id": "socialcrawl",

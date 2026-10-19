@@ -39,4 +39,5 @@ def test_build_extract_prompt_uses_the_po_constants(catalog):
     assert "ATTACHED IMAGE" in prompt and "Ship on Friday" in prompt and "FO-100" in prompt
     assert PLAN.startswith("You are the orchestrator")
     assert OPEN.startswith("You open a new chat")
-    assert "PLACEHOLDER" in data_query.REFLECT and "PLACEHOLDER" in report.REFLECT
+    assert "PLACEHOLDER" not in data_query.REFLECT and '"complete"' in data_query.REFLECT
+    assert "PLACEHOLDER" not in report.REFLECT and '"grounded"' in report.REFLECT

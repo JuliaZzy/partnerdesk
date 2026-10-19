@@ -179,6 +179,30 @@ def embedding_settings() -> EmbeddingSettings:
     )
 
 
+@dataclass(frozen=True)
+class RerankSettings:
+    """Not the chat model and not the embedding model.
+
+    ``BAAI/bge-reranker-v2-m3`` is a cross-encoder: one score for the question concatenated with
+    one passage. It covers Chinese and English, and a batch of 20 short chunks is the size it
+    is used at. The client speaks the Cohere-style `POST /rerank` body (`model`, `query`,
+    `documents`, `top_n`). No base URL means hybrid retrieval returns the fused list and does
+    not call the reranker.
+    """
+
+    base_url: str | None
+    api_key: str
+    model: str
+
+
+def rerank_settings() -> RerankSettings:
+    return RerankSettings(
+        base_url=env("RERANK_BASE_URL") or None,
+        api_key=env("RERANK_API_KEY") or "",
+        model=env("RERANK_MODEL") or "BAAI/bge-reranker-v2-m3",
+    )
+
+
 def redis_url() -> str:
     """Redis, from `PARTNERDESK_REDIS_URL`. Compose injects `redis://redis:6379/0`."""
     url = env("PARTNERDESK_REDIS_URL")

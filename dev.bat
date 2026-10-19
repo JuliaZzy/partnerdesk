@@ -7,7 +7,6 @@ rem   dev db         start Postgres and wait until it is ready
 rem   dev catalog    import the Open Food Facts snapshot into the product catalog
 rem   dev test       pytest (Python). Frontend: dev test-web
 rem   dev lint       ruff
-rem   dev eval       evals/run_po_extract.py (needs a real model)
 rem   dev py ...     python inside the api container
 rem   dev build      rebuild images
 setlocal
@@ -38,10 +37,9 @@ if /i "%CMD%"=="db"   goto :db
 if /i "%CMD%"=="catalog" ( docker compose run --rm api python scripts/build_catalog.py %2 %3 %4 & exit /b )
 if /i "%CMD%"=="test" ( docker compose run --rm api python -m pytest -q %2 %3 %4 & exit /b )
 if /i "%CMD%"=="test-web" ( docker compose run --rm --no-deps web npm test %2 %3 %4 & exit /b )
-if /i "%CMD%"=="lint" ( docker compose run --rm --no-deps api python -m ruff check partnerdesk tests evals scripts & exit /b )
-if /i "%CMD%"=="eval" ( docker compose run --rm api python evals/run_po_extract.py %2 %3 %4 & exit /b )
+if /i "%CMD%"=="lint" ( docker compose run --rm --no-deps api python -m ruff check partnerdesk tests scripts & exit /b )
 if /i "%CMD%"=="py"   ( docker compose run --rm api python %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
-echo Unknown command: %CMD%   (use: ui api kill db catalog test test-web lint eval py build)
+echo Unknown command: %CMD%   (use: ui api kill db catalog test test-web lint py build)
 exit /b 1
 
 :needenv

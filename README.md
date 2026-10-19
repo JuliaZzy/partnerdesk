@@ -43,7 +43,6 @@ web/               桌面（Vite + React + TypeScript）：聊天 / 产品 / 订
 scripts/           fetch_off_products.py 拉 Open Food Facts 快照到 data/off/；build_catalog.py（dev catalog）把它导入产品目录
 data/              大数据集（Open Food Facts 快照），gitignore，不进仓库
 tests/             不联网的测试（FakeLLM；页面行为由 HTTP 测试和 web/ 的 Vitest 覆盖）
-evals/             模型层回归，需要真实模型
 docs/porting/      从第一版带过来了什么、为什么（01–06）
 ```
 
@@ -63,7 +62,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
   下单时 `contract.contract_discount_for_next_order` 按合同年内已下单数选档，预填到订单里
   （假设：一张已提交的 PO = 一柜）。经销商在对话里说的折扣覆盖预填；超过合同最高档走审批规则。
 - **品牌资料**：`brand_documents` 一行一份上传的文件（含原文件字节），`brand_document_pages` 是逐页文本。
-  蒸馏成片段的链路已去掉。问答走 `brand_knowledge/rag.py`：问题原样做向量检索，现有文本模型只根据命中的段落作答。解析仍走 `documents.py`。
+  蒸馏成片段的链路已去掉。问答走 `brand_knowledge/rag.py`：向量检索和 BM25 混合召回，配了 `RERANK_*` 才用交叉编码器 `BAAI/bge-reranker-v2-m3` 重排。标注过的提问用同文件的 `evaluate_retrieval` 算 MRR、nDCG、Precision、Recall、MAP 和 Hit Rate。现有文本模型只根据命中的段落作答。解析仍走 `documents.py`。
 - **销售报表**：`sales_reports` 一行一份文件，`report_extractions` 记录每次读取（列映射、跳过了什么），
   `report_facts` 按原生粒度存每个数字（metric_key / 渠道 / SKU / `product_id` / 期间 / 来源单元格）。
   事实是 draft，`Database.confirm_report` 才变 confirmed；同一合作关系同一测量同一期间的旧事实自动 superseded——重发不会翻倍。
@@ -94,12 +93,11 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 | 合同全量入库 + 条款 → PO 规则 + 合同折扣预填 | **新增** — `contract/`、`db/` |
 | 合同页：上传协议（PDF / Word / 文本）或导入抽取 JSON；条款 / 派生规则 / 证据 | 已接入 — `contract/`、`web/` 合同页；模型填条款，代码派生规则 |
 | 报表：整洁表格 → 事实 → 确认 → 取代；报表页 + 图表 + 下单 vs 售出 | **新增** — `reports.py`、`web/` 报表页；多块乱表（06）待做 |
-| 品牌资料：文件 + 逐页文本留在库里；问答时按品牌做向量检索 | 最小 RAG — `brand_knowledge/rag.py`；需先 `index_brand`，embedding 与聊天模型分开配 |
+| 品牌资料：文件 + 逐页文本留在库里；问答时按品牌做混合检索 | 最小 RAG — `brand_knowledge/rag.py`；需先 `index_brand`，embedding 与聊天模型分开配；重排默认 `BAAI/bge-reranker-v2-m3`；标注集用 `evaluate_retrieval` 打分 |
 | 长期记忆：记忆页 + 每轮 PO 对话读入 | **新增** — `memory.py`、`web/` 记忆页 |
 | 聊天里的合同 specialist | 已接入 — 附上协议文件即抽取并入库；只有文件名、没有文件内容时会要求重传 |
 | 聊天里的报表 specialist | 占位 — 设计和 prompt 在 `docs/porting/06-report-core.md` |
-| 聊天里引用品牌资料 | 已接入最小链路 — orchestrator 的 `brand` agent 把原问题交给 Milvus；合同 / 报表数字的引用仍待做 |
-| 评估 | 脚手架 — `evals/` |
+| 聊天里引用品牌资料 | 已接入 — 首问按原话检索；后续跟进由编排器补成独立问句再检索，原话照原样保存。回答下标出文件名和页码。合同 / 报表数字的引用仍待做 |
 
 ## 运行
 
@@ -139,7 +137,6 @@ Postgres、Redis、Milvus 只在 Compose 网络里，不往本机暴露端口。
 ./dev test       pytest（假模型，真 Postgres）
 ./dev test-web   前端 Vitest
 ./dev lint       ruff
-./dev eval       评估（需要真模型）
 ./dev py ...     容器里的 python
 ./dev build      依赖变了才需要（pyproject.toml / web/package.json）
 ./dev kill       停掉栈，保留 Postgres 数据卷

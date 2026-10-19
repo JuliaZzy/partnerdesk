@@ -14,7 +14,7 @@ import base64
 import json
 from collections.abc import Iterator
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -62,6 +62,13 @@ def _decode_file(f: InboundFile) -> tuple[str, bytes]:
 
 class Confirm(BaseModel):
     token: str
+
+
+class DataFeedback(BaseModel):
+    log_id: int
+    feedback: Literal["good", "bad"]
+    reason: str | None = None
+    corrected_sql: str | None = None
 
 
 def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
@@ -123,6 +130,25 @@ def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
             return service.confirm(get_db(), sid, body.token)
         except KeyError as err:
             raise HTTPException(404, str(err)) from err
+
+    @app.post("/api/sessions/{sid}/data-feedback")
+    def data_feedback(sid: str, body: DataFeedback) -> dict[str, Any]:
+        """Rate the query behind one assistant turn. The log must belong to this chat."""
+        db = get_db()
+        session = db.session(sid)
+        if not session:
+            raise HTTPException(404, "session not found")
+        try:
+            db.set_text2sql_feedback(
+                body.log_id, body.feedback, reason=body.reason, corrected_sql=body.corrected_sql,
+                partnership_id=session["partnership_id"], session_id=sid,
+            )
+        except KeyError as err:
+            raise HTTPException(404, "query log not found") from err
+        except ValueError as err:
+            raise HTTPException(400, str(err)) from err
+        db.stamp_text2sql_feedback(sid, body.log_id, body.feedback)
+        return {"ok": True, "feedback": body.feedback}
 
     @app.get("/api/orders")
     def orders(partnership_id: str | None = None) -> list[dict[str, Any]]:

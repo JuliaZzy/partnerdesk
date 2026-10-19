@@ -18,7 +18,6 @@
 ./dev catalog    把 data/off/ 的 Open Food Facts 快照导入产品目录（几十万行；快照用 scripts/fetch_off_products.py 拉）
 ./dev test       全部测试，不联网（Python）。前端单测：./dev test-web
 ./dev lint       ruff
-./dev eval       评估，需要真实模型
 ./dev py ...     容器里的 python
 ./dev build      依赖变了才需要
 ./dev kill       停掉栈（保留 Postgres 数据卷）
