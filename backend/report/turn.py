@@ -10,12 +10,14 @@ and is a draft for a person to check. It is not written into sales_reports.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
 from ..db import Database, utcnow
 from ..llm import LLM
+from ..orchestrator.status import status
 from ..text2sql import QueryResult, answer_question
 from ..tools.web_search import search
 from .charts import bind_charts, column_kinds
@@ -135,7 +137,30 @@ def draft_report(
     hint: str | None = None, search_fn: Any = None,
 ) -> ReportDraft:
     """Split, query, look up current events, chart, and write the standard outline."""
+    draft = None
+    for item in iter_draft(
+        db, llm, message=message, history=history, partnership_id=partnership_id,
+        brand_id=brand_id, distributor_id=distributor_id, session_id=session_id,
+        hint=hint, search_fn=search_fn,
+    ):
+        if isinstance(item, ReportDraft):
+            draft = item
+    if draft is None:
+        raise RuntimeError("report draft was not produced")
+    return draft
+
+
+def iter_draft(
+    db: Database, llm: LLM, *, message: str, history: list[dict[str, Any]],
+    partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
+    hint: str | None = None, search_fn: Any = None,
+) -> Iterator[dict[str, Any] | ReportDraft]:
+    """Same work as `draft_report`, yielding a status before each slow step."""
+    yield status("report-split", "拆问题", "正在决定要查什么、搜什么", state="running")
     questions, searches = _split(llm, message=message, history=history, hint=hint)
+    yield status("report-split", "拆问题", f"{len(questions)} 个问题，{len(searches)} 次检索", state="done")
+
+    yield status("report-query", "查数", "正在查询订单和销量", state="running")
     asked = [
         _Ask(qid, question, answer_question(
             db, llm, question=question, partnership_id=partnership_id, brand_id=brand_id,
@@ -143,10 +168,20 @@ def draft_report(
         ))
         for qid, question in questions
     ]
+    yield status("report-query", "查数", f"查完 {len(asked)} 个问题", state="done")
+
+    yield status("report-news", "新闻", "正在看近期零售动态", state="running")
     found = [_lookup(query, search_fn or search) for query in searches]
+    yield status("report-news", "新闻", f"看了 {len(found)} 条检索", state="done")
+
+    yield status("report-chart", "图表", "正在从查询结果里选图", state="running")
     charts = _charts(llm, message, asked)
+    yield status("report-chart", "图表", f"{len(charts)} 张图" if charts else "这组数不画图", state="done")
+
+    yield status("report-write", "草稿", "正在按大纲写", state="running")
     text = _write(llm, message, history, asked, found, charts)
-    return ReportDraft(
+    yield status("report-write", "草稿", "草稿已写完", state="done")
+    yield ReportDraft(
         text=text or "The report draft is empty.",
         charts=charts,
         web_notes=_notes(found),

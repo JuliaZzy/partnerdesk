@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from collections.abc import Iterator
 from typing import Any
 
@@ -18,6 +19,7 @@ from ..schemas import Confirm, DataFeedback, Inbound, InboundFile, NewSession
 from ._common import partnership_or_404
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 _MAX_FILE_BYTES = 12 * 1024 * 1024
 
@@ -67,8 +69,15 @@ def message(sid: str, body: Inbound, db: Database = Depends(get_db), llm: LLM = 
     documents = [_decode_file(f) for f in body.files]
 
     def gen() -> Iterator[bytes]:
-        for e in service.handle_message(db, llm, sid, body.message, body.images, body.attachments, documents):
-            yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n".encode()
+        # A model error after the first status frame must still close the stream.
+        # The provider body can carry account ids, so the client only gets a fixed line.
+        try:
+            for e in service.handle_message(db, llm, sid, body.message, body.images, body.attachments, documents):
+                yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n".encode()
+        except Exception:
+            log.exception("chat stream failed")
+            err = {"type": "error", "message": "The model could not finish this reply."}
+            yield f"data: {json.dumps(err)}\n\n".encode()
 
     return StreamingResponse(
         gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

@@ -23,6 +23,7 @@ from ..contract import contract_discount_for_next_order
 from ..db import Database
 from ..llm import LLM
 from ..memory import recall, with_memory
+from ..orchestrator.status import status
 from ..schemas import AgentSettings, CommercialRule, Partnership
 from .catalog import Catalog
 from .check import CheckResult, run_code_check
@@ -118,19 +119,24 @@ def run_po_turn(
             applied = cd.note
 
     # 2. Extract this turn into the slot template; merge, never replace.
+    yield status("po-extract", "抽取", "正在把这句话填进订单", state="running")
     try:
         ex = extract_turn(
             llm, manifest=bundle.catalog.manifest(), current=current, history=history, message=message,
             images=images, operating_context=bundle.settings.operating_context, contract_discount=applied,
         )
         slots, language = merge_slots(current, ex.slots), ex.reply_language
+        yield status("po-extract", "抽取", "订单字段已填上", state="done")
     except Exception as err:
         yield {"type": "warning", "message": f"extraction failed: {err}"}
+        yield status("po-extract", "抽取", "没读出来，沿用已有订单", state="done")
         slots, language = current, "English"
 
     # 3. Deterministic gate.
+    yield status("po-check", "核对", "正在算价格、起订量和规则", state="running")
     check = _check(bundle, slots, llm)
     stage = "confirm" if check.ready else "gathering"
+    yield status("po-check", "核对", "可以确认" if stage == "confirm" else "还有缺项", state="done")
     draft = build_draft(slots, check, bundle.partnership.currency, bundle.settings)
 
     # 4. Mint the confirm token only when the order is complete and compliant; bind it to
@@ -141,6 +147,7 @@ def run_po_turn(
         expires = datetime.now(UTC) + CONFIRM_TOKEN_TTL
 
     # 5. Stream the reply — told the gate outcome, so it is accurate.
+    yield status("po-reply", "回复", "正在写回复", state="running")
     reply_text = ""
     try:
         for tok in stream_reply(llm, ReplyInput(
@@ -153,8 +160,10 @@ def run_po_turn(
         )):
             reply_text += tok
             yield {"type": "token", "text": tok}
+        yield status("po-reply", "回复", "回复已写完", state="done")
     except Exception as err:
         yield {"type": "warning", "message": f"reply failed: {err}"}
+        yield status("po-reply", "回复", "回复失败", state="done")
 
     # 6. Persist, then hand the UI the structured payload.
     history = [*history, {"role": "user", "content": message or "(image)"}, {"role": "assistant", "content": reply_text}][-MAX_HISTORY_TURNS * 2:]

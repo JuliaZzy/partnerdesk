@@ -99,7 +99,7 @@ def test_extraction_failure_keeps_previous_slots(db):
     list(run_po_turn(db, llm, bundle, s, "10 cases of fish oil, no discount"))
     llm.fail_json = True
     events = list(run_po_turn(db, llm, bundle, db.session("s1"), "and make it quick"))
-    assert events[0]["type"] == "warning"
+    assert any(event["type"] == "warning" for event in events)
     assert events[-1]["slots"]["line_items"][0]["sku"] == "FO-100"
 
 

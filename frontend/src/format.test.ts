@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyActivity,
   buildLedger,
   chatTitle,
   citationSources,
@@ -24,6 +25,17 @@ describe("desk formatters", () => {
   it("formats money the way the order panel did", () => {
     expect(money("USD", 1000)).toBe("USD 1,000.00");
     expect(money("USD", null)).toBe("—");
+  });
+
+  it("updates a live step in place and keeps the others", () => {
+    const started = applyActivity([], { type: "status", id: "plan", title: "计划", detail: "正在判断", state: "running" });
+    const next = applyActivity(started, { type: "status", id: "po-extract", title: "抽取", detail: "正在填订单", state: "running" });
+    const done = applyActivity(next, { type: "status", id: "plan", title: "计划", detail: "采购单", state: "done" });
+    expect(done.map((step) => [step.id, step.state, step.detail])).toEqual([
+      ["plan", "done", "采购单"],
+      ["po-extract", "running", "正在填订单"],
+    ]);
+    expect(applyActivity(done, { type: "token", text: "hi" })).toBe(done);
   });
 
   it("keeps Confirm disabled until both early steps are done", () => {

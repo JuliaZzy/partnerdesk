@@ -74,4 +74,4 @@ def answer_directly(
         parts.append(chunk)
         yield {"type": "token", "text": chunk}
     reply = "".join(parts).strip() or "How can I help?"
-    yield save_reply(db, session, text, reply, extra)
+    return save_reply(db, session, text, reply, extra)

@@ -2,6 +2,24 @@
 
 export type Step = { title: string; status: string };
 
+export type Activity = { id: string; title: string; detail: string; state: "running" | "done" };
+
+/** Fold one SSE status into the live step list. The same id updates in place. */
+export function applyActivity(steps: Activity[], event: Record<string, unknown>): Activity[] {
+  if (event.type !== "status") return steps;
+  const id = String(event.id ?? "").trim();
+  if (!id) return steps;
+  const next: Activity = {
+    id,
+    title: String(event.title ?? id),
+    detail: String(event.detail ?? ""),
+    state: event.state === "done" ? "done" : "running",
+  };
+  const index = steps.findIndex((step) => step.id === id);
+  if (index < 0) return [...steps, next];
+  return steps.map((step, i) => (i === index ? next : step));
+}
+
 export type Partnership = {
   id: string;
   brand_id: string;

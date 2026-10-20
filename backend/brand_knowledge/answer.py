@@ -13,6 +13,7 @@ from ..db import Database
 from ..llm import LLM
 from ..orchestrator.prompt import FOLLOWUP
 from ..orchestrator.speak import answer_directly, one_shot
+from ..orchestrator.status import status
 from .prompt.brand import ANSWER
 from .rag import RagUnavailable, evidence_prompt, retrieve, source_label
 
@@ -87,14 +88,18 @@ def answer_in_chat(
     db: Database, llm: LLM, session: dict[str, Any], text: str, history: list[dict[str, Any]], brand_id: str,
 ) -> Iterator[dict[str, Any]]:
     db.update_session(session["id"], specialist="brand")
+    yield status("brand-search", "检索", "正在查找品牌资料", state="running")
     query = _search_query(llm, text, history)
     try:
         hits = retrieve(query, brand_id)
     except RagUnavailable as err:
+        yield status("brand-search", "检索", "检索不可用", state="done")
         yield from one_shot(db, session, str(err))
         return
     named = _with_sources(db, hits)
-    yield from answer_directly(
+    yield status("brand-search", "检索", f"找到 {len(named)} 段", state="done")
+    yield status("brand-reply", "回答", "正在根据这些段落作答", state="running")
+    done = yield from answer_directly(
         db, llm, session, text,
         prompt_text=evidence_prompt(text, named),
         system=ANSWER,
@@ -106,3 +111,5 @@ def answer_in_chat(
             for h in named
         ]},
     )
+    yield status("brand-reply", "回答", "回复已写完", state="done")
+    yield done

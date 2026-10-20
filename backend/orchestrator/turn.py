@@ -23,6 +23,9 @@ from ..text2sql.agent import run as run_data
 from ..tools import all_schemas, all_tools
 from .prompt import OPEN, PLAN, REACT
 from .speak import answer_directly, one_shot
+from .status import status
+
+_HANDOFF = {"po": "采购单", "contract": "合同", "report": "报表", "data": "查数", "brand": "品牌资料"}
 
 MAX_IMAGES = 3
 MAX_TOOL_ROUNDS = 4
@@ -224,12 +227,15 @@ def handle_message(
     history = session.get("history") or []
 
     if not session.get("title"):
+        yield status("session", "开场", "正在给这次对话起标题", state="running")
         opened = open_session(llm, message=text, attachments=names)
         db.update_session(session_id, title=opened.title, tags=opened.tags)
         session = db.session(session_id) or session
         yield {"type": "session", "title": opened.title, "tags": opened.tags}
+        yield status("session", "开场", opened.title, state="done")
 
     tags = list(session.get("tags") or [])
+    yield status("plan", "计划", "正在判断这一轮交给谁", state="running")
     tasks = make_plan(
         llm, message=text, attachments=names, history=history,
         stage=session.get("stage"), tags=tags,
@@ -238,10 +244,15 @@ def handle_message(
         "type": "plan",
         "tasks": [{"id": t.id, "kind": t.kind, "name": t.name, "depends_on": t.depends_on} for t in tasks],
     }
+    chosen = next((name for name in _HANDOFF if name in _agent_names(tasks) or (
+        name == "po" and session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm")
+    )), None)
 
     agents = _agent_names(tasks)
     if session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm"):
         agents = set(agents) | {"po"}
+        chosen = chosen or "po"
+    yield status("plan", "计划", _HANDOFF.get(chosen or "", "直接回答"), state="done")
 
     partnership_id = bundle.partnership.id
     brand_id = bundle.partnership.brand_id
@@ -271,12 +282,17 @@ def handle_message(
         yield from answer_in_chat(db, llm, session, text, history, brand_id)
         return
 
+    yield status("tools", "工具", "正在看要不要查新闻、汇率或翻译", state="running")
     tool_reply = run_tool_calls(
         llm, text=text, history=history, extra={"last_report": session.get("last_report")},
     )
     if tool_reply is not None:
+        yield status("tools", "工具", "工具已返回", state="done")
         yield {"type": "tools", "used": True}
         yield from one_shot(db, session, tool_reply)
         return
-
-    yield from answer_directly(db, llm, session, text)
+    yield status("tools", "工具", "这一轮没有调用工具", state="done")
+    yield status("answer", "回答", "正在直接回复", state="running")
+    done = yield from answer_directly(db, llm, session, text)
+    yield status("answer", "回答", "回复已写完", state="done")
+    yield done

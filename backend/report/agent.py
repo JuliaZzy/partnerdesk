@@ -8,7 +8,7 @@ from typing import Any
 from ..db import Database
 from ..llm import LLM
 from ..orchestrator.speak import save_reply
-from .turn import draft_report
+from .turn import ReportDraft, iter_draft
 
 
 def run(
@@ -16,11 +16,18 @@ def run(
     partnership_id: str, brand_id: str, distributor_id: str, hint: str | None,
 ) -> Iterator[dict[str, Any]]:
     db.update_session(session["id"], specialist="report")
-    draft = draft_report(
+    draft: ReportDraft | None = None
+    for item in iter_draft(
         db, llm, message=text, history=list(session.get("history") or []),
         partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
         session_id=session["id"], hint=hint,
-    )
+    ):
+        if isinstance(item, ReportDraft):
+            draft = item
+        else:
+            yield item
+    if draft is None:
+        draft = ReportDraft(text="The report draft is empty.", charts=[], web_notes=[], warnings=["draft failed"], data_query=None)
     for warning in draft.warnings:
         yield {"type": "warning", "message": warning}
     reply = draft.text

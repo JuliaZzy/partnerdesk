@@ -254,7 +254,7 @@ def test_brand_question_is_retrieved_then_answered_by_the_text_model(db, monkeyp
     )
     events = list(service.handle_message(db, llm, sid, "How long does it run at 42 C?"))
     assert seen == {"q": "How long does it run at 42 C?", "brand": "brand-1"}
-    assert events[1]["tasks"][0]["name"] == "brand"
+    assert next(event for event in events if event["type"] == "plan")["tasks"][0]["name"] == "brand"
     told = llm.calls[-1]
     assert told["kind"] == "text" and "passages" in told["system"].lower()
     assert "Runs 8 hours at 42 C." in told["messages"][-1]["content"]

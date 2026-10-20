@@ -29,6 +29,10 @@ def events(resp) -> list[dict]:
     return [json.loads(l[6:]) for l in resp.text.split("\n\n") if l.startswith("data: ")]
 
 
+def _of(ev: list[dict], kind: str) -> dict:
+    return next(event for event in ev if event["type"] == kind)
+
+
 def test_full_flow(db):
     llm = FakeLLM(json_replies=[
         open_meta(), plan("po"), dict(EXTRACT),
@@ -40,8 +44,11 @@ def test_full_flow(db):
     sid = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
 
     ev = events(c.post(f"/api/sessions/{sid}/message", json={"message": "10 cases of fish oil, no discount"}))
-    assert ev[0] == {"type": "session", "title": "10 cases fish oil", "tags": ["po"]}
-    assert ev[1]["type"] == "plan" and ev[1]["tasks"][0]["name"] == "po"
+    assert _of(ev, "session") == {"type": "session", "title": "10 cases fish oil", "tags": ["po"]}
+    assert _of(ev, "plan")["tasks"][0]["name"] == "po"
+    plan_steps = [e for e in ev if e["type"] == "status" and e["id"] == "plan"]
+    assert plan_steps[0]["state"] == "running" and plan_steps[-1]["state"] == "done"
+    assert [e["type"] for e in ev].index("status") < [e["type"] for e in ev].index("plan")
     assert "".join(e["text"] for e in ev if e["type"] == "token") == "All set — press Confirm."
     done = ev[-1]
     assert done["stage"] == "confirm" and done["draft"]["total"] == 1000 and done["confirm_token"]
@@ -60,8 +67,8 @@ def test_empty_plan_answers_directly(db):
     c = TestClient(create_app(db=db, llm=llm))
     sid = c.post("/api/sessions", json={}).json()["id"]
     ev = events(c.post(f"/api/sessions/{sid}/message", json={"message": "happy new year!"}))
-    assert ev[0]["type"] == "session"
-    assert ev[1] == {"type": "plan", "tasks": []}
+    assert _of(ev, "session")["type"] == "session"
+    assert _of(ev, "plan") == {"type": "plan", "tasks": []}
     assert "Happy to help" in "".join(e["text"] for e in ev if e["type"] == "token")
 
 
@@ -73,8 +80,19 @@ def test_contract_plan_without_bytes_still_answers(db):
     c = TestClient(create_app(db=db, llm=llm))
     sid = c.post("/api/sessions", json={}).json()["id"]
     ev = events(c.post(f"/api/sessions/{sid}/message", json={"message": "new agreement attached", "attachments": ["agreement.pdf"]}))
-    assert ev[1]["tasks"][0]["name"] == "contract"
+    assert _of(ev, "plan")["tasks"][0]["name"] == "contract"
     assert "attach" in "".join(e["text"] for e in ev if e["type"] == "token").lower()
+
+
+def test_model_failure_closes_the_stream_with_an_error_event(db):
+    llm = FakeLLM(fail_json=True)
+    c = TestClient(create_app(db=db, llm=llm))
+    sid = c.post("/api/sessions", json={}).json()["id"]
+    resp = c.post(f"/api/sessions/{sid}/message", json={"message": "hello"})
+    assert resp.status_code == 200
+    ev = events(resp)
+    assert ev[0]["type"] == "status" and ev[0]["id"] == "session" and ev[0]["state"] == "running"
+    assert ev[-1] == {"type": "error", "message": "The model could not finish this reply."}
 
 
 def test_empty_message_is_rejected(db):

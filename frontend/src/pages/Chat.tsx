@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, postJson, streamMessage } from "../api";
 import { NeedPartnership, useDesk } from "../desk";
 import {
+  applyActivity,
   buildLedger,
   citationSources,
   confirmReady,
@@ -13,6 +14,7 @@ import {
   money,
   reportCharts,
   webNotes,
+  type Activity,
   type DataQueryMark,
   type DraftLine,
   type ReportChart,
@@ -32,6 +34,7 @@ type Turn = {
   charts?: ReportChart[];
   webNotes?: string[];
   reportDraft?: boolean;
+  activity?: Activity[];
 };
 
 type Gap = { message: string; candidates?: { name: string; sku: string }[] };
@@ -136,6 +139,8 @@ function ChatDesk() {
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [live, setLive] = useState("");
+  const [activity, setActivity] = useState<Activity[]>([]);
+  const activityRef = useRef<Activity[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState(() => localStorage.getItem("partnerdesk.model") || "");
   const threadRef = useRef<HTMLDivElement>(null);
@@ -194,7 +199,7 @@ function ChatDesk() {
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
-  }, [snap?.turns, live]);
+  }, [snap?.turns, live, activity]);
 
   async function send(message: string, attached = files) {
     if (!sid || !snap || busy) return;
@@ -214,7 +219,9 @@ function ChatDesk() {
     const userTurn: Turn = { role: "user", text: trimmed, images, files: documents.map((d) => d.name) };
     const base: Snap = { ...snap, turns: [...snap.turns, userTurn] };
     remember(sid, base);
-    setLive("Working…");
+    activityRef.current = [];
+    setActivity([]);
+    setLive("");
     let reply = "";
     const warnings: string[] = [];
     const finished: { event: Record<string, unknown> | null } = { event: null };
@@ -229,7 +236,11 @@ function ChatDesk() {
         files: documents,
         model: model || null,
       }, (event) => {
-        if (event.type === "token") {
+        if (event.type === "status") {
+          const next = applyActivity(activityRef.current, event);
+          activityRef.current = next;
+          setActivity(next);
+        } else if (event.type === "token") {
           reply += String(event.text ?? "");
           setLive(reply);
         } else if (event.type === "session") {
@@ -241,6 +252,8 @@ function ChatDesk() {
           route = `→ ${names.join(" · ") || "answer"}`;
         } else if (event.type === "warning") {
           warnings.push(String(event.message ?? ""));
+        } else if (event.type === "error") {
+          throw new Error(String(event.message ?? "The model could not finish this reply."));
         } else if (event.type === "done") {
           finished.event = event;
         }
@@ -261,6 +274,7 @@ function ChatDesk() {
           charts: reportCharts(done?.charts),
           webNotes: webNotes(done?.web_notes),
           reportDraft: done?.report_draft === true,
+          activity: activityRef.current,
         }],
         stage: done ? String(done.stage ?? base.stage) : base.stage,
         draft: done ? ((done.draft as Draft | null) ?? null) : base.draft,
@@ -269,6 +283,8 @@ function ChatDesk() {
         confirmToken: done ? ((done.confirm_token as string | null) ?? null) : base.confirmToken,
       };
       remember(sid, next);
+      activityRef.current = [];
+      setActivity([]);
       setLive("");
       await desk.reloadSessions();
     } catch (err) {
@@ -339,6 +355,7 @@ function ChatDesk() {
           {snap?.turns.map((turn, index) => (
             <div className={`turn ${turn.role}`} key={index}>
               <div className="bubble">
+                {turn.activity && turn.activity.length > 0 && <ActivityList steps={turn.activity} />}
                 {turn.model && <div className="who">{models.find((item) => item.id === turn.model)?.short || turn.model}</div>}
                 {turn.reportDraft && <div className="draft-tag">Draft</div>}
                 <p>{turn.text}</p>
@@ -362,9 +379,12 @@ function ChatDesk() {
               </div>
             </div>
           ))}
-          {live && (
+          {(activity.length > 0 || live) && (
             <div className="turn assistant">
-              <div className="bubble"><p>{live}</p></div>
+              <div className="bubble">
+                {activity.length > 0 && <ActivityList steps={activity} />}
+                {live && <p>{live}</p>}
+              </div>
             </div>
           )}
         </div>
@@ -428,6 +448,12 @@ function ChatDesk() {
               </div>
             </div>
           ))}
+          {busy && activity.length > 0 && (
+            <>
+              <h2>这一轮</h2>
+              <ActivityList steps={activity} />
+            </>
+          )}
           <h2>Progress</h2>
           <ul className="steps">
             {(snap?.steps?.length ? snap.steps : [
@@ -450,6 +476,20 @@ function ChatDesk() {
         </div>
       </aside>
     </div>
+  );
+}
+
+function ActivityList({ steps }: { steps: Activity[] }) {
+  return (
+    <ol className="activity">
+      {steps.map((step, index) => (
+        <li key={step.id} className={step.state}>
+          <span className="mark">{step.state === "done" ? "✓" : "…"}</span>
+          <span className="title">{index + 1}. {step.title}</span>
+          <span className="detail">{step.detail}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 

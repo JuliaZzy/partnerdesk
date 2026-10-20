@@ -37,8 +37,9 @@ compose.yaml / Dockerfile / frontend/Dockerfile   Docker Compose：Postgres + Re
 dev / dev.bat      所有命令的入口（容器里跑，不在宿主机起服务）
 backend/
   orchestrator/    Orchestrator：开场、要一份计划、按名字调用；registry.json 在这里
-    turn.py        只调度
+    turn.py        只调度。每一步开始前先推一条 status，页面跟着更新
     prompt.py      PLAN、开场、工具循环、普通回答
+    status.py      这一条 status 长什么样
     speak.py       把一条回复写进会话
   po/              PO Agent
     agent.py       一轮对话：索赔，或继续下单

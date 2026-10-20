@@ -159,7 +159,7 @@ def test_chat_files_the_attached_agreement_and_ignores_a_bare_name(db):
         text_reply="Please attach the agreement file.",
     )
     ev = list(service.handle_message(db, named, sid, "see the attached agreement", attachments=["agreement.pdf"]))
-    assert ev[1]["tasks"][0]["name"] == "contract"
+    assert next(event for event in ev if event["type"] == "plan")["tasks"][0]["name"] == "contract"
     assert "attach" in "".join(e.get("text", "") for e in ev).lower()
     assert db.active_contract("ps-1") is None
     assert not any((c.get("schema") or {}).get("name") == "contract_extraction" for c in named.calls)
