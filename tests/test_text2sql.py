@@ -9,11 +9,11 @@ from backend import service
 from backend.app import create_app
 from backend.db.orm import Base
 from backend.llm import FakeLLM
-from backend.models import Partnership, Product, PurchaseOrder
-from backend.report.prompt.report import WITH_DATA
+from backend.report.prompt import WITH_DATA
+from backend.schemas import Partnership, Product, PurchaseOrder
 from backend.text2sql import answer_question
 from backend.text2sql.analyze_badcase import analyze, classify_error
-from backend.text2sql.prompt.data_query import ANSWER as DATA_ANSWER
+from backend.text2sql.prompt import ANSWER as DATA_ANSWER
 from backend.text2sql.sql_validator import validate
 from backend.text2sql.table_metadata import EXCLUDED_TABLES, HIDDEN_COLUMNS, TABLES, scope_views
 

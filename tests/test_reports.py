@@ -7,7 +7,6 @@ import io
 
 import pytest
 
-from backend.models import Partnership, Product
 from backend.report import spreadsheet as reports
 from backend.report.spreadsheet import (
     analyze,
@@ -17,6 +16,7 @@ from backend.report.spreadsheet import (
     ingest,
     parse_period,
 )
+from backend.schemas import Partnership, Product
 
 PRODUCTS = [
     Product(id="p-fo", sku="FO-100", product_name_en="Deep Sea Fish Oil", product_name_native="深海鱼油omega-3"),

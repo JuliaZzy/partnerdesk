@@ -23,8 +23,8 @@ from backend.brand_knowledge.rag import (
 )
 from backend.config import rerank_settings
 from backend.llm import FakeLLM
-from backend.models import BrandDocument
-from backend.orchestrator.prompt.orchestrator import FOLLOWUP
+from backend.orchestrator.prompt import FOLLOWUP
+from backend.schemas import BrandDocument
 
 
 def _plan(name: str) -> dict:
@@ -245,7 +245,7 @@ def test_brand_question_is_retrieved_then_answered_by_the_text_model(db, monkeyp
         seen["brand"] = brand_id
         return [{"cid": "doc#p1-0", "doc": "doc", "page": 1, "text": "Runs 8 hours at 42 C.", "score": 0.9}]
 
-    monkeypatch.setattr("backend.orchestrator.turn.retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.brand_knowledge.answer.retrieve", fake_retrieve)
     db.save_document(BrandDocument(id="doc", brand_id="brand-1", file_name="品牌手册.pdf"), [(1, "Runs 8 hours at 42 C.")])
     sid = service.new_session(db, "ps-1")["id"]
     llm = FakeLLM(
@@ -277,7 +277,7 @@ def test_a_follow_up_is_rewritten_for_retrieval_and_stored_as_typed(db, monkeypa
         seen.append((question, brand_id))
         return [{"cid": "doc#p1-0", "doc": "doc", "page": 1, "text": "冷萃 500ml，保质期十二个月。", "score": 0.9}]
 
-    monkeypatch.setattr("backend.orchestrator.turn.retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.brand_knowledge.answer.retrieve", fake_retrieve)
     sid = service.new_session(db, "ps-1")["id"]
     llm = FakeLLM(
         json_replies=[
@@ -312,7 +312,7 @@ def test_unconfigured_retrieval_is_told_to_the_user(db, monkeypatch):
     def boom(question, brand_id):
         raise RagUnavailable("EMBEDDING_BASE_URL is not set.")
 
-    monkeypatch.setattr("backend.orchestrator.turn.retrieve", boom)
+    monkeypatch.setattr("backend.brand_knowledge.answer.retrieve", boom)
     sid = service.new_session(db, "ps-1")["id"]
     llm = FakeLLM(json_replies=[{"tags": ["brand"], "title": "specs"}, _plan("brand")], text_reply="should not be used")
     events = list(service.handle_message(db, llm, sid, "What is the shelf life?"))

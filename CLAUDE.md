@@ -43,8 +43,9 @@
 
 这几条是这个项目存在的理由，违反了就不是这个项目了：
 
-1. **模型抽取，代码决定。** 任何数字、价格、SKU 解析结果、规则判定都必须来自确定性代码。
-   LLM 只负责把自然语言填进固定 slot。不要为了省事让模型算总价或判断规则是否通过。
+1. **采购单的价格和规则由代码计算。** 这条只约束 `po/`：价格、SKU、MOQ、商业规则来自确定性代码。
+   模型只把对话填进固定 slot，不算总价，也不判断规则是否通过、是否可以提交。
+   合同分析、报表叙述、检索回答由各自的模型调用完成。
 2. **副作用幂等。** confirm token 在建单**之前**烧掉。
 3. **所有业务数据入库，按真实表建模**（列、外键、索引），不要 JSON blob 表。
 
@@ -52,7 +53,7 @@
 
 - **代码里的注释和 docstring 用英文**，README 和面向用户的文档用中文。跟着周围代码的密度走——
   这个库的注释解释的是"为什么"，不是"这行在干什么"。
-- **测试不调模型。** 模型调用一律用 `FakeLLM`（`llm.py` 是唯一的模型接缝）。桌面页面的数据行为用
+- **测试不调模型。** 模型调用一律用 `FakeLLM`（`llm/` 是模型客户端，从 `backend.llm` import）。桌面页面的数据行为用
   `tests/test_desk_api.py` 打 HTTP；展示用的纯函数在 `frontend/` 里用 Vitest。数据库不是假的：测试连 Compose 里那份 Postgres。
 - ruff：`line-length = 110`，规则集见 `pyproject.toml`。提交前 `./dev lint`。
 
@@ -63,8 +64,8 @@
 - **时间戳是 `timestamptz`，写入的值一律是 UTC-aware 的 `datetime`**（`database.utcnow`），不要再写 ISO 字符串。
   但**纯日期**（合同期限、报表期间）仍然是 `YYYY-MM-DD` 文本，这是有意的——它们是日历标签，背后没有具体时刻。
   改这两类字段前先确认自己在改哪一类。
-- **桌面是 `frontend/`（Vite + React + TypeScript + Vitest）**，只通过 `app.py` / `desk_api.py` 的 HTTP 跟后端说话。
+- **桌面是 `frontend/`（Vite + React + TypeScript + Vitest）**，只通过 `app.py` 挂上的 router 跟后端说话。
   领域逻辑不受影响：`service.py` 以下完全不认识任何 UI 框架。不要把页面逻辑写回 Python。
-- `app.py` 里的 pydantic 请求模型**必须定义在模块层**。因为有 `from __future__ import annotations`，
-  定义在 `create_app` 内部的类会被 FastAPI 静默当成 query parameter（代码里有注释说明）。
+- HTTP 请求体在 `schemas/`（`chat.py`、`memory.py`），**必须定义在模块层**再由 router import。
+  因为有 `from __future__ import annotations`，定义在 `create_app` 内部的类会被 FastAPI 静默当成 query parameter。
 - 容器里访问宿主机上的服务（Ollama 等）用 `host.docker.internal`，不要写 `127.0.0.1`。

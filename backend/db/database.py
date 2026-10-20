@@ -1,6 +1,6 @@
 """The one object the rest of the code talks to for persistence.
 
-It speaks pydantic models (`backend/models.py`) and plain dicts outward and SQLAlchemy
+It speaks pydantic models (`backend/schemas/`) and plain dicts outward and SQLAlchemy
 rows (`orm.py`) inward — nothing outside this package imports `orm`. Every method is one
 transaction; the multi-row writes (an order with its items and rule snapshot, a contract
 with its terms and derived rules) commit together or not at all.
@@ -23,7 +23,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import db_url
-from ..models import (
+from ..schemas import (
     AgentSettings,
     BrandDocument,
     CommercialRule,

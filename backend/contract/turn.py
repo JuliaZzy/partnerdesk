@@ -1,8 +1,8 @@
 """File an agreement from chat and hand the stored result back as a table.
 
 The chat model does not file and does not invent terms. This module runs `read` (which
-splits chunks) and `ingest`, then returns the rows that were written. The orchestrator
-is what speaks to the distributor.
+splits chunks) and `ingest`, then returns the rows that were written. `agent` is
+what speaks to the distributor.
 """
 
 from __future__ import annotations

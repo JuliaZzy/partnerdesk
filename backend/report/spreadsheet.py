@@ -24,7 +24,7 @@ from datetime import date, datetime
 from typing import Any
 
 from ..db import Database
-from ..models import Partnership, Product, ReportFact, SalesReport
+from ..schemas import Partnership, Product, ReportFact, SalesReport
 
 # --- vocabulary -----------------------------------------------------------------------
 # Header → role. Longer entries are tried first so "sales qty" is units before "sales"

@@ -19,7 +19,7 @@ from ..llm import LLM
 from ..text2sql import QueryResult, answer_question
 from ..tools.web_search import search
 from .charts import bind_charts, column_kinds
-from .prompt.report import CHART, SPLIT, STANDARD_QUESTIONS, WITH_DATA
+from .prompt import CHART, SPLIT, STANDARD_QUESTIONS, WITH_DATA
 
 MAX_QUESTIONS = 4
 MAX_SEARCHES = 2

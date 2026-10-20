@@ -1,6 +1,18 @@
-"""PO specialist prompts. No LLM reflection — validation is code-check + confirm gate."""
+"""PO prompts and the `{{name}}` filler.
+
+`fill` replaces `{{slot}}` and leaves ordinary braces in JSON examples alone.
+The strings below are what the PO agent sends. Pricing and rules stay in code.
+"""
 
 from __future__ import annotations
+
+
+def fill(template: str, **parts: str) -> str:
+    """Replace `{{name}}` slots. JSON examples in the template keep ordinary `{braces}`."""
+    for key, value in parts.items():
+        template = template.replace("{{" + key + "}}", value)
+    return template
+
 
 EXTRACT = """You are a purchase-order assistant for a brand's distributors. Your ONLY job here is to read the latest message (with history) and MERGE it into the order slots below. You do NOT decide which fields a PO needs (the template is fixed) and you do NOT validate anything. Never invent products, SKUs, quantities, or prices.
 {{image_block}}{{context_block}}

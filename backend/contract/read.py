@@ -19,10 +19,10 @@ from typing import Any
 from ..db import Database
 from ..documents import SUPPORTED_EXTS, load_pages, render_pdf_images
 from ..llm import LLM
-from ..models import ContractChunk
+from ..schemas import ContractChunk
 from .chunks import flatten_chunk_tree, split_chunks
 from .ingest import ingest_extraction, record_from_extraction
-from .prompt.contract import EXTRACT, REFLECT, SELECT
+from .prompt import EXTRACT, REFLECT, SELECT
 
 MAX_SCAN_IMAGES = 6
 MAX_READ_PASSES = 3

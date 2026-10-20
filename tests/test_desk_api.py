@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from backend.app import create_app
 from backend.contract import ingest_extraction
 from backend.llm import FakeLLM
-from backend.models import Partnership, Product
+from backend.schemas import Partnership, Product
 
 
 def client(db, llm=None) -> TestClient:

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from backend.llm import FakeLLM
-from backend.models import PurchaseOrder
 from backend.report import draft_report
 from backend.report.charts import bind_charts
-from backend.report.prompt.report import STANDARD_QUESTIONS, WITH_DATA
+from backend.report.prompt import STANDARD_QUESTIONS, WITH_DATA
 from backend.report.turn import parse_split
+from backend.schemas import PurchaseOrder
 
 
 def _po() -> PurchaseOrder:

@@ -18,8 +18,8 @@ from sqlalchemy.engine import make_url
 
 from backend.config import env
 from backend.db import Database
-from backend.models import AgentSettings, CommercialRule, Partnership, Product
 from backend.po.catalog import Catalog
+from backend.schemas import AgentSettings, CommercialRule, Partnership, Product
 
 # MOQ is stored in UNITS and enforced in CASES: 100 units / 12 per case = 9 cases.
 CATALOG_ROWS = [

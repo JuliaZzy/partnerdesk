@@ -6,14 +6,12 @@ import importlib
 import json
 from pathlib import Path
 
-from backend.orchestrator.prompt.orchestrator import PLAN
-from backend.orchestrator.prompt.session_open import OPEN
+from backend.orchestrator.prompt import OPEN, PLAN
 from backend.po.extract import build_extract_prompt
-from backend.po.prompt import fill
-from backend.po.prompt.po import EXTRACT
+from backend.po.prompt import EXTRACT, fill
 from backend.po.slots import PoSlots
-from backend.report.prompt import report
-from backend.text2sql.prompt import data_query
+from backend.report import prompt as report
+from backend.text2sql import prompt as data_query
 
 ROOT = Path(__file__).resolve().parents[1] / "backend"
 

@@ -23,58 +23,17 @@ System fields (PO number, currency, ship-to, totals) are never slots — they ar
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from ..models import (
+from ..schemas import (
     INCOTERMS_VALUES,
     PAYMENT_TERMS_VALUES,
     SHIPPING_METHOD_VALUES,
     AgentSettings,
+    Discount,
+    EffectiveTerms,
+    LineItemSlot,
+    PoSlots,
 )
-
-
-class LineItemSlot(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    # The user's own wording ("fish oil", "the serum"). The model extracts this — it does
-    # NOT pick a SKU. Resolution + disambiguation happen in code (check.py).
-    reference: str
-    # Number of CASES (not units).
-    cases: int
-    # Resolved catalog SKU. None until code resolves `reference`; once set it persists
-    # across turns (the model keeps it) so a resolved line isn't re-searched.
-    sku: str | None = None
-
-
-class Discount(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    kind: Literal["none", "amount", "percent"]
-    value: float | None = None
-    # Who settled it: the customer in chat, or the partnership's contract (pre-filled by
-    # code). Shown in the draft so a contract rate reads as a given, not an offer.
-    source: Literal["customer", "contract"] | None = None
-    note: str | None = None  # e.g. "3rd container of the contract year → 5% (§5.01(b))"
-
-    def describe(self, currency: str = "") -> str:
-        if self.kind == "none":
-            return "list price per contract" if self.source == "contract" else "no discount"
-        head = f"{self.value:g}%" if self.kind == "percent" else f"{currency} {self.value:g}".strip()
-        return f"contract discount {head}" if self.source == "contract" else f"{head} discount"
-
-
-class PoSlots(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    line_items: list[LineItemSlot] = Field(default_factory=list)
-    payment_terms: str | None = None
-    incoterms: str | None = None
-    shipping_method: str | None = None
-    eta_date: str | None = None  # YYYY-MM-DD
-    discount: Discount | None = None  # None = not settled by contract or customer yet
-    notes: str | None = None
 
 
 def empty_slots() -> PoSlots:
@@ -117,19 +76,6 @@ def _merge_discount(prev: Discount | None, nxt: Discount | None) -> Discount | N
 
 def default_eta_date(days: int, today: date | None = None) -> str:
     return ((today or date.today()) + timedelta(days=days)).isoformat()
-
-
-class EffectiveTerms(BaseModel):
-    """Slots with every defaultable term filled, so the draft always shows a concrete
-    proposal. Defaults come from brand settings; anything the customer stated wins."""
-
-    line_items: list[LineItemSlot]
-    payment_terms: str
-    incoterms: str
-    shipping_method: str
-    eta_date: str
-    discount: Discount | None
-    notes: str | None
 
 
 def with_defaults(slots: PoSlots, settings: AgentSettings, today: date | None = None) -> EffectiveTerms:

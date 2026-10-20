@@ -14,7 +14,7 @@ import json
 from datetime import date
 from typing import Any
 
-from ..models import PAYMENT_TERMS_LABELS, AgentSettings
+from ..schemas import PAYMENT_TERMS_LABELS, AgentSettings
 from .check import CheckResult
 from .slots import PoSlots, with_defaults
 

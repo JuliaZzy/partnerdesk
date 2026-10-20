@@ -15,7 +15,7 @@ does (`source="system"`). The model never writes memory on its own — it would 
 from __future__ import annotations
 
 from .db import Database
-from .models import Memory
+from .schemas import Memory
 
 MAX_RECALLED = 20
 MAX_BLOCK_CHARS = 1500

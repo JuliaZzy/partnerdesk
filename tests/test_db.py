@@ -25,7 +25,7 @@ def test_foreign_keys_are_enforced(make_db):
     import pytest
     from sqlalchemy.exc import IntegrityError
 
-    from backend.models import Product
+    from backend.schemas import Product
 
     db = make_db("fk")
     with pytest.raises(IntegrityError):

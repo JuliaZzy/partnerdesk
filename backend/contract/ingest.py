@@ -31,7 +31,7 @@ from datetime import date
 from typing import Any
 
 from ..db import Database
-from ..models import (
+from ..schemas import (
     CommercialRule,
     Contract,
     ContractChunk,

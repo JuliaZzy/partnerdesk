@@ -1,58 +1,22 @@
-"""The one seam between the agent and a model.
+"""OpenAI-compatible chat client.
 
-Three operations: structured JSON (extract, classify), streamed text (PO reply), and a
-plain chat completion that may return native `tool_calls` (the orchestrator loop).
-Everything else — prompts, merging, validation — lives in the modules that call this.
+Callers depend on the `LLM` protocol. `OpenAICompatLLM` talks to OpenAI, the
+campus gateway, Ollama, or GLM through one SDK and one `base_url`.
+
+In: a system prompt, messages, and either a JSON schema, a text stream, or tool
+definitions. Out: a dict, text chunks, or one `AssistantTurn`.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from typing import Any, Protocol
 
-from .config import LLMSettings, llm_settings, model_timeout, resolve_model_id
-
-Message = dict[str, Any]
-
-_FENCE = re.compile(r"^```(?:json)?\s*([\s\S]*?)\s*```$", re.IGNORECASE)
-
-
-@dataclass(frozen=True)
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class AssistantTurn:
-    """One `choices[0].message` — either prose, or one or more native function calls."""
-
-    content: str | None = None
-    tool_calls: list[ToolCall] = field(default_factory=list)
-
-    def as_message(self) -> Message:
-        msg: Message = {"role": "assistant", "content": self.content}
-        if self.tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": c.id,
-                    "type": "function",
-                    "function": {"name": c.name, "arguments": json.dumps(c.arguments, ensure_ascii=False)},
-                }
-                for c in self.tool_calls
-            ]
-        return msg
-
-
-def parse_json_loose(text: str) -> Any:
-    """Parse a model's JSON answer, tolerating a ```json fence some providers add."""
-    trimmed = (text or "").strip()
-    m = _FENCE.match(trimmed)
-    return json.loads(m.group(1) if m else trimmed)
+from ..config import LLMSettings, llm_settings, model_timeout, resolve_model_id
+from .parse import parse_json_loose
+from .types import AssistantTurn, Message, ToolCall
 
 
 class LLM(Protocol):
@@ -189,34 +153,3 @@ class OpenAICompatLLM:
             args = parsed if isinstance(parsed, dict) else {}
             calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
         return AssistantTurn(content=msg.content, tool_calls=calls)
-
-
-@dataclass
-class FakeLLM:
-    """Scripted model for tests. `json_replies` are consumed in order; `text_reply` streams
-    word by word. Every call is recorded so a test can assert on the prompt it received."""
-
-    json_replies: list[dict[str, Any]] = field(default_factory=list)
-    tool_replies: list[AssistantTurn] = field(default_factory=list)
-    text_reply: str = "Got it."
-    calls: list[dict[str, Any]] = field(default_factory=list)
-    fail_json: bool = False
-
-    def complete_json(self, *, system, messages, schema=None, temperature=0.0, max_tokens=900):
-        self.calls.append({"kind": "json", "system": system, "messages": messages, "schema": schema})
-        if self.fail_json:
-            raise RuntimeError("model unavailable")
-        if not self.json_replies:
-            raise RuntimeError("FakeLLM: no scripted JSON reply left")
-        return self.json_replies.pop(0)
-
-    def stream_text(self, *, system, messages, temperature=0.7, max_tokens=300):
-        self.calls.append({"kind": "text", "system": system, "messages": messages})
-        for i, word in enumerate(self.text_reply.split(" ")):
-            yield (" " if i else "") + word
-
-    def complete(self, *, system, messages, tools=None, temperature=0.0, max_tokens=900):
-        self.calls.append({"kind": "complete", "system": system, "messages": messages, "tools": tools})
-        if self.tool_replies:
-            return self.tool_replies.pop(0)
-        return AssistantTurn()

@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..models import CommercialRule, Product
+from ..schemas import CommercialRule, Product
 from .catalog import Catalog
 from .rules import EvalItem, POContext, RuleResult, evaluate_rules, moq_minimum_cases
 from .slots import PoSlots

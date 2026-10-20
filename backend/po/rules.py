@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from ..models import CommercialRule, Product, product_status
+from ..schemas import CommercialRule, Product, product_status
 
 
 @dataclass

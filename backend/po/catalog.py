@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from ..models import Product
+from ..schemas import Product
 
 MAX_PRODUCTS_IN_MANIFEST = 400
 

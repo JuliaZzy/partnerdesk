@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from backend.llm import FakeLLM
-from backend.models import PurchaseOrder
 from backend.po.claims import (
     handle_post_submit,
     inspection_ok_outcome,
@@ -9,6 +8,7 @@ from backend.po.claims import (
     pick_claim_target,
     prepayment_due_now,
 )
+from backend.schemas import PurchaseOrder
 
 
 def po(**over) -> PurchaseOrder:

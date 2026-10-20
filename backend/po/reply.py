@@ -12,8 +12,7 @@ from dataclasses import dataclass, field
 
 from ..llm import LLM
 from .extract import context_block
-from .prompt import fill
-from .prompt.po import REPLY
+from .prompt import REPLY, fill
 
 
 @dataclass

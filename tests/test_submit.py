@@ -7,8 +7,8 @@ import threading
 from datetime import UTC, datetime
 
 from backend.llm import FakeLLM
-from backend.models import CommercialRule
 from backend.po.turn import confirm_order, load_bundle, run_po_turn
+from backend.schemas import CommercialRule
 
 EXTRACT_OK = {
     "line_items": [{"reference": "fish oil", "cases": 10, "sku": None}],

@@ -21,7 +21,7 @@ from typing import Any
 
 from ..db import Database, utcnow
 from ..llm import LLM
-from .prompt.data_query import PICK, REFLECT, REPAIR, SQL
+from .prompt import PICK, REFLECT, REPAIR, SQL
 from .sql_validator import validate
 from .table_metadata import TABLES, catalog_text, describe_tables, expand_tables, scope_views
 

@@ -23,7 +23,7 @@ from ..contract import contract_discount_for_next_order
 from ..db import Database
 from ..llm import LLM
 from ..memory import recall, with_memory
-from ..models import AgentSettings, CommercialRule, Partnership
+from ..schemas import AgentSettings, CommercialRule, Partnership
 from .catalog import Catalog
 from .check import CheckResult, run_code_check
 from .draft import build_draft, build_draft_summary, hash_draft

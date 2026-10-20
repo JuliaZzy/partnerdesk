@@ -5,11 +5,11 @@ from __future__ import annotations
 
 from datetime import date
 
-from backend.models import AgentSettings
 from backend.po.check import run_code_check
 from backend.po.draft import build_draft_summary
 from backend.po.reply import ReplyInput, build_reply_prompt
 from backend.po.slots import Discount, LineItemSlot, PoSlots
+from backend.schemas import AgentSettings
 
 
 def test_summary_spells_out_cases_provenance_and_money(catalog):

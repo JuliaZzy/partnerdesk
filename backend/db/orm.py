@@ -11,7 +11,7 @@ slicing. Plain dates — a contract term, a reporting period — stay `YYYY-MM-D
 are calendar labels with no instant behind them.
 
 Naming: these are rows, referred to as `orm.Product` etc. The pydantic models the rest of
-the code passes around are in `backend/models.py`; `database.py` converts between the
+the code passes around are in `backend/schemas/`; `database.py` converts between the
 two.
 """
 
@@ -36,7 +36,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from ..models import PRODUCT_STATUS_VALUES
+from ..schemas.catalog import PRODUCT_STATUS_VALUES
 
 # JSONB, not JSON: it is stored parsed, so it can be indexed and queried by key.
 JSONCol = JSONB()

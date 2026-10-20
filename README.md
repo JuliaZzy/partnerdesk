@@ -1,22 +1,34 @@
 # partnerdesk
 
-面向品牌经销商的**对话式运营 agent**。一个聊天入口，agent 判断经销商在做什么，然后替一个初级客户经理把活干了——
-每一步动作都有确定性校验和人工确认把关：
+面向品牌经销商的**对话式运营 agent**。聊天从 Orchestrator 进来，由它分给下面几条。图在
+[`docs/PartnerDesk.drawio`](docs/PartnerDesk.drawio)。
 
-- **路由**：每条消息（和附件）先判断意图，有对应 specialist 的交给 specialist，没有的明确弃权、留给人。
-- **采购订单（PO）**：通过对话把订单建起来。模型只负责把消息抽取进一个固定的 slot 模板；产品解析、定价、
-  MOQ、品牌商业规则全部由确定性代码完成；用户不点确认，什么都不会提交。提交之后，同一个聊天继续处理
-  收货、付款、破损索赔。
-- **合同**：抽取管辖条款（区域、独家、MOQ、价格表、折扣阶梯），带原文证据位置，并映射成 PO 的规则。
-- **报表**：把多块混排的销售表变成结构化事实，再只根据已验证的数字生成叙述。
+```
+Orchestrator
+├── PO Agent ──────────────────────────► 合同分析结果
+├── AI Report
+│     ├── 新闻 / 知识检索
+│     └── Data Query
+├── Contract Analysis
+├── 新闻 / 知识检索（不是 agent）
+│     ├── 工具：BOCHA 新闻、汇率、发信、翻译、LinkedIn MCP
+│     ├── Brand Knowledge RAG
+│     └── 合同分析结果
+└── Data Query
+```
 
-从第一版沿用下来的设计原则（也是它为什么这么建的原因）：
+- **PO Agent**（`po/`）：对话建采购单。模型把消息填进固定 slot；产品、价格、MOQ、商业规则由代码计算。下单时读合同分析结果。用户确认后才提交。提交之后，同一条聊天处理收货、付款、破损索赔。
+- **AI Report**（`report/`）：聊天里的报表草稿。它再去要 Data Query 和新闻 / 知识检索，叙述由模型根据这些结果来写。整洁销售表进事实表是另一条路（`spreadsheet.py`）。
+- **Contract Analysis**（`contract/`）：读协议，抽出区域、独家、MOQ、价格表、折扣阶梯，带原文位置。结果入库，供 PO 和检索使用。
+- **新闻 / 知识检索**：不是 agent。编排器直接走工具、品牌资料 RAG，以及已经入库的合同分析结果。
+- **Data Query**（`text2sql/`）：自然语言变成一条 SELECT，校验后执行。AI Report 也会调用它。
 
-1. **模型抽取，代码决定。** 每个数字、价格、SKU、规则结果都来自确定性代码。模型不做校验，也不选择提交路径。
+采购单这一条沿用下来的约束：
+
+1. **价格和规则由代码计算。** 模型只把对话填进 slot。产品解析、定价、MOQ、品牌商业规则不交给模型，模型也不选择提交路径。
 2. **确认是一个动作，不是一个推断。** 提交需要按钮或 hash 绑定的链接。模型的"用户好像同意了"在小模型上实测是错的
    （"thanks" → 已确认），所以永远不采信。
 3. **副作用幂等。** 提交以 confirm token 为键，token 在建单**之前**烧掉——双击、重试只产生一张订单。
-4. **最小充分 agency。** 一个 orchestrator、几个有界的 specialist、确定性校验——不是 swarm。
 
 ## 目录结构
 
@@ -24,33 +36,52 @@
 compose.yaml / Dockerfile / frontend/Dockerfile   Docker Compose：Postgres + Redis + Milvus + API + Vite
 dev / dev.bat      所有命令的入口（容器里跑，不在宿主机起服务）
 backend/
-  orchestrator/    聊天入口：session_open、PLAN、工具循环；registry.json 在这里
-    prompt/        编排器和开场的提示词
-  po/              slots → 抽取（LLM）→ 校验（代码）→ 草稿 + hash → 回复（LLM）→ 确认门 → 提交
-    prompt/        采购单提示词；`fill` 替换 `{{slot}}`
+  orchestrator/    Orchestrator：开场、要一份计划、按名字调用；registry.json 在这里
+    turn.py        只调度
+    prompt.py      PLAN、开场、工具循环、普通回答
+    speak.py       把一条回复写进会话
+  po/              PO Agent
+    agent.py       一轮对话：索赔，或继续下单
+    turn.py        抽取、校验、草稿、回复、确认
+    prompt.py      采购单提示词；`fill` 替换 `{{slot}}`
+    check.py rules.py draft.py slots.py submit.py    定价和规则
     catalog.py     产品索引 + 给 prompt 的目录清单
     claims.py      提交之后：收货 / 付款 / 破损，落到订单状态上
-  contract/        协议：read 填条款表 → ingest 入库并派生 PO 规则 → turn 聊天归档
-    prompt/        合同抽取提示词
-  report/          聊天里的报告草稿（turn）+ 整洁表格 → 事实（spreadsheet.py）
-    prompt/        报告草稿的固定大纲
-  brand_knowledge/ 品牌资料检索
-    prompt/        只根据检索段落作答
-  text2sql/        自然语言 → 一条 SELECT，代码校验后执行
-    prompt/        选表、写 SQL
-  mcp/             SocialCrawl MCP（多平台社交/电商数据）：servers.json + runtime → 并入 tools=
+  report/          AI Report
+    agent.py       聊天里的草稿
+    prompt.py      固定大纲
+    spreadsheet.py charts.py    整洁表格收成事实，不是 agent
+  contract/        Contract Analysis
+    agent.py       聊天里归档，并引用已入库的表
+    prompt.py      合同抽取提示词
+    read.py ingest.py chunks.py    读条款、入库
+  text2sql/        Data Query
+    agent.py       聊天里回答一个数据问题
+    prompt.py      选表、写 SQL、引用查询结果
+    sql_validator.py table_metadata.py    校验并执行那条 SELECT
+  tools/           工具：BOCHA 新闻、汇率、发信、翻译
+  mcp/             架构图里的 LinkedIn MCP。代码是 SocialCrawl（多平台社交/电商），并入工具列表
     prompt/        结构化检索表单；日常对话直接走 tools=
+  brand_knowledge/ Brand Knowledge RAG。挂在「新闻 / 知识检索」下面，不是 agent
+    answer.py      把跟进问题收成检索句，再根据段落作答
+    prompt/        只根据检索段落作答
+  llm/             模型客户端。外面只从这里 import
+    client.py      发请求：complete_json / stream_text / complete（工具调用）
+    parse.py       把模型返回的字符串收成 JSON
+    types.py       ToolCall、一次助手回复
+    fake.py        测试替身，不联网
   documents.py     PDF / Word / 文本 → 逐页文本；PDF 页渲染成 JPEG，给视觉模型看
   memory.py        长期记忆：跨会话记住的偏好 / 指令 / 事实，每轮 PO 对话作为上下文读入（只能提醒，不能放宽规则）
-  llm.py           唯一的模型接缝：complete_json / stream_text / complete（tools=）；测试用 FakeLLM
   db/              数据层：orm.py（表结构）、database.py（唯一入口）、migrations/（Alembic）
+  schemas/         业务对象和 HTTP 请求体（Pydantic），按模块拆开。表仍在 db/orm.py
+  router/          HTTP 路由：会话、目录、合同、报表、记忆、订单
   service.py       业务操作，不依赖传输层：handle_message（转发 orchestrator）/ confirm / orders
-  app.py           service.py 的 HTTP 适配层（FastAPI）：SSE 聊天、确认、订单
-  desk_api.py      桌面其余页面的 HTTP：产品目录、合同、报表、记忆
+  app.py           组装入口：create_app 注入数据库和模型，挂上 router
 frontend/               桌面（Vite + React + TypeScript）：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆，只调上面的 HTTP
 scripts/           fetch_off_products.py 拉 Open Food Facts 快照到 data/off/；build_catalog.py（dev catalog）把它导入产品目录
 data/              大数据集（Open Food Facts 快照），gitignore，不进仓库
 tests/             不联网的测试（FakeLLM；页面行为由 HTTP 测试和 frontend/ 的 Vitest 覆盖）
+docs/PartnerDesk.drawio   上面的架构图
 docs/porting/      从第一版带过来了什么、为什么（01–06）
 ```
 
@@ -94,7 +125,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 | 草稿 + 摘要 + hash | 已移植 — `po/draft.py` |
 | 流式回复 | 已移植 — `po/reply.py` |
 | 一轮对话 + 确认门 + 提交 | 已移植 — `po/turn.py`、`po/submit.py`、`service.py` |
-| 多页桌面：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆 | **新增** — `frontend/`（Vite + React），对接 `app.py` / `desk_api.py` |
+| 多页桌面：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆 | **新增** — `frontend/`（Vite + React），对接 `app.py` 挂上的 router |
 | 产品目录：Open Food Facts 真实食品 + 推导的批发字段，多品牌；产品页库内搜索分页 | **新增** — `scripts/`、`frontend/` 产品页；全目录进 prompt 待改成检索（RAG） |
 | 意图 / 聊天入口 | 已改 — `session_open`（首次 title+tags）+ `PLAN`（tools/MCP/agents）；无代码侧 route |
 | 提交后的收货 / 付款 / 索赔 | 已移植 — `po/claims.py` |

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from ..db import Database
-from ..models import AgentSettings, Partnership, PurchaseOrder
+from ..schemas import AgentSettings, Partnership, PurchaseOrder
 from .check import CheckResult
 from .rules import RuleResult
 from .slots import PoSlots, with_defaults

@@ -14,8 +14,8 @@ from typing import Any
 
 from ..db import Database
 from ..llm import LLM
-from ..models import PurchaseOrder
-from .prompt.po import CLAIM, PAYMENT, RECEIPT
+from ..schemas import PurchaseOrder
+from .prompt import CLAIM, PAYMENT, RECEIPT
 
 MIN_CONFIDENCE = 0.7
 

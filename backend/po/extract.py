@@ -14,9 +14,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..llm import LLM, Message
-from ..models import INCOTERMS_VALUES, PAYMENT_TERMS_VALUES, SHIPPING_METHOD_VALUES
-from .prompt import fill
-from .prompt.po import EXTRACT, EXTRACT_IMAGES
+from ..schemas import INCOTERMS_VALUES, PAYMENT_TERMS_VALUES, SHIPPING_METHOD_VALUES
+from .prompt import EXTRACT, EXTRACT_IMAGES, fill
 from .slots import Discount, LineItemSlot, PoSlots, enum_or_none
 
 MAX_MESSAGE_CHARS = 4000
