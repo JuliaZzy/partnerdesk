@@ -1,5 +1,6 @@
-"""Long-term memory: remembered on purpose, recalled on every PO turn as context, and
-never anything the code-check reads."""
+"""Long-term memory: remembered on purpose, recalled into every agent's prompt, and
+never anything the code-check reads. The transcript is kept whole. A prompt sees one
+rolling summary plus the raw tail; an older prefix is folded once it reaches the budget."""
 
 from __future__ import annotations
 
@@ -7,7 +8,17 @@ import pytest
 
 from backend import service
 from backend.llm import FakeLLM
-from backend.memory import memory_block, recall, remember, with_memory
+from backend.memory import (
+    bind_fold_scheduler,
+    memory_block,
+    prompt_turns,
+    recall,
+    record_history,
+    remember,
+    reset_fold_scheduler,
+    summary_block,
+    with_memory,
+)
 from backend.po.turn import load_bundle
 
 
@@ -63,7 +74,155 @@ def test_po_turn_prompts_see_the_memory(db):
     assert events[-1]["type"] == "done" and events[-1]["stage"] == "confirm"
     json_calls = [c for c in llm.calls if c["kind"] == "json"]
     text_calls = [c for c in llm.calls if c["kind"] == "text"]
-    # open_session, plan, extract — memory is PO context only.
+    # open_session, plan, extract, reply. Opening a chat does not read memory.
+    # The plan and the order turn do: a later turn still needs what was folded.
     extract_call, reply_call = json_calls[2], text_calls[0]
     assert "They order in full layers only" in extract_call["system"] and "They order in full layers only" in reply_call["system"]
-    assert "full layers" not in json_calls[0]["system"] and "full layers" not in json_calls[1]["system"]
+    assert "full layers" not in json_calls[0]["system"] and "full layers" in json_calls[1]["system"]
+
+
+def bulky(role: str, tokens: int, mark: str = "x") -> dict:
+    """A message whose text is about `tokens` long. The role costs a few more."""
+    return {"role": role, "content": mark * (tokens * 4)}
+
+
+def test_a_short_chat_is_not_folded(db):
+    sid = service.new_session(db, "ps-1")["id"]
+    history = []
+    for i in range(9):
+        history += [{"role": "user", "content": f"question {i}"}, {"role": "assistant", "content": f"answer {i}"}]
+    llm = FakeLLM()
+    record_history(db, db.session(sid), history, llm=llm)
+    saved = db.session(sid)
+    assert len(saved["history"]) == 18 and saved["history"][0]["content"] == "question 0"
+    assert saved["folded_through"] == 0 and not saved.get("summary") and llm.calls == []
+
+
+def test_a_short_prefix_stays_raw(db):
+    sid = service.new_session(db, "ps-1")["id"]
+    history = [bulky("user", 800, "Q"), {"role": "assistant", "content": "keep-assistant"}]
+    llm = FakeLLM()
+    record_history(db, db.session(sid), history, llm=llm)
+    saved = db.session(sid)
+    assert saved["folded_through"] == 0 and not saved.get("summary") and llm.calls == []
+    assert "QQQQ" in prompt_turns(saved["history"], 0)[0]["content"]
+
+
+def test_a_long_prefix_is_merged_into_one_summary(db):
+    sid = service.new_session(db, "ps-1")["id"]
+    history = [
+        bulky("user", 2000, "Q"), bulky("assistant", 2000, "A"),
+        {"role": "user", "content": "keep-user"}, {"role": "assistant", "content": "keep-assistant"},
+    ]
+    llm = FakeLLM(json_replies=[{"summary": "  Their fiscal year starts in April  "}])
+    record_history(db, db.session(sid), history, llm=llm)
+    saved = db.session(sid)
+    assert len(saved["history"]) == 4 and saved["history"][0]["content"].startswith("QQQQ")
+    assert saved["folded_through"] == 2 and saved["summary"] == "Their fiscal year starts in April"
+    assert db.memories("ps-1") == []
+    assert "SUMMARY SO FAR" in llm.calls[0]["messages"][0]["content"]
+    assert "QQQQ" in llm.calls[0]["messages"][0]["content"]
+    assert "Do not restate prices" in llm.calls[0]["system"]
+    # The prefix is already in the summary. Another save must not ask the model again.
+    record_history(db, saved, history, llm=FakeLLM())
+    assert db.session(sid)["folded_through"] == 2 and db.session(sid)["summary"] == "Their fiscal year starts in April"
+
+
+def test_a_later_fold_merges_into_the_existing_summary(db):
+    sid = service.new_session(db, "ps-1")["id"]
+    history = [bulky("user", 2000, "Q"), {"role": "assistant", "content": "tail one"}]
+    record_history(db, db.session(sid), history, llm=FakeLLM(json_replies=[{"summary": "They ship on Tuesdays"}]))
+    saved = db.session(sid)
+    longer = [*history, bulky("user", 2000, "N"), {"role": "assistant", "content": "tail two"}]
+    llm = FakeLLM(json_replies=[{"summary": "They ship on Tuesdays and close in July"}])
+    record_history(db, saved, longer, llm=llm)
+    assert "They ship on Tuesdays" in llm.calls[0]["messages"][0]["content"]
+    assert "NNNN" in llm.calls[0]["messages"][0]["content"]
+    again = db.session(sid)
+    assert again["summary"] == "They ship on Tuesdays and close in July" and again["folded_through"] == 3
+    assert db.memories("ps-1") == []
+
+
+def test_a_scheduled_fold_does_not_run_until_the_task_does(db):
+    sid = service.new_session(db, "ps-1")["id"]
+    history = [bulky("user", 2000), {"role": "assistant", "content": "tail"}]
+    llm = FakeLLM(json_replies=[{"summary": "They ship on Tuesdays"}])
+    queued: list = []
+    token = bind_fold_scheduler(queued.append)
+    try:
+        record_history(db, db.session(sid), history, llm=llm)
+        assert db.session(sid)["folded_through"] == 0 and not db.session(sid).get("summary") and llm.calls == []
+        assert queued and db.memories("ps-1") == []
+        queued[0]()
+    finally:
+        reset_fold_scheduler(token)
+    saved = db.session(sid)
+    assert saved["folded_through"] == 1 and saved["summary"] == "They ship on Tuesdays"
+
+
+def test_a_failed_fold_keeps_the_cursor_and_the_transcript(db):
+    sid = service.new_session(db, "ps-1")["id"]
+    history = [bulky("user", 2000), {"role": "assistant", "content": "tail"}]
+    record_history(db, db.session(sid), history, llm=FakeLLM(fail_json=True))
+    saved = db.session(sid)
+    assert len(saved["history"]) == 2 and saved["folded_through"] == 0 and not saved.get("summary")
+    assert db.memories("ps-1") == []
+
+
+def test_a_plain_answer_and_the_tool_loop_see_the_memory(db):
+    remember(db, "ps-1", "Their fiscal year starts in April", kind="fact")
+    llm = FakeLLM(json_replies=[{"tasks": []}])
+    sid = service.new_session(db, "ps-1")["id"]
+    db.update_session(sid, title="Hello", tags=[])
+    events = list(service.handle_message(db, llm, sid, "hello"))
+    assert events[-1]["type"] == "done"
+    systems = [c["system"] for c in llm.calls if c["kind"] in ("text", "complete")]
+    assert systems and all("fiscal year" in system and "context only" in system for system in systems)
+
+
+def test_the_next_prompt_keeps_the_summary_with_the_raw_tail(db):
+    sid = service.new_session(db, "ps-1")["id"]
+    history = [bulky("user", 2000, "Q"), {"role": "assistant", "content": "keep-assistant"}]
+    record_history(db, db.session(sid), history, llm=FakeLLM(json_replies=[{
+        "summary": "Warehouse closes the first week of July",
+    }]))
+    saved = db.session(sid)
+    from backend.orchestrator import make_plan
+    from backend.orchestrator.speak import _chat_messages
+
+    block = summary_block(saved["summary"])
+    assert "Warehouse closes the first week of July" in block and "context only" in block
+    llm = FakeLLM(json_replies=[{"tasks": []}])
+    make_plan(
+        llm, message="question 9", attachments=[], history=saved["history"], stage=None, tags=[],
+        memory=block, folded_through=saved["folded_through"],
+    )
+    plan_user = llm.calls[0]["messages"][0]["content"]
+    assert "Warehouse closes" in llm.calls[0]["system"]
+    assert "QQQQ" not in plan_user and "keep-assistant" in plan_user
+    messages = _chat_messages(saved, "question 9")
+    contents = [m["content"] for m in messages]
+    assert all("QQQQ" not in content for content in contents)
+    assert "keep-assistant" in contents and contents[-1] == "question 9"
+
+
+def test_sql_prompt_includes_standing_memory():
+    from backend.text2sql.text2sql import _write_sql
+
+    llm = FakeLLM(json_replies=[{"sql": "SELECT 1"}])
+    _write_sql(llm, "how many orders", "purchase_orders(id)", context="[fact] fiscal year starts in April")
+    assert "fiscal year" in llm.calls[0]["system"]
+    bare = FakeLLM(json_replies=[{"sql": "SELECT 1"}])
+    _write_sql(bare, "how many orders", "purchase_orders(id)")
+    assert "fiscal year" not in bare.calls[0]["system"]
+
+
+def test_an_unsummarised_prefix_is_still_in_the_plan(db):
+    sid = service.new_session(db, "ps-1")["id"]
+    history = [bulky("user", 800, "Q"), {"role": "assistant", "content": "keep-assistant"}]
+    record_history(db, db.session(sid), history, llm=FakeLLM())
+    from backend.orchestrator import make_plan
+
+    llm = FakeLLM(json_replies=[{"tasks": []}])
+    make_plan(llm, message="next", attachments=[], history=history, stage=None, tags=[])
+    assert "QQQQ" in llm.calls[0]["messages"][0]["content"] and "keep-assistant" in llm.calls[0]["messages"][0]["content"]

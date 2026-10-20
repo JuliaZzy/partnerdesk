@@ -339,6 +339,9 @@ class ChatSession(Base):
     stage: Mapped[str] = mapped_column(String(16), default="gathering")
     slots: Mapped[dict[str, Any]] = mapped_column(JSONCol, default=dict)
     history: Mapped[list[dict[str, Any]]] = mapped_column(JSONCol, default=list)
+    # Messages before this index are already in `summary`. The transcript stays whole.
+    folded_through: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[str | None] = mapped_column(Text)
     # The burn (`UPDATE … WHERE confirm_token = ?`) is the idempotency guarantee; index it.
     confirm_token: Mapped[str | None] = mapped_column(String(64), index=True)
     confirm_hash: Mapped[str | None] = mapped_column(String(64))
@@ -524,9 +527,9 @@ class ReportFact(Base):
 
 
 # --- long-term memory ----------------------------------------------------------------
-# What the agent should keep in mind about a partnership across conversations — a
-# standing preference, an instruction, a fact learned in chat. Read into the PO agent's
-# context on every turn; context only, it can never relax a rule.
+# What every agent should keep in mind about a partnership across conversations — a
+# standing preference, an instruction, a fact learned in chat. Read into each agent's
+# prompt; context only, it can never relax a rule or change a price.
 
 class Memory(Base):
     __tablename__ = "memories"

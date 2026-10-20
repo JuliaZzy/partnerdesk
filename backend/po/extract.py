@@ -14,12 +14,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..llm import LLM, Message
+from ..memory import prompt_turns
 from ..schemas import INCOTERMS_VALUES, PAYMENT_TERMS_VALUES, SHIPPING_METHOD_VALUES
 from .prompt import EXTRACT, EXTRACT_IMAGES, fill
 from .slots import Discount, LineItemSlot, PoSlots, enum_or_none
 
 MAX_MESSAGE_CHARS = 4000
-MAX_HISTORY_TURNS = 8
 MAX_HISTORY_CONTENT_CHARS = 2000
 
 IMAGE_RULES = EXTRACT_IMAGES
@@ -150,6 +150,7 @@ def extract_turn(
     images: list[str] | None = None,
     operating_context: str | None = None,
     contract_discount: str | None = None,
+    folded_through: int = 0,
 ) -> Extraction:
     """Throws on model/parse failure — the caller degrades (keeps the previous slots)."""
     images = images or []
@@ -163,7 +164,7 @@ def extract_turn(
     )
     msgs: list[Message] = [
         {"role": m["role"], "content": str(m["content"])[:MAX_HISTORY_CONTENT_CHARS]}
-        for m in history[-MAX_HISTORY_TURNS:]
+        for m in prompt_turns(history, folded_through)
     ] + [{"role": "user", "content": user_content}]
     raw = llm.complete_json(system=system, messages=msgs, schema=EXTRACT_SCHEMA, temperature=0, max_tokens=900)
     lang = raw.get("reply_language")

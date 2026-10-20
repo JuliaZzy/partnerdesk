@@ -101,7 +101,7 @@ function MemoryDesk() {
       )}
       <details className="card">
         <summary>What the agent sees</summary>
-        <p className="muted">Appended to the brand's operating context in the extraction and reply prompts of every PO turn.</p>
+        <p className="muted">Appended to every agent's prompt on the next turn. Context only: it cannot change a price, relax a rule, or authorise a discount. A chat's rolling summary is separate and stays on that chat.</p>
         <pre>{bundle?.block || "(nothing — no active memories)"}</pre>
       </details>
     </>

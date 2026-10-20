@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from ..llm import LLM
+from ..memory import prompt_turns
 from .extract import context_block
 from .prompt import REPLY, fill
 
@@ -30,6 +31,8 @@ class ReplyInput:
     submitted: dict | None = None  # {po_number, total, currency}
     operating_context: str | None = None
     contract_discount: str | None = None  # set on the turn the contract rate was applied
+    history: list[dict] = field(default_factory=list)
+    folded_through: int = 0
 
 
 def _stage_block(i: ReplyInput) -> str:
@@ -105,8 +108,14 @@ def stream_reply(llm: LLM, i: ReplyInput) -> Iterator[str]:
     # The user turn is required, not decorative: with a system-only array a local Llama
     # chat template completes the missing turn itself and emits a literal "assistant\n\n"
     # as the first tokens of the reply (3/3 on llama3.2:3b).
+    prior = [
+        {"role": turn.get("role"), "content": str(turn.get("content") or "")}
+        for turn in prompt_turns(i.history, i.folded_through)
+        if turn.get("role") in ("user", "assistant") and str(turn.get("content") or "").strip()
+    ]
+    prior.append({"role": "user", "content": i.user_message.strip() or "(they sent an image with no caption)"})
     yield from llm.stream_text(
         system=build_reply_prompt(i),
-        messages=[{"role": "user", "content": i.user_message.strip() or "(they sent an image with no caption)"}],
+        messages=prior,
         temperature=0.7, max_tokens=450 if i.stage == "confirm" else 300,
     )

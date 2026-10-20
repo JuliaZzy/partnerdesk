@@ -21,6 +21,7 @@ def run(
         db, llm, message=text, history=list(session.get("history") or []),
         partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
         session_id=session["id"], hint=hint,
+        folded_through=int(session.get("folded_through") or 0), summary=str(session.get("summary") or ""),
     ):
         if isinstance(item, ReportDraft):
             draft = item
@@ -39,4 +40,4 @@ def run(
         extra["web_notes"] = draft.web_notes
     if draft.data_query:
         extra["data_query"] = draft.data_query
-    yield save_reply(db, session, text, reply, extra)
+    yield save_reply(db, session, text, reply, extra, llm=llm)

@@ -11,6 +11,7 @@ from typing import Any
 
 from ..db import Database
 from ..llm import LLM
+from ..memory import attach, prompt_context, prompt_turns, record_history, standing_block, summary_block
 from .prompt import ANSWER
 
 
@@ -18,7 +19,7 @@ def one_shot(
     db: Database, session: dict[str, Any], text: str, extra: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     history = [*(session.get("history") or []), {"role": "user", "content": "(message)"}, {"role": "assistant", "content": text}]
-    db.update_session(session["id"], history=history[-16:])
+    record_history(db, session, history)
     yield {"type": "token", "text": text}
     yield {
         "type": "done", "stage": session.get("stage"), "slots": session.get("slots"), "draft": None,
@@ -31,7 +32,7 @@ def _chat_messages(session: dict[str, Any], prompt: str) -> list[dict[str, Any]]
     history = list(session.get("history") or [])
     messages = [
         {"role": m.get("role"), "content": str(m.get("content") or "")}
-        for m in history[-8:]
+        for m in prompt_turns(history, int(session.get("folded_through") or 0))
         if m.get("role") in ("user", "assistant")
     ]
     messages.append({"role": "user", "content": prompt})
@@ -40,6 +41,7 @@ def _chat_messages(session: dict[str, Any], prompt: str) -> list[dict[str, Any]]
 
 def save_reply(
     db: Database, session: dict[str, Any], text: str, reply: str, extra: dict[str, Any] | None,
+    llm: LLM | None = None,
 ) -> dict[str, Any]:
     history = list(session.get("history") or [])
     assistant: dict[str, Any] = {"role": "assistant", "content": reply}
@@ -57,7 +59,7 @@ def save_reply(
         assistant["web_notes"] = notes
     if (extra or {}).get("report_draft"):
         assistant["report_draft"] = True
-    db.update_session(session["id"], history=[*history, {"role": "user", "content": text}, assistant][-16:])
+    record_history(db, session, [*history, {"role": "user", "content": text}, assistant], llm=llm)
     return {
         "type": "done", "stage": session.get("stage"), "slots": session.get("slots"), "draft": None,
         "gaps": [], "gaps_detail": [], "advisories": [], "steps": [], "confirm_token": None, "submitted": None,
@@ -70,8 +72,11 @@ def answer_directly(
     prompt_text: str | None = None, system: str | None = None, extra: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     parts: list[str] = []
-    for chunk in llm.stream_text(system=system or ANSWER, messages=_chat_messages(session, prompt_text or text)):
+    system = attach(system or ANSWER, prompt_context(
+        standing_block(db, session["partnership_id"]), summary_block(session.get("summary")),
+    ))
+    for chunk in llm.stream_text(system=system, messages=_chat_messages(session, prompt_text or text)):
         parts.append(chunk)
         yield {"type": "token", "text": chunk}
     reply = "".join(parts).strip() or "How can I help?"
-    return save_reply(db, session, text, reply, extra)
+    return save_reply(db, session, text, reply, extra, llm=llm)

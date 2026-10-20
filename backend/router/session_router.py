@@ -8,13 +8,14 @@ import logging
 from collections.abc import Iterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from .. import service
 from ..db import Database
 from ..deps import get_db, get_llm, llm_for
 from ..llm import LLM
+from ..memory import bind_fold_scheduler, reset_fold_scheduler
 from ..schemas import Confirm, DataFeedback, Inbound, InboundFile, NewSession
 from ._common import partnership_or_404
 
@@ -59,8 +60,21 @@ def get_session(sid: str, db: Database = Depends(get_db)) -> dict[str, Any]:
     return s
 
 
+async def _defer_folds(background_tasks: BackgroundTasks):
+    """Fold after the stream is finished. Set on this request before worker threads copy it."""
+    token = bind_fold_scheduler(background_tasks.add_task)
+    try:
+        yield
+    finally:
+        reset_fold_scheduler(token)
+
+
 @router.post("/api/sessions/{sid}/message")
-def message(sid: str, body: Inbound, db: Database = Depends(get_db), llm: LLM = Depends(get_llm)) -> StreamingResponse:
+def message(
+    sid: str, body: Inbound, background_tasks: BackgroundTasks,
+    db: Database = Depends(get_db), llm: LLM = Depends(get_llm),
+    _folds: None = Depends(_defer_folds),
+) -> StreamingResponse:
     llm = llm_for(llm, body.model)
     if not db.session(sid):
         raise HTTPException(404, "session not found")
@@ -81,6 +95,7 @@ def message(sid: str, body: Inbound, db: Database = Depends(get_db), llm: LLM = 
 
     return StreamingResponse(
         gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        background=background_tasks,
     )
 
 

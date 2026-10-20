@@ -11,6 +11,7 @@ from typing import Any
 
 from ..db import Database
 from ..llm import LLM
+from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
 from ..orchestrator.prompt import FOLLOWUP
 from ..orchestrator.speak import answer_directly, one_shot
 from ..orchestrator.status import status
@@ -31,9 +32,9 @@ def _followup_schema() -> dict[str, Any]:
     }
 
 
-def _prior_turns(history: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _prior_turns(history: list[dict[str, Any]], folded_through: int = 0) -> list[dict[str, str]]:
     turns = []
-    for message in history[-8:]:
+    for message in prompt_turns(history, folded_through):
         role = message.get("role")
         content = str(message.get("content") or "").strip()
         if role in ("user", "assistant") and content and content not in _SKIP_HISTORY:
@@ -41,19 +42,21 @@ def _prior_turns(history: list[dict[str, Any]]) -> list[dict[str, str]]:
     return turns
 
 
-def _search_query(llm: LLM, text: str, history: list[dict[str, Any]]) -> str:
+def _search_query(
+    llm: LLM, text: str, history: list[dict[str, Any]], remembered: str = "", folded_through: int = 0,
+) -> str:
     """Standalone query for retrieval. The first turn is searched as typed.
 
     A later turn is rewritten with the recent conversation. A failed or empty rewrite
     falls back to the user's words so the answer still runs.
     """
-    prior = _prior_turns(history)
+    prior = _prior_turns(history, folded_through)
     if not prior:
         return text
     recent = "\n".join(f"{turn['role']}: {turn['content']}" for turn in prior)
     try:
         raw = llm.complete_json(
-            system=FOLLOWUP,
+            system=attach(FOLLOWUP, remembered),
             messages=[{"role": "user", "content": (
                 f"=== RECENT CONVERSATION ===\n{recent}\n\n=== LATEST MESSAGE ===\n{text[:4000]}"
             )}],
@@ -89,7 +92,9 @@ def answer_in_chat(
 ) -> Iterator[dict[str, Any]]:
     db.update_session(session["id"], specialist="brand")
     yield status("brand-search", "检索", "正在查找品牌资料", state="running")
-    query = _search_query(llm, text, history)
+    folded = int(session.get("folded_through") or 0)
+    remembered = prompt_context(standing_block(db, session["partnership_id"]), summary_block(session.get("summary")))
+    query = _search_query(llm, text, history, remembered, folded)
     try:
         hits = retrieve(query, brand_id)
     except RagUnavailable as err:

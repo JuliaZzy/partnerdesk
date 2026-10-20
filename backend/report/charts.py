@@ -1,16 +1,20 @@
 """Turn a chart spec into points read from query rows.
 
 The model names a query, a chart type, and two columns. This module drops anything
-that does not match those rows. It does not aggregate or fill in missing numbers.
+that does not match those rows. Bar and line charts keep row order and do not
+aggregate. A pie chart sums one category into at most six non-negative slices.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-CHART_TYPES = frozenset({"bar", "line"})
+from .analyze import value_kind
+
+CHART_TYPES = frozenset({"bar", "line", "pie"})
 MAX_CHARTS = 3
 MAX_POINTS = 12
+MAX_SLICES = 6
 _LABEL = 80
 _TITLE = 80
 
@@ -49,8 +53,7 @@ def column_kinds(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     kinds: list[dict[str, str]] = []
     for name in names[:12]:
         values = [row.get(name) for row in rows if row.get(name) is not None]
-        kind = "number" if values and all(_is_number(value) for value in values) else "text"
-        kinds.append({"name": name, "kind": kind})
+        kinds.append({"name": name, "kind": value_kind(name, values)})
     return kinds
 
 
@@ -64,6 +67,17 @@ def _one(spec: dict[str, Any], series: dict[str, list[dict[str, Any]]]) -> dict[
         return None
     if not _column(rows, x_key) or not _column(rows, y_key):
         return None
+    points = _pie_points(rows, x_key, y_key) if chart_type == "pie" else _series_points(rows, x_key, y_key)
+    if not points:
+        return None
+    title = str(spec.get("title") or "").strip()[:_TITLE] or f"{y_key} by {x_key}"[:_TITLE]
+    return {
+        "query_id": query_id, "chart_type": chart_type, "x_key": x_key, "y_key": y_key,
+        "title": title, "points": points,
+    }
+
+
+def _series_points(rows: list[dict[str, Any]], x_key: str, y_key: str) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
     for row in rows:
         if len(points) >= MAX_POINTS:
@@ -73,13 +87,28 @@ def _one(spec: dict[str, Any], series: dict[str, list[dict[str, Any]]]) -> dict[
         if not _is_number(y) or not label:
             continue
         points.append({"x": label, "y": y})
-    if not points:
-        return None
-    title = str(spec.get("title") or "").strip()[:_TITLE] or f"{y_key} by {x_key}"[:_TITLE]
-    return {
-        "query_id": query_id, "chart_type": chart_type, "x_key": x_key, "y_key": y_key,
-        "title": title, "points": points,
-    }
+    return points
+
+
+def _pie_points(rows: list[dict[str, Any]], x_key: str, y_key: str) -> list[dict[str, Any]]:
+    """Sum one label into one slice. Drop the chart when a value is negative or the mix is not 2-6 slices."""
+    grouped: dict[str, int | float] = {}
+    order: list[str] = []
+    for row in rows:
+        y = row.get(y_key)
+        label = _label(row.get(x_key))
+        if not label or not _is_number(y):
+            continue
+        if y < 0:
+            return []
+        if label not in grouped:
+            order.append(label)
+            grouped[label] = y
+        else:
+            grouped[label] = grouped[label] + y
+    if not 2 <= len(order) <= MAX_SLICES or sum(grouped.values()) <= 0:
+        return []
+    return [{"x": label, "y": grouped[label]} for label in order]
 
 
 def _column(rows: list[dict[str, Any]], name: str) -> bool:

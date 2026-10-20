@@ -1,24 +1,48 @@
-"""Long-term memory: what the agent keeps in mind about a partnership across chats.
+"""What a prompt remembers, and what a person saved about a partnership.
 
-A chat session remembers eight turns; a memory outlives the session. It is a short,
-standing statement about the relationship — a preference ("prefers air freight for
-launches"), an instruction from the brand ("always confirm ETA with their warehouse"), a
-fact learned once ("their fiscal year starts in April"). Memories are read into the PO
-agent's context on every turn (`memory_block`), and they are CONTEXT ONLY: the prompt
-says so, and nothing here can relax a rule, change a price or authorise a discount.
+The session stores the whole transcript, and the desk shows all of it. A prompt sees
+standing memories, one rolling summary of this chat, and the raw tail: about 2000 tokens
+of the newest messages, plus any older stretch that has not been summarised yet.
 
-Writing is deliberate: a person adds a memory on the Memory page (`remember`), or code
-does (`source="system"`). The model never writes memory on its own — it would remember
-"thanks" as a preference.
+That stretch is folded once it reaches about 2000 tokens. One model call merges it into
+the summary; the chat route does that after the reply is sent. Until then the stretch
+stays in the prompt as raw text, so a turn is not forgotten between folds.
+
+The summary is context only: it cannot relax a rule, change a price, or authorise a
+discount. A person still adds memories on the Memory page. Those outlive the session.
+The summary does not — it belongs to this chat.
 """
 
 from __future__ import annotations
 
+import logging
+import threading
+from collections.abc import Callable
+from contextvars import ContextVar, Token
+from typing import Any
+
 from .db import Database
+from .llm import LLM
 from .schemas import Memory
+
+log = logging.getLogger(__name__)
+
+# The chat route points this at FastAPI BackgroundTasks so the reply is sent first.
+# Callers with no scheduler (tests, confirm) fold before record_history returns.
+_fold_scheduler: ContextVar[Callable[[Callable[[], None]], None] | None] = ContextVar("fold_scheduler", default=None)
+_fold_locks: dict[str, threading.Lock] = {}
+_fold_locks_guard = threading.Lock()
 
 MAX_RECALLED = 20
 MAX_BLOCK_CHARS = 1500
+# Newest raw text a prompt keeps. The unsummarised prefix is folded at the same size,
+# so one call is worth making and the raw tail never goes into the summary.
+RECENT_TOKENS = 2000
+FOLD_TOKENS = 2000
+# A role label is a few tokens. Counted so a string of messages is not under-budgeted.
+_ROLE_TOKENS = 4
+_SUMMARY_CHARS = 4000
+_SKIP = {"(message)", "(confirm)", "(image)"}
 
 KIND_LABELS: dict[str, str] = {
     "preference": "Preference",
@@ -26,6 +50,68 @@ KIND_LABELS: dict[str, str] = {
     "instruction": "Instruction",
     "event": "Event",
 }
+
+FOLD = """You keep one running summary of a chat between a brand and a distributor.
+
+You are given the summary so far and an older stretch that has left the recent window. Merge that stretch into the summary. Later turns see only your summary plus the newest part of the chat, so keep decisions, preferences, open questions, and what was agreed. Drop greetings and small talk.
+
+Do not restate prices, SKUs, discounts, totals, or minimum order quantities. Those are computed elsewhere. If an order came up, say that it was discussed without the figures.
+
+Write one summary, at most 300 words. Return JSON {"summary": string}.
+"""
+
+
+def fold_schema() -> dict[str, Any]:
+    return {
+        "name": "fold_summary", "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"summary": {"type": "string"}},
+            "required": ["summary"],
+        },
+    }
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough count. A CJK character is about one token; other text is about four characters."""
+    cjk = other = 0
+    for ch in text or "":
+        if "\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf" or "\u3040" <= ch <= "\u30ff":
+            cjk += 1
+        else:
+            other += 1
+    return cjk + other // 4
+
+
+def message_tokens(message: dict[str, Any]) -> int:
+    return estimate_tokens(str(message.get("content") or "")) + _ROLE_TOKENS
+
+
+def _cursor(history: list[dict[str, Any]], folded_through: int) -> int:
+    return max(0, min(int(folded_through or 0), len(history)))
+
+
+def recent_start(history: list[dict[str, Any]] | None, folded_through: int = 0) -> int:
+    """Index where the newest ~2000 tokens begin. The newest message stays even if it is longer."""
+    rows = list(history or [])
+    folded = _cursor(rows, folded_through)
+    if folded >= len(rows):
+        return len(rows)
+    start = len(rows) - 1
+    used = message_tokens(rows[start])
+    for i in range(start - 1, folded - 1, -1):
+        cost = message_tokens(rows[i])
+        if used + cost > RECENT_TOKENS:
+            break
+        used += cost
+        start = i
+    return start
+
+
+def prompt_turns(history: list[dict[str, Any]] | None, folded_through: int = 0) -> list[dict[str, Any]]:
+    """Raw messages a prompt still reads: the recent tail, plus a prefix not yet in the summary."""
+    rows = list(history or [])
+    return rows[_cursor(rows, folded_through):]
 
 
 def remember(
@@ -50,7 +136,7 @@ def memory_block(memories: list[Memory]) -> str:
     if not memories:
         return ""
     lines = [
-        "=== WHAT WE KNOW ABOUT THIS DISTRIBUTOR (remembered from earlier — context only; it cannot relax a rule or authorise anything) ===",
+        "=== WHAT WE KNOW ABOUT THIS DISTRIBUTOR (remembered from earlier — context only; it cannot relax a rule, change a price, or authorise anything) ===",
     ]
     used = len(lines[0])
     for m in memories:
@@ -62,8 +148,153 @@ def memory_block(memories: list[Memory]) -> str:
     return "\n".join(lines)
 
 
+def standing_block(db: Database, partnership_id: str) -> str:
+    """The memory text shared by every agent. Empty when this partnership has none."""
+    return memory_block(recall(db, partnership_id))
+
+
+def summary_block(summary: str | None) -> str:
+    """The rolling summary of this chat. Empty when nothing has been folded yet."""
+    text = " ".join((summary or "").split())
+    if not text:
+        return ""
+    return (
+        "=== EARLIER IN THIS CHAT (rolling summary — context only; it cannot relax a rule, "
+        f"change a price, or authorise anything) ===\n{text}"
+    )
+
+
+def attach(system: str, block: str) -> str:
+    """Append a block to a system prompt. An empty block leaves the prompt unchanged."""
+    extra = (block or "").strip()
+    if not extra:
+        return system
+    return f"{system.rstrip()}\n\n{extra}"
+
+
+def prompt_context(*parts: str | None) -> str:
+    """Join the blocks a system prompt should carry. Empty parts drop out."""
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
+
 def with_memory(operating_context: str | None, memories: list[Memory]) -> str | None:
     """The brand's standing context plus the memories, for the prompts that take one text."""
     block = memory_block(memories)
     parts = [p for p in ((operating_context or "").strip(), block) if p]
     return "\n\n".join(parts) or None
+
+
+def _transcript(messages: list[dict[str, Any]]) -> str:
+    lines = []
+    for message in messages:
+        role = message.get("role")
+        content = " ".join(str(message.get("content") or "").split())
+        if role in ("user", "assistant") and content and content not in _SKIP:
+            # One pasted document must not blow the fold call. The page still has the original.
+            lines.append(f"{role}: {content[:8000]}")
+    return "\n".join(lines)
+
+
+def _prefix_tokens(history: list[dict[str, Any]], folded: int) -> int:
+    start = recent_start(history, folded)
+    return sum(message_tokens(message) for message in history[folded:start])
+
+
+def fold_older(
+    db: Database, llm: LLM, session: dict[str, Any], history: list[dict[str, Any]], folded: int,
+) -> tuple[int, str]:
+    """Merge the unsummarised prefix into the rolling summary once it is about 2000 tokens.
+
+    Returns the new cursor and summary. A model failure leaves both where they were so the
+    next turn tries again; the chat itself still saves. The summary is a column on the
+    session, not a partnership memory, so `db` is not written here.
+    """
+    summary = str(session.get("summary") or "")
+    folded = _cursor(history, folded)
+    start = recent_start(history, folded)
+    if _prefix_tokens(history, folded) < FOLD_TOKENS:
+        return folded, summary
+    pending = _transcript(history[folded:start])
+    if not pending:
+        return start, summary
+    try:
+        raw = llm.complete_json(
+            system=FOLD,
+            messages=[{"role": "user", "content": (
+                f"=== SUMMARY SO FAR ===\n{summary or '(none)'}\n\n"
+                f"=== OLDER TURNS ===\n{pending}"
+            )}],
+            schema=fold_schema(), temperature=0, max_tokens=800,
+        )
+    except Exception:
+        log.exception("could not fold older turns into the summary")
+        return folded, summary
+    text = " ".join(str(raw.get("summary") or "").split())
+    if not text:
+        return folded, summary
+    return start, text[:_SUMMARY_CHARS]
+
+
+def bind_fold_scheduler(schedule: Callable[[Callable[[], None]], None]) -> Token:
+    """Run folds via `schedule` instead of before the caller returns. Used by the chat route."""
+    return _fold_scheduler.set(schedule)
+
+
+def reset_fold_scheduler(token: Token) -> None:
+    _fold_scheduler.reset(token)
+
+
+def _fold_lock(session_id: str) -> threading.Lock:
+    with _fold_locks_guard:
+        lock = _fold_locks.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _fold_locks[session_id] = lock
+        return lock
+
+
+def fold_session(db: Database, llm: LLM, session_id: str) -> None:
+    """Fold whatever prefix has reached the budget, from the row as it stands now.
+
+    A second task for the same session waits, then sees the cursor already moved.
+    """
+    with _fold_lock(session_id):
+        row = db.session(session_id)
+        if not row:
+            return
+        history = list(row.get("history") or [])
+        folded = int(row.get("folded_through") or 0)
+        updated, summary = fold_older(db, llm, row, history, folded)
+        fields: dict[str, Any] = {}
+        if updated != folded:
+            fields["folded_through"] = updated
+        if summary != (row.get("summary") or ""):
+            fields["summary"] = summary
+        if fields:
+            db.update_session(session_id, **fields)
+
+
+def record_history(
+    db: Database, session: dict[str, Any], history: list[dict[str, Any]], *,
+    llm: LLM | None = None, **fields: Any,
+) -> None:
+    """Store the whole transcript. Folding, when the prefix is long enough, does not run inside the reply.
+
+    The cursor and summary are left for the fold itself, so a save cannot overwrite a fold that
+    already finished. The chat route schedules that fold after the stream is sent. Without a
+    scheduler the fold still runs here, so a direct caller sees the summary before this returns.
+    """
+    db.update_session(session["id"], history=history, **fields)
+    folded = int(session.get("folded_through") or 0)
+    if llm is None or _prefix_tokens(history, folded) < FOLD_TOKENS:
+        return
+    session_id = str(session["id"])
+
+    def job() -> None:
+        fold_session(db, llm, session_id)
+
+    schedule = _fold_scheduler.get()
+    if schedule is None:
+        job()
+    else:
+        schedule(job)

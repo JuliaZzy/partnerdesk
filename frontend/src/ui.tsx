@@ -109,8 +109,36 @@ export function ReportFigure({ chart }: { chart: ReportChart }) {
   return (
     <figure className="chart-block">
       <figcaption>{chart.title}</figcaption>
-      {chart.chartType === "line" ? <LineFigure points={chart.points} /> : <ChartBars points={chart.points} />}
+      {chart.chartType === "line" && <LineFigure points={chart.points} />}
+      {chart.chartType === "pie" && <PieFigure points={chart.points} />}
+      {chart.chartType === "bar" && <ChartBars points={chart.points} />}
     </figure>
+  );
+}
+
+const PIE_COLORS = ["#c4622d", "#2c6b4a", "#2c5270", "#8a5a12", "#9a4a1e", "#6f675e"];
+
+function PieFigure({ points }: { points: { x: string; y: number }[] }) {
+  const total = points.reduce((sum, point) => sum + point.y, 0);
+  let cursor = 0;
+  const stops = points.map((point, index) => {
+    const start = cursor;
+    cursor += total > 0 ? (point.y / total) * 100 : 0;
+    return `${PIE_COLORS[index % PIE_COLORS.length]} ${start}% ${cursor}%`;
+  });
+  return (
+    <div className="pie-row">
+      <div className="pie" style={{ background: `conic-gradient(${stops.join(", ")})` }} />
+      <ul className="chart-values">
+        {points.map((point, index) => (
+          <li key={`${point.x}-${index}`}>
+            <span className="pie-swatch" style={{ background: PIE_COLORS[index % PIE_COLORS.length] }} />
+            {point.x}: {point.y.toLocaleString("en-US")}
+            {total > 0 ? ` · ${Math.round((point.y / total) * 1000) / 10}%` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

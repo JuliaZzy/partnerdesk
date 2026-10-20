@@ -21,6 +21,7 @@ from typing import Any
 
 from ..db import Database, utcnow
 from ..llm import LLM
+from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
 from .prompt import PICK, REFLECT, REPAIR, SQL
 from .sql_validator import validate
 from .table_metadata import TABLES, catalog_text, describe_tables, expand_tables, scope_views
@@ -107,13 +108,29 @@ def _pick_tables(llm: LLM, question: str) -> list[str]:
     return expand_tables([str(name) for name in names])
 
 
-def _write_sql(llm: LLM, question: str, schema_text: str, *, previous: str | None = None, error: str | None = None) -> str:
+def _question_text(question: str, history: list[dict[str, Any]] | None, folded_through: int = 0) -> str:
+    """The question, with the raw tail of this chat when it already has some."""
+    recent = "\n".join(
+        f"{turn.get('role')}: {str(turn.get('content') or '')[:500]}"
+        for turn in prompt_turns(history, folded_through)
+        if turn.get("role") in ("user", "assistant") and str(turn.get("content") or "").strip()
+    )
+    if not recent:
+        return question
+    return f"=== RECENT CONVERSATION ===\n{recent}\n\n=== QUESTION ===\n{question}"
+
+
+def _write_sql(
+    llm: LLM, question: str, schema_text: str, *, previous: str | None = None, error: str | None = None,
+    context: str = "", history: list[dict[str, Any]] | None = None, folded_through: int = 0,
+) -> str:
+    asked = _question_text(question, history, folded_through)
     if previous:
-        system = f"{REPAIR}\n\n=== SCHEMA ===\n{schema_text}"
-        user = f"Question:\n{question}\n\nPrevious SQL:\n{previous}\n\nError:\n{(error or '')[:500]}"
+        system = attach(f"{REPAIR}\n\n=== SCHEMA ===\n{schema_text}", context)
+        user = f"Question:\n{asked}\n\nPrevious SQL:\n{previous}\n\nError:\n{(error or '')[:500]}"
     else:
-        system = f"{SQL}\n\n=== SCHEMA ===\n{schema_text}"
-        user = question
+        system = attach(f"{SQL}\n\n=== SCHEMA ===\n{schema_text}", context)
+        user = asked
     raw = llm.complete_json(
         system=system, messages=[{"role": "user", "content": user}],
         schema=sql_schema(), temperature=0, max_tokens=700,
@@ -149,7 +166,8 @@ def reflect_schema() -> dict[str, Any]:
 def answer_question(
     db: Database, llm: LLM, *, question: str,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str | None = None,
-    reflect: bool = True,
+    reflect: bool = True, history: list[dict[str, Any]] | None = None,
+    folded_through: int = 0, summary: str = "",
 ) -> QueryResult:
     """Pick tables, generate one SELECT, run it, and log the attempt.
 
@@ -158,7 +176,8 @@ def answer_question(
     """
     result = _attempt(
         db, llm, question=question, partnership_id=partnership_id, brand_id=brand_id,
-        distributor_id=distributor_id, session_id=session_id,
+        distributor_id=distributor_id, session_id=session_id, history=history,
+        folded_through=folded_through, summary=summary,
     )
     if not reflect or not result.ok:
         return result
@@ -170,7 +189,8 @@ def answer_question(
         return result
     second = answer_question(
         db, llm, question=retry, partnership_id=partnership_id, brand_id=brand_id,
-        distributor_id=distributor_id, session_id=session_id, reflect=False,
+        distributor_id=distributor_id, session_id=session_id, reflect=False, history=history,
+        folded_through=folded_through, summary=summary,
     )
     return second if second.ok else result
 
@@ -178,6 +198,7 @@ def answer_question(
 def _attempt(
     db: Database, llm: LLM, *, question: str,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str | None,
+    history: list[dict[str, Any]] | None = None, folded_through: int = 0, summary: str = "",
 ) -> QueryResult:
     started = time.perf_counter()
     question = (question or "").strip()[:_MAX_QUESTION]
@@ -198,10 +219,16 @@ def _attempt(
             else:
                 schema_text = describe_tables(tables)
                 params = _scope_params(partnership_id, brand_id, distributor_id)
-                sql = _write_sql(llm, question, schema_text)
+                context = prompt_context(standing_block(db, partnership_id), summary_block(summary))
+                sql = _write_sql(
+                    llm, question, schema_text, context=context, history=history, folded_through=folded_through,
+                )
                 ok, error, sql, raw_rows = _run(db, sql, params)
                 if not ok:
-                    sql = _write_sql(llm, question, schema_text, previous=sql, error=error)
+                    sql = _write_sql(
+                        llm, question, schema_text, previous=sql, error=error, context=context, history=history,
+                        folded_through=folded_through,
+                    )
                     ok, error, sql, raw_rows = _run(db, sql, params)
                 if ok and raw_rows is not None:
                     rows = _rows_for_prompt(raw_rows)

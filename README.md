@@ -114,7 +114,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
   `restricted_territories` 留空——原数据没有，不编。量大，所以 `./dev catalog` 用 COPY 一次性替换整张表，
   产品页的搜索、计数、分页都在数据库里做（名称和 SKU 有 trigram 索引）。目录不依赖合作关系；下单仍然要。
 - **长期记忆**：`memories` 按合作关系存偏好 / 指令 / 事实 / 事件，`is_active` 控制是否读入；
-  `po/turn.py::load_bundle` 每轮把 active 记忆追加到品牌 operating context 之后——只是上下文，进不了 code-check。
+  每个代理的提示都会带上 active 记忆——只是上下文，进不了 code-check，也不能改价。一次聊天自己的滚动摘要另存在会话上，不进这张表。
 
 ## 现状
 

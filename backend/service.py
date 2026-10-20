@@ -13,6 +13,7 @@ import uuid
 from typing import Any
 
 from .db import Database
+from .memory import record_history
 from .orchestrator import MAX_IMAGES, handle_message
 from .po.turn import build_ledger, confirm_order, load_bundle
 
@@ -38,7 +39,7 @@ def confirm(db: Database, session_id: str, token: str) -> dict[str, Any]:
         if result["advisories"]:
             msg += " It needs their approval because: " + "; ".join(result["advisories"])
         history = [*(session.get("history") or []), {"role": "user", "content": "(confirm)"}, {"role": "assistant", "content": msg}]
-        db.update_session(session_id, history=history[-16:])
+        record_history(db, session, history)
         result["message"] = msg
     elif result["state"] == "changed":
         result["message"] = "The order moved since you last saw it (a price or rule changed), so I didn't place it. Here's the current draft — please check it again."

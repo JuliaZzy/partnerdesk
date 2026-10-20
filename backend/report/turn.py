@@ -3,8 +3,9 @@
 The model fills three slots: which database questions to ask, which current retail
 news to look up, and which columns to chart. A bare request uses the standard
 questions. text2sql runs the questions. web_search always runs at least once.
-Chart points are read from the returned rows. The prose follows the fixed outline
-and is a draft for a person to check. It is not written into sales_reports.
+Chart points are read from the returned rows. Totals, shares, and changes are
+computed from those rows before the prose is written. The prose follows the fixed
+outline and is a draft for a person to check. It is not written into sales_reports.
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ from typing import Any
 
 from ..db import Database, utcnow
 from ..llm import LLM
-from ..orchestrator.status import status
+from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
 from ..text2sql import QueryResult, answer_question
 from ..tools.web_search import search
+from .analyze import findings
 from .charts import bind_charts, column_kinds
 from .prompt import CHART, SPLIT, STANDARD_QUESTIONS, WITH_DATA
 
@@ -79,7 +81,7 @@ def chart_schema() -> dict[str, Any]:
                     "type": "object", "additionalProperties": False,
                     "properties": {
                         "query_id": {"type": "string"},
-                        "chart_type": {"type": "string", "enum": ["bar", "line"]},
+                        "chart_type": {"type": "string", "enum": ["bar", "line", "pie"]},
                         "x": {"type": "string"},
                         "y": {"type": "string"},
                         "title": {"type": "string"},
@@ -134,14 +136,14 @@ def parse_split(raw: Any, *, today: date | None = None) -> tuple[list[tuple[str,
 def draft_report(
     db: Database, llm: LLM, *, message: str, history: list[dict[str, Any]],
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
-    hint: str | None = None, search_fn: Any = None,
+    hint: str | None = None, search_fn: Any = None, folded_through: int = 0, summary: str = "",
 ) -> ReportDraft:
     """Split, query, look up current events, chart, and write the standard outline."""
     draft = None
     for item in iter_draft(
         db, llm, message=message, history=history, partnership_id=partnership_id,
         brand_id=brand_id, distributor_id=distributor_id, session_id=session_id,
-        hint=hint, search_fn=search_fn,
+        hint=hint, search_fn=search_fn, folded_through=folded_through, summary=summary,
     ):
         if isinstance(item, ReportDraft):
             draft = item
@@ -153,18 +155,25 @@ def draft_report(
 def iter_draft(
     db: Database, llm: LLM, *, message: str, history: list[dict[str, Any]],
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
-    hint: str | None = None, search_fn: Any = None,
+    hint: str | None = None, search_fn: Any = None, folded_through: int = 0, summary: str = "",
 ) -> Iterator[dict[str, Any] | ReportDraft]:
     """Same work as `draft_report`, yielding a status before each slow step."""
+    # Importing orchestrator.status at module level loads orchestrator.turn, which imports this module.
+    from ..orchestrator.status import status
+
+    remembered = prompt_context(standing_block(db, partnership_id), summary_block(summary))
     yield status("report-split", "拆问题", "正在决定要查什么、搜什么", state="running")
-    questions, searches = _split(llm, message=message, history=history, hint=hint)
+    questions, searches = _split(
+        llm, message=message, history=history, hint=hint, remembered=remembered, folded_through=folded_through,
+    )
     yield status("report-split", "拆问题", f"{len(questions)} 个问题，{len(searches)} 次检索", state="done")
 
     yield status("report-query", "查数", "正在查询订单和销量", state="running")
     asked = [
         _Ask(qid, question, answer_question(
             db, llm, question=question, partnership_id=partnership_id, brand_id=brand_id,
-            distributor_id=distributor_id, session_id=session_id, reflect=False,
+            distributor_id=distributor_id, session_id=session_id, reflect=False, history=history,
+            folded_through=folded_through, summary=summary,
         ))
         for qid, question in questions
     ]
@@ -178,8 +187,12 @@ def iter_draft(
     charts = _charts(llm, message, asked)
     yield status("report-chart", "图表", f"{len(charts)} 张图" if charts else "这组数不画图", state="done")
 
+    analyzed = _analysis(asked)
     yield status("report-write", "草稿", "正在按大纲写", state="running")
-    text = _write(llm, message, history, asked, found, charts)
+    text = _write(
+        llm, message, history, asked, found, charts, analyzed,
+        remembered=remembered, folded_through=folded_through,
+    )
     yield status("report-write", "草稿", "草稿已写完", state="done")
     yield ReportDraft(
         text=text or "The report draft is empty.",
@@ -192,10 +205,11 @@ def iter_draft(
 
 def _split(
     llm: LLM, *, message: str, history: list[dict[str, Any]], hint: str | None,
+    remembered: str = "", folded_through: int = 0,
 ) -> tuple[list[tuple[str, str]], list[str]]:
     recent = "\n".join(
         f"{turn['role']}: {str(turn.get('content') or '')[:500]}"
-        for turn in history[-8:]
+        for turn in prompt_turns(history, folded_through)
         if turn.get("role") in ("user", "assistant") and str(turn.get("content") or "").strip()
     )
     user = (
@@ -206,7 +220,7 @@ def _split(
     )
     try:
         raw = llm.complete_json(
-            system=SPLIT, messages=[{"role": "user", "content": user}],
+            system=attach(SPLIT, remembered), messages=[{"role": "user", "content": user}],
             schema=split_schema(), temperature=0, max_tokens=400,
         )
     except Exception:
@@ -260,9 +274,18 @@ def _charts(llm: LLM, message: str, asked: list[_Ask]) -> list[dict[str, Any]]:
     return bind_charts(specs, series)
 
 
+def _analysis(asked: list[_Ask]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for item in asked:
+        if item.result.ok and item.result.rows:
+            blocks.extend(findings(item.id, item.result.rows))
+    return blocks
+
+
 def _write(
     llm: LLM, message: str, history: list[dict[str, Any]], asked: list[_Ask],
-    found: list[_Search], charts: list[dict[str, Any]],
+    found: list[_Search], charts: list[dict[str, Any]], analyzed: list[dict[str, Any]],
+    *, remembered: str = "", folded_through: int = 0,
 ) -> str:
     data = [
         {
@@ -281,6 +304,8 @@ def _write(
         "=== DATA (queried from our database for this partnership; "
         "quote these figures, do not recompute or invent) ===\n"
         f"{json.dumps(data, ensure_ascii=False)}\n\n"
+        "=== ANALYSIS (totals, shares, and changes computed from DATA; quote these, do not recompute) ===\n"
+        f"{json.dumps(analyzed, ensure_ascii=False)}\n\n"
         "=== WEB (public context; not a source of sales figures) ===\n"
         f"{json.dumps(web, ensure_ascii=False)}\n\n"
         "=== CHARTS (drawn from DATA; mention by title only) ===\n"
@@ -288,11 +313,11 @@ def _write(
     )
     messages = [
         {"role": turn.get("role"), "content": str(turn.get("content") or "")}
-        for turn in history[-8:]
+        for turn in prompt_turns(history, folded_through)
         if turn.get("role") in ("user", "assistant")
     ]
     messages.append({"role": "user", "content": prompt})
-    return "".join(llm.stream_text(system=WITH_DATA, messages=messages)).strip()
+    return "".join(llm.stream_text(system=attach(WITH_DATA, remembered), messages=messages)).strip()
 
 
 def _notes(found: list[_Search]) -> list[str]:

@@ -54,10 +54,17 @@ describe("desk formatters", () => {
       chart_type: "bar",
       points: [{ x: "Tmall", y: 10 }, { x: "", y: 4 }, { x: "JD", y: "4" }],
     }, {
-      title: "Bad",
+      title: "Mix",
       chart_type: "pie",
+      points: [{ x: "Tmall", y: 10 }, { x: "JD", y: 4 }],
+    }, {
+      title: "Bad",
+      chart_type: "scatter",
       points: [{ x: "A", y: 1 }],
-    }])).toEqual([{ title: "Units", chartType: "bar", points: [{ x: "Tmall", y: 10 }] }]);
+    }])).toEqual([
+      { title: "Units", chartType: "bar", points: [{ x: "Tmall", y: 10 }] },
+      { title: "Mix", chartType: "pie", points: [{ x: "Tmall", y: 10 }, { x: "JD", y: 4 }] },
+    ]);
     expect(reportCharts(null)).toBeUndefined();
     expect(webNotes([" Black Friday ", "", 618])).toEqual(["Black Friday", "618"]);
   });

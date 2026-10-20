@@ -22,7 +22,7 @@ from typing import Any
 from ..contract import contract_discount_for_next_order
 from ..db import Database
 from ..llm import LLM
-from ..memory import recall, with_memory
+from ..memory import prompt_context, recall, record_history, summary_block, with_memory
 from ..orchestrator.status import status
 from ..schemas import AgentSettings, CommercialRule, Partnership
 from .catalog import Catalog
@@ -36,7 +36,6 @@ from .submit import create_and_submit_po
 
 # A chat confirm is pressed while the draft is on screen; a day bounds a tab left open.
 CONFIRM_TOKEN_TTL = timedelta(hours=24)
-MAX_HISTORY_TURNS = 8
 
 
 @dataclass
@@ -119,11 +118,14 @@ def run_po_turn(
             applied = cd.note
 
     # 2. Extract this turn into the slot template; merge, never replace.
+    #    The rolling summary is this chat's, so it joins the prompt here and not the saved settings.
     yield status("po-extract", "抽取", "正在把这句话填进订单", state="running")
+    folded = int(session.get("folded_through") or 0)
+    context = prompt_context(bundle.settings.operating_context, summary_block(session.get("summary"))) or None
     try:
         ex = extract_turn(
             llm, manifest=bundle.catalog.manifest(), current=current, history=history, message=message,
-            images=images, operating_context=bundle.settings.operating_context, contract_discount=applied,
+            images=images, operating_context=context, contract_discount=applied, folded_through=folded,
         )
         slots, language = merge_slots(current, ex.slots), ex.reply_language
         yield status("po-extract", "抽取", "订单字段已填上", state="done")
@@ -156,7 +158,8 @@ def run_po_turn(
             resolutions=[(l.reference, l.product_name) for l in check.lines if l.resolved],
             gaps=check.gap_messages, advisories=[r.message for r in check.advisory],
             layer_notes=_layer_notes(check), image_count=len(images),
-            operating_context=bundle.settings.operating_context, contract_discount=applied,
+            operating_context=context, contract_discount=applied,
+            history=history, folded_through=folded,
         )):
             reply_text += tok
             yield {"type": "token", "text": tok}
@@ -165,10 +168,12 @@ def run_po_turn(
         yield {"type": "warning", "message": f"reply failed: {err}"}
         yield status("po-reply", "回复", "回复失败", state="done")
 
-    # 6. Persist, then hand the UI the structured payload.
-    history = [*history, {"role": "user", "content": message or "(image)"}, {"role": "assistant", "content": reply_text}][-MAX_HISTORY_TURNS * 2:]
-    db.update_session(
-        session["id"], slots=slots.model_dump(), history=history, stage=stage, specialist="po",
+    # 6. Persist the whole transcript, then hand the UI the structured payload.
+    #    A long unsummarised prefix is folded into this chat's summary after the reply.
+    history = [*history, {"role": "user", "content": message or "(image)"}, {"role": "assistant", "content": reply_text}]
+    record_history(
+        db, session, history, llm=llm,
+        slots=slots.model_dump(), stage=stage, specialist="po",
         confirm_token=token, confirm_hash=draft_hash, confirm_expires_at=expires,
     )
     yield {

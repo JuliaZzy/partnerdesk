@@ -95,6 +95,44 @@ def test_model_failure_closes_the_stream_with_an_error_event(db):
     assert ev[-1] == {"type": "error", "message": "The model could not finish this reply."}
 
 
+def test_a_long_chat_folds_after_the_reply(db, monkeypatch):
+    from fastapi import BackgroundTasks
+
+    from backend import memory
+
+    scheduled: list = []
+    ran: list = []
+    orig_add = BackgroundTasks.add_task
+
+    def spy_add(self, func, *args, **kwargs):
+        scheduled.append(func)
+        return orig_add(self, func, *args, **kwargs)
+
+    def spy_fold(*args, **kwargs):
+        ran.append(1)
+        return memory_fold(*args, **kwargs)
+
+    memory_fold = memory.fold_session
+    monkeypatch.setattr(BackgroundTasks, "add_task", spy_add)
+    monkeypatch.setattr(memory, "fold_session", spy_fold)
+
+    llm = FakeLLM(
+        json_replies=[plan(), {"summary": "They ship on Tuesdays"}],
+        text_reply="Noted.",
+    )
+    c = TestClient(create_app(db=db, llm=llm))
+    sid = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
+    db.update_session(sid, history=[{"role": "user", "content": "Q" * 8000}], title="already open", tags=["chat"])
+
+    resp = c.post(f"/api/sessions/{sid}/message", json={"message": "and one more"})
+    assert resp.status_code == 200
+    assert scheduled and len(ran) == 1
+    saved = db.session(sid)
+    assert len(saved["history"]) == 3 and saved["folded_through"] == 1
+    assert saved["summary"] == "They ship on Tuesdays"
+    assert [m for m in db.memories("ps-1") if m.source == "chat"] == []
+
+
 def test_empty_message_is_rejected(db):
     c = TestClient(create_app(db=db, llm=FakeLLM()))
     sid = c.post("/api/sessions", json={}).json()["id"]

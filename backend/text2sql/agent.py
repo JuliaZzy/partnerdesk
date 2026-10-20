@@ -38,6 +38,9 @@ def run(
         db, llm, question=question,
         partnership_id=partnership_id, brand_id=brand_id,
         distributor_id=distributor_id, session_id=session["id"],
+        history=list(session.get("history") or []),
+        folded_through=int(session.get("folded_through") or 0),
+        summary=str(session.get("summary") or ""),
     )
     detail = f"{result.row_count} 行" if result.ok else "没查到"
     yield status("data-query", "查数", detail, state="done")

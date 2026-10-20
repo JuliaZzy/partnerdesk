@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from backend.llm import FakeLLM
 from backend.report import draft_report
-from backend.report.charts import bind_charts
+from backend.report.analyze import findings
+from backend.report.charts import bind_charts, column_kinds
 from backend.report.prompt import STANDARD_QUESTIONS, WITH_DATA
 from backend.report.turn import parse_split
 from backend.schemas import PurchaseOrder
@@ -46,6 +47,9 @@ def test_bind_charts_reads_rows_and_drops_specs_that_do_not_match():
     assert charts == [{
         "title": "Units", "chart_type": "bar",
         "points": [{"x": "Tmall", "y": 10}, {"x": "JD", "y": 4}],
+    }, {
+        "title": "Pie", "chart_type": "pie",
+        "points": [{"x": "Tmall", "y": 10}, {"x": "JD", "y": 4}],
     }]
 
 
@@ -60,6 +64,56 @@ def test_bind_charts_caps_points_and_keeps_three():
     assert [chart["title"] for chart in charts] == ["C1", "C2", "C3"]
     assert len(charts[0]["points"]) == 12
     assert charts[0]["points"][0] == {"x": "0", "y": 1}
+
+
+def test_bind_charts_drops_a_pie_that_is_not_a_small_non_negative_mix():
+    wide = [{"channel": str(i), "units": i + 1} for i in range(7)]
+    charts = bind_charts([
+        {"query_id": "wide", "chart_type": "pie", "x": "channel", "y": "units", "title": "Wide"},
+        {"query_id": "neg", "chart_type": "pie", "x": "channel", "y": "units", "title": "Neg"},
+        {"query_id": "dup", "chart_type": "pie", "x": "channel", "y": "units", "title": "Dup"},
+    ], {
+        "wide": wide,
+        "neg": [{"channel": "A", "units": 5}, {"channel": "B", "units": -1}],
+        "dup": [
+            {"channel": "Tmall", "units": 3},
+            {"channel": "Tmall", "units": 7},
+            {"channel": "JD", "units": 4},
+        ],
+    })
+    assert charts == [{
+        "title": "Dup", "chart_type": "pie",
+        "points": [{"x": "Tmall", "y": 10}, {"x": "JD", "y": 4}],
+    }]
+
+
+def test_findings_sum_a_mix_and_a_trend_and_skip_a_single_row():
+    rows = [
+        {"period": "2025-08", "channel": "Tmall", "units": 10},
+        {"period": "2025-08", "channel": "JD", "units": 4},
+        {"period": "2025-09", "channel": "Tmall", "units": 12},
+        {"period": "2025-09", "channel": "JD", "units": 6},
+    ]
+    found = findings("q1", rows)
+    trend = next(item for item in found if item["kind"] == "trend")
+    mix = next(item for item in found if item["kind"] == "mix")
+    assert trend["start"] == {"label": "2025-08", "value": 14}
+    assert trend["end"] == {"label": "2025-09", "value": 18}
+    assert trend["change"] == 4 and trend["change_percent"] == 28.6 and trend["direction"] == "up"
+    assert mix["total"] == 32 and mix["group_count"] == 2
+    assert mix["top"] == {"label": "Tmall", "value": 22, "share_percent": 68.8}
+    assert mix["bottom"]["label"] == "JD"
+    assert findings("q2", [{"total_amount": 1000}]) == []
+    assert column_kinds([{"period": "2025-08", "units": 1}]) == [
+        {"name": "period", "kind": "time"},
+        {"name": "units", "kind": "number"},
+    ]
+
+
+def test_findings_range_when_there_is_no_category():
+    assert findings("q1", [{"units": 2}, {"units": 4}]) == [{
+        "id": "q1", "kind": "range", "y": "units", "count": 2, "min": 2, "max": 4, "mean": 3,
+    }]
 
 
 def test_draft_quotes_rows_and_treats_web_as_context(db):
@@ -86,6 +140,7 @@ def test_draft_quotes_rows_and_treats_web_as_context(db):
     body = text_call["messages"][-1]["content"]
     assert text_call["system"] == WITH_DATA
     assert "1000" in body and "Retailers plan promotions." in body and "SELECT" not in body
+    assert "=== ANALYSIS" in body
     assert draft.web_notes == ["Black Friday"]
     assert draft.charts[0]["points"][0]["y"] == 1000
     assert draft.warnings == []

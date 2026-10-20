@@ -16,6 +16,7 @@ from ..brand_knowledge.answer import answer_in_chat
 from ..contract.agent import run as run_contract
 from ..db import Database
 from ..llm import LLM, AssistantTurn
+from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
 from ..po.agent import run as run_po
 from ..po.turn import load_bundle
 from ..report.agent import run as run_report
@@ -103,9 +104,11 @@ def open_session(llm: LLM, *, message: str, attachments: list[str]) -> SessionOp
 
 def make_plan(
     llm: LLM, *, message: str, attachments: list[str], history: list[dict[str, str]],
-    stage: str | None, tags: list[str],
+    stage: str | None, tags: list[str], memory: str | None = None, folded_through: int = 0,
 ) -> list[PlanTask]:
-    recent = "\n".join(f"{m['role']}: {str(m['content'])[:500]}" for m in history[-8:])
+    recent = "\n".join(
+        f"{m['role']}: {str(m['content'])[:500]}" for m in prompt_turns(history, folded_through)
+    )
     user = (
         f"=== SESSION TAGS ===\n{', '.join(tags) or '(none)'}\n"
         f"=== STAGE ===\n{stage or '(none)'}\n\n"
@@ -114,7 +117,7 @@ def make_plan(
         f"=== MESSAGE ===\n{message[:4000] or '(no text)'}"
     )
     raw = llm.complete_json(
-        system=PLAN, messages=[{"role": "user", "content": user}],
+        system=attach(PLAN, memory or ""), messages=[{"role": "user", "content": user}],
         schema=plan_schema(), temperature=0, max_tokens=600,
     )
     out: list[PlanTask] = []
@@ -151,7 +154,7 @@ def _run_one_tool(
 
 def run_tool_calls(
     llm: LLM, *, text: str, history: list[dict[str, Any]], extra: dict[str, Any] | None = None,
-    include_mcp: bool | None = None,
+    include_mcp: bool | None = None, memory: str | None = None, folded_through: int = 0,
 ) -> str | None:
     """Native function-calling loop (tools= / tool_choice=auto).
 
@@ -167,12 +170,17 @@ def run_tool_calls(
     runners = all_tools(include_mcp=include_mcp)
     if not schemas:
         return None
-    messages: list[dict[str, Any]] = [{"role": "user", "content": text}]
+    messages: list[dict[str, Any]] = [
+        {"role": m.get("role"), "content": str(m.get("content") or "")}
+        for m in prompt_turns(history, folded_through)
+        if m.get("role") in ("user", "assistant")
+    ]
+    messages.append({"role": "user", "content": text})
     context = {"history": history, **(extra or {})}
     used = False
     last: AssistantTurn | None = None
     for _ in range(MAX_TOOL_ROUNDS):
-        last = llm.complete(system=REACT, messages=messages, tools=schemas)
+        last = llm.complete(system=attach(REACT, memory or ""), messages=messages, tools=schemas)
         if not last.tool_calls:
             if used:
                 return (last.content or "").strip() or "Done."
@@ -235,10 +243,12 @@ def handle_message(
         yield status("session", "开场", opened.title, state="done")
 
     tags = list(session.get("tags") or [])
+    folded = int(session.get("folded_through") or 0)
+    remembered = prompt_context(standing_block(db, bundle.partnership.id), summary_block(session.get("summary")))
     yield status("plan", "计划", "正在判断这一轮交给谁", state="running")
     tasks = make_plan(
         llm, message=text, attachments=names, history=history,
-        stage=session.get("stage"), tags=tags,
+        stage=session.get("stage"), tags=tags, memory=remembered, folded_through=folded,
     )
     yield {
         "type": "plan",
@@ -285,6 +295,7 @@ def handle_message(
     yield status("tools", "工具", "正在看要不要查新闻、汇率或翻译", state="running")
     tool_reply = run_tool_calls(
         llm, text=text, history=history, extra={"last_report": session.get("last_report")},
+        memory=remembered, folded_through=folded,
     )
     if tool_reply is not None:
         yield status("tools", "工具", "工具已返回", state="done")

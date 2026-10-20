@@ -50,7 +50,7 @@ export function citationSources(raw: unknown): Citation[] | undefined {
 
 export type ReportChart = {
   title: string;
-  chartType: "bar" | "line";
+  chartType: "bar" | "line" | "pie";
   points: { x: string; y: number }[];
 };
 
@@ -61,7 +61,9 @@ export function reportCharts(raw: unknown): ReportChart[] | undefined {
     if (!item || typeof item !== "object") return [];
     const row = item as { title?: unknown; chart_type?: unknown; points?: unknown };
     const title = String(row.title ?? "").trim();
-    const chartType = row.chart_type === "line" || row.chart_type === "bar" ? row.chart_type : "";
+    const chartType = row.chart_type === "line" || row.chart_type === "bar" || row.chart_type === "pie"
+      ? row.chart_type
+      : "";
     if (!title || !chartType || !Array.isArray(row.points)) return [];
     const points = row.points.flatMap((point) => {
       if (!point || typeof point !== "object") return [];
