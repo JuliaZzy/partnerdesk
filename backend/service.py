@@ -10,14 +10,18 @@ Events:  {type: route}  {type: token, text}  {type: warning, message}  {type: do
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 from .db import Database
+from .llm import LLM
 from .memory import record_history
-from .orchestrator import MAX_IMAGES, handle_message
+from .orchestrator import MAX_IMAGES
+from .orchestrator.turn import handle_message as run_turn
 from .po.turn import build_ledger, confirm_order, load_bundle
+from .turn_lock import hold_session
 
-__all__ = ["MAX_IMAGES", "confirm", "handle_message", "new_session", "orders"]
+__all__ = ["MAX_IMAGES", "confirm", "delete_session", "handle_message", "new_session", "orders"]
 
 
 def new_session(db: Database, partnership_id: str | None = None) -> dict[str, Any]:
@@ -27,8 +31,26 @@ def new_session(db: Database, partnership_id: str | None = None) -> dict[str, An
     return db.create_session(uuid.uuid4().hex, pid)
 
 
+def handle_message(
+    db: Database, llm: LLM, session_id: str, text: str, images: list[str] | None = None,
+    attachments: list[str] | None = None, documents: list[tuple[str, bytes]] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """One turn. A second send on this chat waits; other chats do not."""
+    with hold_session(session_id):
+        yield from run_turn(db, llm, session_id, text, images, attachments, documents)
+
+
+def delete_session(db: Database, session_id: str) -> None:
+    db.delete_session(session_id)
+
+
 def confirm(db: Database, session_id: str, token: str) -> dict[str, Any]:
     """The gate. Adds a code-composed `message` for the UI on the two states a person reads."""
+    with hold_session(session_id):
+        return _confirm(db, session_id, token)
+
+
+def _confirm(db: Database, session_id: str, token: str) -> dict[str, Any]:
     session = db.session(session_id)
     if not session:
         raise KeyError("session not found")

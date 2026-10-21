@@ -45,6 +45,7 @@ def test_full_flow(db):
 
     ev = events(c.post(f"/api/sessions/{sid}/message", json={"message": "10 cases of fish oil, no discount"}))
     assert _of(ev, "session") == {"type": "session", "title": "10 cases fish oil", "tags": ["po"]}
+    assert [e for e in ev if e["type"] == "status" and e.get("id") == "session"] == []
     assert _of(ev, "plan")["tasks"][0]["name"] == "po"
     plan_steps = [e for e in ev if e["type"] == "status" and e["id"] == "plan"]
     assert plan_steps[0]["state"] == "running" and plan_steps[-1]["state"] == "done"
@@ -85,13 +86,26 @@ def test_contract_plan_without_bytes_still_answers(db):
 
 
 def test_model_failure_closes_the_stream_with_an_error_event(db):
-    llm = FakeLLM(fail_json=True)
+    """A failure after a status frame was already flushed must still close the stream."""
+    from backend.orchestrator.prompt import PLAN
+
+    class FailPlan(FakeLLM):
+        def complete_json(self, *, system, messages, schema=None, temperature=0.0, max_tokens=900):
+            if system == PLAN:
+                self.calls.append({"kind": "json", "system": system, "messages": messages, "schema": schema})
+                raise RuntimeError("model unavailable")
+            return super().complete_json(
+                system=system, messages=messages, schema=schema, temperature=temperature, max_tokens=max_tokens,
+            )
+
+    llm = FailPlan(json_replies=[open_meta()])
     c = TestClient(create_app(db=db, llm=llm))
     sid = c.post("/api/sessions", json={}).json()["id"]
     resp = c.post(f"/api/sessions/{sid}/message", json={"message": "hello"})
     assert resp.status_code == 200
     ev = events(resp)
-    assert ev[0]["type"] == "status" and ev[0]["id"] == "session" and ev[0]["state"] == "running"
+    assert any(e["type"] == "status" and e["id"] == "plan" and e["state"] == "running" for e in ev)
+    assert all(e.get("id") != "session" for e in ev)
     assert ev[-1] == {"type": "error", "message": "The model could not finish this reply."}
 
 
@@ -137,3 +151,20 @@ def test_empty_message_is_rejected(db):
     c = TestClient(create_app(db=db, llm=FakeLLM()))
     sid = c.post("/api/sessions", json={}).json()["id"]
     assert c.post(f"/api/sessions/{sid}/message", json={"message": "  "}).status_code == 400
+
+
+def test_delete_session_drops_the_chat_and_keeps_what_it_learned(db):
+    from backend.schemas import Memory
+
+    c = TestClient(create_app(db=db, llm=FakeLLM()))
+    sid = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
+    keep = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
+    db.add_memory(Memory(
+        partnership_id="ps-1", kind="fact", content="They ship on Tuesdays", source="chat", session_id=sid,
+    ))
+    assert c.delete(f"/api/sessions/{sid}").status_code == 204
+    assert c.get(f"/api/sessions/{sid}").status_code == 404
+    assert [row["id"] for row in c.get("/api/sessions?partnership_id=ps-1").json()] == [keep]
+    left = db.memories("ps-1")
+    assert [(m.content, m.session_id) for m in left] == [("They ship on Tuesdays", None)]
+    assert c.delete(f"/api/sessions/{sid}").status_code == 404

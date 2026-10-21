@@ -27,7 +27,7 @@ class Inbound(BaseModel):
     images: list[str] = []       # data URLs — read by the PO extractor
     attachments: list[str] = []  # file names — seen by the orchestrator only
     files: list[InboundFile] = []  # the document bytes, for the contract specialist
-    model: str | None = None     # campus call name; default is LLM_MODEL
+    model: str | None = None     # dropdown id from llm_config; omitted uses the first row
 
 
 class Confirm(BaseModel):

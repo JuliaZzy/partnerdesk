@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyActivity,
+  attachOutput,
+  looseModelJson,
   buildLedger,
   chatTitle,
   citationSources,
@@ -36,6 +38,18 @@ describe("desk formatters", () => {
       ["po-extract", "running", "正在填订单"],
     ]);
     expect(applyActivity(done, { type: "token", text: "hi" })).toBe(done);
+  });
+
+  it("keeps each step's model output when that step updates", () => {
+    const started = applyActivity([], { type: "status", id: "plan", title: "Planning", detail: "正在判断", state: "running" });
+    const withPlan = attachOutput(started, { tasks: [] });
+    const split = applyActivity(withPlan, { type: "status", id: "report-split", title: "拆问题", detail: "正在拆", state: "running" });
+    const withQuestions = attachOutput(split, { questions: ["orders"], searches: [] });
+    const done = applyActivity(withQuestions, { type: "status", id: "plan", title: "Planning", detail: "报表", state: "done" });
+    expect(done[0].outputs).toEqual([{ tasks: [] }]);
+    expect(done[1].outputs).toEqual([{ questions: ["orders"], searches: [] }]);
+    expect(looseModelJson([{ tasks: [] }, { title: "标题" }], done)).toEqual([{ title: "标题" }]);
+    expect(attachOutput([], { sql: "SELECT 1" })).toEqual([]);
   });
 
   it("keeps Confirm disabled until both early steps are done", () => {

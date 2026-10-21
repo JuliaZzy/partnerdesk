@@ -99,7 +99,7 @@ def answer_in_chat(
         hits = retrieve(query, brand_id)
     except RagUnavailable as err:
         yield status("brand-search", "检索", "检索不可用", state="done")
-        yield from one_shot(db, session, str(err))
+        yield from one_shot(db, session, str(err), llm=llm)
         return
     named = _with_sources(db, hits)
     yield status("brand-search", "检索", f"找到 {len(named)} 段", state="done")

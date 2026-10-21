@@ -143,9 +143,8 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 
 本机只需要 **Docker Desktop**。不要再起 PostgreSQL、Python venv 或 Vite。
 
-第一次：`cp .env.example .env`，填模型 key（默认交大校园 API，需校园网或 VPN；也有 OpenAI / Ollama / GLM）。
-**不要**填 `PARTNERDESK_DB_URL`、`PARTNERDESK_REDIS_URL`、`MILVUS_URI`——Compose 会注入容器内网地址。Ollama 在宿主机上时，写成
-`LLM_BASE_URL=http://host.docker.internal:11434/v1`。
+第一次：`cp .env.example .env`，填校园网模型 key（需校园网或 VPN）。聊天下拉里的地址和调用名在 `backend/llm_config.py`，不写在 `.env`。
+**不要**填 `PARTNERDESK_DB_URL`、`PARTNERDESK_REDIS_URL`、`MILVUS_URI`——Compose 会注入容器内网地址。
 
 然后：
 

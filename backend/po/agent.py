@@ -28,11 +28,11 @@ def run(
             outcome = handle_post_submit(db, llm, po, text)
             if outcome.kind != "none":
                 yield status("po-after", "售后", "已记到订单上", state="done")
-                yield from one_shot(db, session, outcome.message, {"po_event": outcome.kind})
+                yield from one_shot(db, session, outcome.message, {"po_event": outcome.kind}, llm)
                 return
             if outcome.message:
                 yield status("po-after", "售后", "这一句先不改订单", state="done")
-                yield from one_shot(db, session, outcome.message)
+                yield from one_shot(db, session, outcome.message, llm=llm)
                 return
             yield status("po-after", "售后", "开始一张新订单", state="done")
         db.update_session(

@@ -76,9 +76,21 @@ def _func_name(node: exp.Func) -> str:
         return node.key.lower()
 
 
-def _qualified_call(node: exp.Func) -> bool:
-    head = node.sql(dialect="postgres").split("(", 1)[0]
-    return "." in head
+def _schema_qualified(node: exp.Func) -> bool:
+    """A schema prefix names one function in one schema, past the locked search path.
+
+    sqlglot hangs `pg_catalog.date_trunc(...)` on a parent `Dot` and renders the
+    function itself without the schema, so the function text alone misses that shape.
+    A quoted name (`"pg_catalog.date_trunc"(...)`) keeps the dot inside the function.
+
+    The rendered text is the wrong place to look for that dot. `AND` and `OR` are
+    functions here, so `rf.status = 'confirmed' AND sr.status = 'confirmed'` would
+    count as a schema-qualified call.
+    """
+    parent = node.parent
+    if isinstance(parent, exp.Dot) and parent.expression is node:
+        return True
+    return isinstance(node, exp.Anonymous) and "." in _func_name(node)
 
 
 def _const_int(node: exp.Expression) -> int | None:
@@ -140,7 +152,7 @@ def validate(sql: str) -> tuple[bool, str, str]:
             return _fail(f"table is not allowed: {table.name}")
 
     for func in expr.find_all(exp.Func):
-        if _qualified_call(func):
+        if _schema_qualified(func):
             return _fail("schema-qualified functions are not allowed")
         name = _func_name(func)
         if name in _FORBIDDEN_NAMES or name.startswith(("pg_", "lo_", "dblink")):

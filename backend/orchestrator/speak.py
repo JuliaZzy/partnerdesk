@@ -15,10 +15,25 @@ from ..memory import attach, prompt_context, prompt_turns, record_history, stand
 from .prompt import ANSWER
 
 
+def attach_model_json(message: dict[str, Any], llm: LLM | None) -> None:
+    """Copy this turn's JSON objects onto the assistant message. The list on the client is replaced next turn."""
+    from .status import current_activity
+
+    outputs = getattr(llm, "model_outputs", None)
+    if isinstance(outputs, list) and outputs:
+        message["model_json"] = list(outputs)
+    activity = current_activity()
+    if activity:
+        message["activity"] = activity
+
+
 def one_shot(
     db: Database, session: dict[str, Any], text: str, extra: dict[str, Any] | None = None,
+    llm: LLM | None = None,
 ) -> Iterator[dict[str, Any]]:
-    history = [*(session.get("history") or []), {"role": "user", "content": "(message)"}, {"role": "assistant", "content": text}]
+    assistant: dict[str, Any] = {"role": "assistant", "content": text}
+    attach_model_json(assistant, llm)
+    history = [*(session.get("history") or []), {"role": "user", "content": "(message)"}, assistant]
     record_history(db, session, history)
     yield {"type": "token", "text": text}
     yield {
@@ -59,6 +74,10 @@ def save_reply(
         assistant["web_notes"] = notes
     if (extra or {}).get("report_draft"):
         assistant["report_draft"] = True
+    series = (extra or {}).get("report_series")
+    if isinstance(series, list) and series:
+        assistant["report_series"] = series
+    attach_model_json(assistant, llm)
     record_history(db, session, [*history, {"role": "user", "content": text}, assistant], llm=llm)
     return {
         "type": "done", "stage": session.get("stage"), "slots": session.get("slots"), "draft": None,

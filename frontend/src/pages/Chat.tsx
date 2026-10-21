@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api, postJson, streamMessage } from "../api";
+import { flightOf, isChatBusy, isForgotten, onForgetChat, patchFlight, setActiveChat, useFlight } from "../chat-live";
 import { NeedPartnership, useDesk } from "../desk";
 import {
   applyActivity,
+  attachOutput,
   buildLedger,
   citationSources,
   confirmReady,
@@ -11,7 +13,9 @@ import {
   discountText,
   greeting,
   lineFlag,
+  looseModelJson,
   money,
+  readActivity,
   reportCharts,
   webNotes,
   type Activity,
@@ -20,6 +24,7 @@ import {
   type ReportChart,
   type Step,
 } from "../format";
+import { Markdown } from "../markdown-view";
 import { ReportFigure } from "../ui";
 
 type Turn = {
@@ -35,6 +40,7 @@ type Turn = {
   webNotes?: string[];
   reportDraft?: boolean;
   activity?: Activity[];
+  modelJson?: unknown[];
 };
 
 type Gap = { message: string; candidates?: { name: string; sku: string }[] };
@@ -76,11 +82,14 @@ type SessionRow = {
     data_query?: unknown;
     charts?: unknown;
     web_notes?: unknown;
+    model_json?: unknown;
+    activity?: unknown;
     report_draft?: boolean;
   }[];
 };
 
 const snaps = new Map<string, Snap>();
+onForgetChat((id) => snaps.delete(id));
 const IMAGE = new Set(["png", "jpg", "jpeg", "webp"]);
 const DOC = new Set(["pdf", "docx", "txt", "md"]);
 const SKIP = new Set(["(message)", "(confirm)"]);
@@ -105,7 +114,10 @@ function fromSession(session: SessionRow, hello: string): Snap {
       const charts = message.role === "assistant" ? reportCharts(message.charts) : undefined;
       const notes = message.role === "assistant" ? webNotes(message.web_notes) : undefined;
       const reportDraft = message.role === "assistant" && message.report_draft === true;
-      turns.push({ role: message.role, text, sources, dataQuery, charts, webNotes: notes, reportDraft });
+      const activity = message.role === "assistant" ? readActivity(message.activity) : undefined;
+      const stored = message.role === "assistant" && Array.isArray(message.model_json) ? message.model_json : undefined;
+      const modelJson = looseModelJson(stored, activity);
+      turns.push({ role: message.role, text, sources, dataQuery, charts, webNotes: notes, reportDraft, activity, modelJson });
     }
   }
   const stage = session.stage || "gathering";
@@ -135,117 +147,151 @@ function ChatDesk() {
   const partnership = desk.partnership!;
   const [sid, setSid] = useState<string | null>(null);
   const [snap, setSnap] = useState<Snap | null>(null);
-  const [text, setText] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [live, setLive] = useState("");
-  const [activity, setActivity] = useState<Activity[]>([]);
-  const activityRef = useRef<Activity[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
   const [model, setModel] = useState(() => localStorage.getItem("partnerdesk.model") || "");
   const threadRef = useRef<HTMLDivElement>(null);
   const bootKey = useRef("");
+  const sidRef = useRef<string | null>(null);
+  const openSeq = useRef(0);
+  const flight = useFlight(sid);
+  sidRef.current = sid;
 
-  function remember(nextSid: string, next: Snap) {
+  function focus(nextSid: string, next: Snap) {
+    if (isForgotten(nextSid)) return;
     snaps.set(nextSid, next);
+    sidRef.current = nextSid;
     setSid(nextSid);
     setSnap(next);
+    setActiveChat(nextSid);
   }
 
-  async function openExisting(id: string) {
+  function commitSnap(id: string, next: Snap) {
+    if (isForgotten(id)) return;
+    snaps.set(id, next);
+    if (sidRef.current === id) setSnap(next);
+  }
+
+  async function openExisting(id: string, seq: number) {
     const cached = snaps.get(id);
     if (cached) {
-      setSid(id);
-      setSnap(cached);
+      if (seq === openSeq.current) focus(id, cached);
       return;
     }
     const session = await api<SessionRow>(`/api/sessions/${id}`);
-    remember(id, fromSession(session, greeting(partnership)));
+    if (seq !== openSeq.current) return;
+    if (snaps.has(id)) {
+      focus(id, snaps.get(id)!);
+      return;
+    }
+    focus(id, fromSession(session, greeting(partnership)));
   }
 
-  async function startNew() {
+  async function startNew(seq: number) {
     const session = await postJson<SessionRow>("/api/sessions", { partnership_id: partnership.id });
+    if (seq !== openSeq.current) return;
     const fresh: Snap = {
       turns: [{ role: "assistant", text: greeting(partnership) }],
       draft: null, gaps: [], steps: [], stage: "gathering", confirmToken: null, route: "", title: null, tags: [],
     };
-    remember(session.id, fresh);
+    focus(session.id, fresh);
     await desk.reloadSessions();
   }
+
+  useEffect(() => onForgetChat((id) => {
+    if (sidRef.current !== id) return;
+    sidRef.current = null;
+    setSid(null);
+    setSnap(null);
+  }), []);
 
   useEffect(() => {
     const jump = desk.jump;
     const key = `${partnership.id}:${jump.n}:${jump.sid}`;
     if (bootKey.current === key) return;
     bootKey.current = key;
-    setError(null);
+    const seq = ++openSeq.current;
+    setBootError(null);
     const run = async () => {
       if (jump.n > 0 && jump.sid === "new") {
-        await startNew();
+        await startNew(seq);
         return;
       }
       if (jump.n > 0 && jump.sid) {
-        await openExisting(jump.sid);
+        await openExisting(jump.sid, seq);
         return;
       }
       const rows = await api<{ id: string }[]>(`/api/sessions?partnership_id=${encodeURIComponent(partnership.id)}`);
-      if (rows[0]) await openExisting(rows[0].id);
-      else await startNew();
+      if (seq !== openSeq.current) return;
+      if (rows[0]) await openExisting(rows[0].id, seq);
+      else await startNew(seq);
     };
-    run().catch((err: Error) => setError(err.message));
+    run().catch((err: Error) => {
+      if (seq === openSeq.current) setBootError(err.message);
+    });
     // startNew/openExisting close over the current partnership; jump is the trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [partnership.id, desk.jump]);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
-  }, [snap?.turns, live, activity]);
+  }, [snap?.turns, flight.live, flight.activity]);
 
-  async function send(message: string, attached = files) {
-    if (!sid || !snap || busy) return;
+  const models = desk.meta?.models ?? [];
+  const listed = models.some((item) => item.id === model);
+  const modelId = (listed ? model : "") || desk.meta?.default_model || models[0]?.id || "";
+
+  async function send(message: string, attached?: File[]) {
+    const chatId = sidRef.current;
+    const baseSnap = chatId ? snaps.get(chatId) : undefined;
+    if (!chatId || !baseSnap || isChatBusy(chatId)) return;
+    const chosen = attached ?? flightOf(chatId).files;
     const trimmed = message.trim();
-    if (!trimmed && attached.length === 0) return;
-    setBusy(true);
-    setError(null);
-    setText("");
-    setFiles([]);
+    if (!trimmed && chosen.length === 0) return;
+    patchFlight(chatId, { busy: true, error: null, draft: "", files: [], live: "", activity: [], modelJson: [] });
     const images: string[] = [];
     const documents: { name: string; data: string }[] = [];
-    for (const file of attached) {
+    for (const file of chosen) {
       const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
       if (IMAGE.has(ext) && images.length < (desk.meta?.max_images ?? 3)) images.push(await readDataUrl(file));
       else if (DOC.has(ext) && documents.length < 2) documents.push({ name: file.name, data: await readDataUrl(file) });
     }
     const userTurn: Turn = { role: "user", text: trimmed, images, files: documents.map((d) => d.name) };
-    const base: Snap = { ...snap, turns: [...snap.turns, userTurn] };
-    remember(sid, base);
-    activityRef.current = [];
-    setActivity([]);
-    setLive("");
+    const base: Snap = { ...baseSnap, turns: [...baseSnap.turns, userTurn] };
+    commitSnap(chatId, base);
+    let steps: Activity[] = [];
     let reply = "";
     const warnings: string[] = [];
     const finished: { event: Record<string, unknown> | null } = { event: null };
     let title = base.title;
     let tags = base.tags;
     let route = base.route;
+    const modelJson: unknown[] = [];
     try {
-      await streamMessage(sid, {
+      await streamMessage(chatId, {
         message: trimmed,
         images,
         attachments: documents.map((d) => d.name),
         files: documents,
-        model: model || null,
+        model: modelId || null,
       }, (event) => {
         if (event.type === "status") {
-          const next = applyActivity(activityRef.current, event);
-          activityRef.current = next;
-          setActivity(next);
+          steps = applyActivity(steps, event);
+          patchFlight(chatId, { activity: steps });
         } else if (event.type === "token") {
           reply += String(event.text ?? "");
-          setLive(reply);
+          patchFlight(chatId, { live: reply });
         } else if (event.type === "session") {
           title = (event.title as string | null) ?? title;
           tags = (event.tags as string[]) ?? tags;
+          desk.nameSession(chatId, title, tags);
+        } else if (event.type === "model_json") {
+          modelJson.push(event.json);
+          if (steps.length === 0) {
+            patchFlight(chatId, { modelJson: [...modelJson] });
+          } else {
+            steps = attachOutput(steps, event.json);
+            patchFlight(chatId, { activity: steps });
+          }
         } else if (event.type === "plan") {
           const tasks = (event.tasks as { name?: string }[]) ?? [];
           const names = tasks.map((task) => task.name).filter(Boolean);
@@ -274,7 +320,8 @@ function ChatDesk() {
           charts: reportCharts(done?.charts),
           webNotes: webNotes(done?.web_notes),
           reportDraft: done?.report_draft === true,
-          activity: activityRef.current,
+          activity: steps,
+          modelJson: looseModelJson(modelJson, steps),
         }],
         stage: done ? String(done.stage ?? base.stage) : base.stage,
         draft: done ? ((done.draft as Draft | null) ?? null) : base.draft,
@@ -282,66 +329,60 @@ function ChatDesk() {
         steps: done ? ((done.steps as Step[] | undefined) ?? base.steps) : base.steps,
         confirmToken: done ? ((done.confirm_token as string | null) ?? null) : base.confirmToken,
       };
-      remember(sid, next);
-      activityRef.current = [];
-      setActivity([]);
-      setLive("");
+      commitSnap(chatId, next);
+      patchFlight(chatId, { live: "", activity: [], modelJson: [] });
       await desk.reloadSessions();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "send failed");
-      setLive("");
+      patchFlight(chatId, { error: err instanceof Error ? err.message : "send failed" });
     } finally {
-      setBusy(false);
+      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [] });
     }
   }
 
   async function confirm() {
-    if (!sid || !snap?.confirmToken || busy) return;
-    setBusy(true);
-    setError(null);
+    const chatId = sidRef.current;
+    const current = chatId ? snaps.get(chatId) : undefined;
+    if (!chatId || !current?.confirmToken || isChatBusy(chatId)) return;
+    patchFlight(chatId, { busy: true, error: null });
     try {
       const result = await postJson<{ state: string; message?: string; draft?: Draft | null; steps?: Step[] }>(
-        `/api/sessions/${sid}/confirm`,
-        { token: snap.confirmToken },
+        `/api/sessions/${chatId}/confirm`,
+        { token: current.confirmToken },
       );
       const textOut = result.state === "submitted" || result.state === "changed"
         ? (result.message ?? "")
         : `Confirm: ${result.state}.`;
       const next: Snap = {
-        ...snap,
-        turns: [...snap.turns, { role: "assistant", text: textOut }],
-        stage: result.state === "submitted" ? "submitted" : result.state === "changed" ? "gathering" : snap.stage,
-        draft: result.state === "submitted" || result.state === "changed" ? (result.draft ?? null) : snap.draft,
-        steps: result.state === "submitted" || result.state === "changed" ? (result.steps ?? []) : snap.steps,
-        gaps: result.state === "submitted" || result.state === "changed" ? [] : snap.gaps,
+        ...current,
+        turns: [...current.turns, { role: "assistant", text: textOut }],
+        stage: result.state === "submitted" ? "submitted" : result.state === "changed" ? "gathering" : current.stage,
+        draft: result.state === "submitted" || result.state === "changed" ? (result.draft ?? null) : current.draft,
+        steps: result.state === "submitted" || result.state === "changed" ? (result.steps ?? []) : current.steps,
+        gaps: result.state === "submitted" || result.state === "changed" ? [] : current.gaps,
         confirmToken: null,
       };
-      remember(sid, next);
+      commitSnap(chatId, next);
       await desk.reloadSessions();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "confirm failed");
+      patchFlight(chatId, { error: err instanceof Error ? err.message : "confirm failed" });
     } finally {
-      setBusy(false);
+      patchFlight(chatId, { busy: false });
     }
   }
 
   function markFeedback(logId: number, feedback: "good" | "bad") {
-    setSnap((current) => {
-      if (!current || !sid) return current;
-      const next: Snap = {
-        ...current,
-        turns: current.turns.map((turn) => (
-          turn.dataQuery?.logId === logId ? { ...turn, dataQuery: { ...turn.dataQuery, feedback } } : turn
-        )),
-      };
-      snaps.set(sid, next);
-      return next;
+    const chatId = sidRef.current;
+    const current = chatId ? snaps.get(chatId) : undefined;
+    if (!chatId || !current) return;
+    commitSnap(chatId, {
+      ...current,
+      turns: current.turns.map((turn) => (
+        turn.dataQuery?.logId === logId ? { ...turn, dataQuery: { ...turn.dataQuery, feedback } } : turn
+      )),
     });
   }
 
   const ready = confirmReady(snap?.steps);
-  const models = desk.meta?.models ?? [];
-  const modelId = model || desk.meta?.default_model || models[0]?.id || "";
 
   return (
     <div className="chat-layout">
@@ -350,7 +391,7 @@ function ChatDesk() {
           <h1>{partnership.brand_name} · {partnership.distributor_name}</h1>
           <p>ships to {partnership.ship_to_country || "—"} {snap?.route && <span className="route">{snap.route}</span>}</p>
         </header>
-        {error && <div className="error">{error}</div>}
+        {(bootError || flight.error) && <div className="error">{bootError || flight.error}</div>}
         <div className="thread" ref={threadRef}>
           {snap?.turns.map((turn, index) => (
             <div className={`turn ${turn.role}`} key={index}>
@@ -358,11 +399,19 @@ function ChatDesk() {
                 {turn.activity && turn.activity.length > 0 && <ActivityList steps={turn.activity} />}
                 {turn.model && <div className="who">{models.find((item) => item.id === turn.model)?.short || turn.model}</div>}
                 {turn.reportDraft && <div className="draft-tag">Draft</div>}
-                <p>{turn.text}</p>
+                {turn.role === "assistant" ? <Markdown text={turn.text} /> : <p>{turn.text}</p>}
                 {turn.charts?.map((chart, chartIndex) => (
                   <ReportFigure key={`${chart.title}-${chartIndex}`} chart={chart} />
                 ))}
-                {turn.webNotes?.map((note) => <div className="source" key={note}>Public context · {note}</div>)}
+                {turn.webNotes && turn.webNotes.length > 0 && (
+                  <div className="refs">
+                    <div className="refs-label">参考资料：</div>
+                    {turn.webNotes.map((note, noteIndex) => (
+                      <div className="source" key={`${noteIndex}-${note}`}>[{noteIndex + 1}] {note}</div>
+                    ))}
+                  </div>
+                )}
+                {turn.modelJson && turn.modelJson.length > 0 && <ModelJson items={turn.modelJson} />}
                 {turn.files?.map((name) => <div className="who" key={name}>📎 {name}</div>)}
                 {turn.images?.map((src) => <img key={src.slice(0, 32)} alt="" src={src} />)}
                 {turn.sources?.map((source) => (
@@ -379,11 +428,12 @@ function ChatDesk() {
               </div>
             </div>
           ))}
-          {(activity.length > 0 || live) && (
+          {(flight.activity.length > 0 || flight.live || flight.modelJson.length > 0) && (
             <div className="turn assistant">
               <div className="bubble">
-                {activity.length > 0 && <ActivityList steps={activity} />}
-                {live && <p>{live}</p>}
+                {flight.activity.length > 0 && <ActivityList steps={flight.activity} />}
+                {flight.modelJson.length > 0 && <ModelJson items={flight.modelJson} />}
+                {flight.live && <Markdown text={flight.live} />}
               </div>
             </div>
           )}
@@ -392,17 +442,19 @@ function ChatDesk() {
           className="composer"
           onSubmit={(event) => {
             event.preventDefault();
-            void send(text);
+            void send(flight.draft);
           }}
         >
           <textarea
-            value={text}
+            value={flight.draft}
             placeholder="An order, or attach an agreement (PDF / Word)…"
-            onChange={(event) => setText(event.target.value)}
+            onChange={(event) => {
+              if (sid) patchFlight(sid, { draft: event.target.value });
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                void send(text);
+                void send(flight.draft);
               }
             }}
           />
@@ -424,11 +476,13 @@ function ChatDesk() {
                 multiple
                 hidden
                 accept=".png,.jpg,.jpeg,.webp,.pdf,.docx,.txt,.md"
-                onChange={(event) => setFiles([...(event.target.files ?? [])])}
+                onChange={(event) => {
+                  if (sid) patchFlight(sid, { files: [...(event.target.files ?? [])] });
+                }}
               />
             </label>
-            {files.length > 0 && <span className="muted">{files.map((file) => file.name).join(", ")}</span>}
-            <button className="btn-primary" type="submit" disabled={busy || !sid}>Send</button>
+            {flight.files.length > 0 && <span className="muted">{flight.files.map((file) => file.name).join(", ")}</span>}
+            <button className="btn-primary" type="submit" disabled={flight.busy || !sid}>Send</button>
           </div>
         </form>
       </section>
@@ -448,10 +502,10 @@ function ChatDesk() {
               </div>
             </div>
           ))}
-          {busy && activity.length > 0 && (
+          {flight.busy && flight.activity.length > 0 && (
             <>
               <h2>这一轮</h2>
-              <ActivityList steps={activity} />
+              <ActivityList steps={flight.activity} />
             </>
           )}
           <h2>Progress</h2>
@@ -466,7 +520,7 @@ function ChatDesk() {
             ))}
           </ul>
           {snap?.stage === "confirm" && snap.confirmToken && (
-            <button className="btn-primary" type="button" disabled={!ready || busy} onClick={() => void confirm()}>
+            <button className="btn-primary" type="button" disabled={!ready || flight.busy} onClick={() => void confirm()}>
               Confirm — place the order
             </button>
           )}
@@ -479,14 +533,50 @@ function ChatDesk() {
   );
 }
 
+function ModelJson({ items }: { items: unknown[] }) {
+  return (
+    <div className="model-jsons">
+      {items.map((item, index) => (
+        <pre className="model-json" key={index}>
+          <span className="label">模型输出 {index + 1}</span>
+          {JSON.stringify(item, null, 2)}
+        </pre>
+      ))}
+    </div>
+  );
+}
+
+function StepMark({ state }: { state: Activity["state"] }) {
+  if (state === "done") {
+    return (
+      <span className="step-mark done" aria-hidden="true">
+        <svg viewBox="0 0 16 16">
+          <circle cx="8" cy="8" r="6.25" />
+          <path d="M4.7 8.15 7 10.35 11.3 5.7" />
+        </svg>
+      </span>
+    );
+  }
+  return (
+    <span className="step-mark spin" aria-hidden="true">
+      {Array.from({ length: 8 }, (_, index) => (
+        <i key={index} style={{ transform: `rotate(${index * 45}deg)` }} />
+      ))}
+    </span>
+  );
+}
+
 function ActivityList({ steps }: { steps: Activity[] }) {
   return (
     <ol className="activity">
       {steps.map((step, index) => (
         <li key={step.id} className={step.state}>
-          <span className="mark">{step.state === "done" ? "✓" : "…"}</span>
-          <span className="title">{index + 1}. {step.title}</span>
-          <span className="detail">{step.detail}</span>
+          <div className="activity-line">
+            <span className="title">{index + 1}. {step.title}</span>
+            <span className="detail">{step.detail}</span>
+            <StepMark state={step.state} />
+          </div>
+          {step.outputs.length > 0 && <ModelJson items={step.outputs} />}
         </li>
       ))}
     </ol>

@@ -1,7 +1,7 @@
 """Environment → settings. Loads `<repo>/.env` once, never overriding real env vars.
 
-Provider keys follow the model brand; feature knobs follow the capability. One
-OpenAI-compatible endpoint covers OpenAI, SJTU campus, Ollama and GLM — only base_url and model differ.
+Provider keys follow the model brand; feature knobs follow the capability. The chat
+dropdown's url and call name live in `llm_config`, not in `.env`.
 """
 
 from __future__ import annotations
@@ -9,6 +9,24 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from .llm_config import LLM_CONFIGS as CHAT_MODELS
+from .llm_config import (
+    chat_models,
+    default_model_id,
+    model_timeout,
+    resolve_model_id,
+)
+from .llm_config import get_llm_config as get_chat_model
+
+__all__ = [
+    "CHAT_MODELS",
+    "chat_models",
+    "default_model_id",
+    "get_chat_model",
+    "model_timeout",
+    "resolve_model_id",
+]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -31,103 +49,6 @@ def env(name: str, default: str = "") -> str:
 
 
 @dataclass(frozen=True)
-class ChatModel:
-    """One selectable campus model. `id` is the API call name; `aliases` are also accepted."""
-
-    id: str
-    label: str
-    description: str
-    aliases: tuple[str, ...] = ()
-    thinking: bool = False
-    vision: bool = False
-    short: str = ""
-
-
-# SJTU campus catalog — same endpoint, four call names. The chat page lists these.
-CHAT_MODELS: tuple[ChatModel, ...] = (
-    ChatModel(
-        id="deepseek-chat",
-        label="DeepSeek V4 Flash",
-        short="DeepSeek",
-        description="General text. Fast, no chain-of-thought.",
-    ),
-    ChatModel(
-        id="deepseek-reasoner",
-        label="DeepSeek V4 Flash (thinking)",
-        short="Reasoner",
-        description="Deep reasoning. Slower; thinking tokens count against the quota.",
-        thinking=True,
-    ),
-    ChatModel(
-        id="minimax",
-        label="MiniMax-M2.7",
-        short="MiniMax",
-        description="Agent-style tasks.",
-        aliases=("minimax-m2.7",),
-    ),
-    ChatModel(
-        id="qwen",
-        label="Qwen3.8-27B",
-        short="Qwen",
-        description="Vision and text. Use this to read order photos.",
-        aliases=("qwen3.8-27b",),
-        vision=True,
-    ),
-)
-
-_THINKING_TIMEOUT = 180.0
-_DEFAULT_TIMEOUT = 60.0
-
-
-def resolve_model_id(raw: str | None) -> str:
-    """Map an alias or env value to a catalog id; unknown names pass through."""
-    wanted = (raw or "").strip()
-    if not wanted:
-        return CHAT_MODELS[0].id
-    key = wanted.lower()
-    for m in CHAT_MODELS:
-        if key == m.id or key in m.aliases:
-            return m.id
-    return wanted
-
-
-def get_chat_model(model_id: str) -> ChatModel | None:
-    key = model_id.strip().lower()
-    for m in CHAT_MODELS:
-        if key == m.id or key in m.aliases:
-            return m
-    return None
-
-
-def chat_models() -> tuple[ChatModel, ...]:
-    """Campus catalog, plus `LLM_MODEL` when it is not already one of the four."""
-    extra = env("LLM_MODEL")
-    if extra and resolve_model_id(extra) not in {m.id for m in CHAT_MODELS}:
-        return (*CHAT_MODELS, ChatModel(id=extra, label=extra, description="From LLM_MODEL"))
-    return CHAT_MODELS
-
-
-def default_model_id() -> str:
-    return resolve_model_id(env("LLM_MODEL"))
-
-
-def model_sees_images(model_id: str | None) -> bool:
-    """True for a catalog model that reads page and order photos. Unknown names do not."""
-    spec = get_chat_model(model_id) if model_id else None
-    return bool(spec and spec.vision)
-
-
-def model_label(model_id: str) -> str:
-    spec = get_chat_model(model_id)
-    return spec.label if spec else model_id
-
-
-def model_timeout(model_id: str) -> float:
-    spec = get_chat_model(model_id)
-    return _THINKING_TIMEOUT if spec and spec.thinking else _DEFAULT_TIMEOUT
-
-
-@dataclass(frozen=True)
 class LLMSettings:
     base_url: str | None
     api_key: str
@@ -139,19 +60,25 @@ class LLMSettings:
 
 
 def llm_settings(task: str | None = None) -> LLMSettings:
-    """Global LLM config, with a per-task model override (`PO_EXTRACT_MODEL` etc.)."""
-    base_url = env("LLM_BASE_URL") or None
-    api_key = env("LLM_API_KEY") or env("OPENAI_API_KEY") or "ollama"
-    model = default_model_id()
+    """Key from the environment. Url and call name from `llm_config` for the chosen model."""
+    model_id = default_model_id()
     if task:
         override = env(f"{task.upper()}_MODEL")
         if override:
-            model = resolve_model_id(override)
+            model_id = resolve_model_id(override)
+    spec = get_chat_model(model_id)
+    if spec is None:
+        spec = CHAT_MODELS[0]
+        call_name = model_id
+    else:
+        call_name = spec.model
+    base_url = spec.base_url
+    api_key = env("LLM_API_KEY") or env("OPENAI_API_KEY") or "ollama"
     json_mode = env("LLM_JSON_MODE")
     if not json_mode:
-        json_mode = "object" if base_url and "openai.com" not in base_url else "schema"
+        json_mode = "object" if "openai.com" not in base_url else "schema"
     return LLMSettings(
-        base_url=base_url, api_key=api_key, model=model, json_mode=json_mode, timeout=model_timeout(model),
+        base_url=base_url, api_key=api_key, model=call_name, json_mode=json_mode, timeout=model_timeout(spec.id),
     )
 
 

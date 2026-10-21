@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,11 +21,12 @@ from ..memory import attach, prompt_context, prompt_turns, standing_block, summa
 from ..po.agent import run as run_po
 from ..po.turn import load_bundle
 from ..report.agent import run as run_report
+from ..report.turn import asks_only_for_charts, has_report
 from ..text2sql.agent import run as run_data
 from ..tools import all_schemas, all_tools
 from .prompt import OPEN, PLAN, REACT
 from .speak import answer_directly, one_shot
-from .status import status
+from .status import begin_activity, status
 
 _HANDOFF = {"po": "采购单", "contract": "合同", "report": "报表", "data": "查数", "brand": "品牌资料"}
 
@@ -193,8 +195,11 @@ def run_tool_calls(
         else:
             # Same-turn fan-out: model asked for several tools at once → parallel.
             by_id: dict[str, dict[str, Any]] = {}
+            # Workers outlive the call. Run in this turn's context so a tool's
+            # JSON lands on this chat's step list, not whatever the thread did last.
+            parent = copy_context()
             with ThreadPoolExecutor(max_workers=min(5, len(calls))) as pool:
-                futs = {pool.submit(_run_one_tool, c, runners, llm, context): c.id for c in calls}
+                futs = {pool.submit(parent.run, _run_one_tool, c, runners, llm, context): c.id for c in calls}
                 for fut in as_completed(futs):
                     msg = fut.result()
                     by_id[msg["tool_call_id"]] = msg
@@ -230,22 +235,37 @@ def handle_message(
     documents = [(n, b) for n, b in (documents or []) if n and b]
     if not text and not images and not documents:
         raise ValueError("message required")
+    begin_activity()
     bundle = load_bundle(db, session["partnership_id"])
     names = [*(attachments or []), *[n for n, _ in documents], *[f"image-{i + 1}.jpg" for i in range(len(images))]]
     history = session.get("history") or []
 
     if not session.get("title"):
-        yield status("session", "开场", "正在给这次对话起标题", state="running")
+        # The title is for the chat list. It is not a step the distributor watches.
         opened = open_session(llm, message=text, attachments=names)
         db.update_session(session_id, title=opened.title, tags=opened.tags)
         session = db.session(session_id) or session
         yield {"type": "session", "title": opened.title, "tags": opened.tags}
-        yield status("session", "开场", opened.title, state="done")
 
     tags = list(session.get("tags") or [])
     folded = int(session.get("folded_through") or 0)
     remembered = prompt_context(standing_block(db, bundle.partnership.id), summary_block(session.get("summary")))
-    yield status("plan", "计划", "正在判断这一轮交给谁", state="running")
+    partnership_id = bundle.partnership.id
+    brand_id = bundle.partnership.brand_id
+    distributor_id = bundle.partnership.distributor_id
+    # A chart on the draft already written is not a new report. Deciding that here
+    # keeps the planner from scheduling split, query, news, and a rewrite.
+    if asks_only_for_charts(text) and has_report(history):
+        yield status("plan", "Planning", "只补图表", state="done")
+        yield {"type": "plan", "tasks": [{"id": "charts", "kind": "agent", "name": "report", "depends_on": []}]}
+        yield from run_report(
+            db, llm, session, text,
+            partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
+            hint=None, charts_only=True,
+        )
+        return
+
+    yield status("plan", "Planning", "LLM is planning the next step", state="running")
     tasks = make_plan(
         llm, message=text, attachments=names, history=history,
         stage=session.get("stage"), tags=tags, memory=remembered, folded_through=folded,
@@ -262,11 +282,7 @@ def handle_message(
     if session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm"):
         agents = set(agents) | {"po"}
         chosen = chosen or "po"
-    yield status("plan", "计划", _HANDOFF.get(chosen or "", "直接回答"), state="done")
-
-    partnership_id = bundle.partnership.id
-    brand_id = bundle.partnership.brand_id
-    distributor_id = bundle.partnership.distributor_id
+    yield status("plan", "Planning", _HANDOFF.get(chosen or "", "直接回答"), state="done")
 
     if "po" in agents:
         yield from run_po(db, llm, session, text, images, bundle)
@@ -276,10 +292,15 @@ def handle_message(
         return
     if "report" in agents:
         # The draft queries for itself. A co-scheduled data task is only a hint.
+        # charts_only is the planner's backup when the message did not match the chart check above.
+        charts_only = has_report(history) and any(
+            task.name == "report" and task.input.get("charts_only") is True for task in tasks
+        )
         yield from run_report(
             db, llm, session, text,
             partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
             hint=_task_text(tasks, "data") or _task_text(tasks, "report"),
+            charts_only=charts_only,
         )
         return
     if "data" in agents:
@@ -300,7 +321,7 @@ def handle_message(
     if tool_reply is not None:
         yield status("tools", "工具", "工具已返回", state="done")
         yield {"type": "tools", "used": True}
-        yield from one_shot(db, session, tool_reply)
+        yield from one_shot(db, session, tool_reply, llm=llm)
         return
     yield status("tools", "工具", "这一轮没有调用工具", state="done")
     yield status("answer", "回答", "正在直接回复", state="running")

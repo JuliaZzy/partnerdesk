@@ -2,22 +2,66 @@
 
 export type Step = { title: string; status: string };
 
-export type Activity = { id: string; title: string; detail: string; state: "running" | "done" };
+export type Activity = {
+  id: string;
+  title: string;
+  detail: string;
+  state: "running" | "done";
+  outputs: unknown[];
+};
 
 /** Fold one SSE status into the live step list. The same id updates in place. */
 export function applyActivity(steps: Activity[], event: Record<string, unknown>): Activity[] {
   if (event.type !== "status") return steps;
   const id = String(event.id ?? "").trim();
   if (!id) return steps;
+  const index = steps.findIndex((step) => step.id === id);
   const next: Activity = {
     id,
     title: String(event.title ?? id),
     detail: String(event.detail ?? ""),
     state: event.state === "done" ? "done" : "running",
+    outputs: index >= 0 ? steps[index].outputs : [],
   };
-  const index = steps.findIndex((step) => step.id === id);
   if (index < 0) return [...steps, next];
   return steps.map((step, i) => (i === index ? next : step));
+}
+
+/** Hang one model object on the step that is open. The caller keeps it when no step exists yet. */
+export function attachOutput(steps: Activity[], output: unknown): Activity[] {
+  if (steps.length === 0) return steps;
+  const last = steps.length - 1;
+  return steps.map((step, index) => (
+    index === last ? { ...step, outputs: [...step.outputs, output] } : step
+  ));
+}
+
+/** Model objects already shown under a step. The rest were parsed before any step opened. */
+export function looseModelJson(items: unknown[] | undefined, steps: Activity[] | undefined): unknown[] | undefined {
+  if (!items?.length) return undefined;
+  if (!steps?.length) return items;
+  const used = new Set(steps.flatMap((step) => step.outputs.map((output) => JSON.stringify(output))));
+  const loose = items.filter((item) => !used.has(JSON.stringify(item)));
+  return loose.length ? loose : undefined;
+}
+
+export function readActivity(raw: unknown): Activity[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const steps: Activity[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const id = String(row.id ?? "").trim();
+    if (!id) continue;
+    steps.push({
+      id,
+      title: String(row.title ?? id),
+      detail: String(row.detail ?? ""),
+      state: row.state === "done" ? "done" : "running",
+      outputs: Array.isArray(row.outputs) ? row.outputs : [],
+    });
+  }
+  return steps.length ? steps : undefined;
 }
 
 export type Partnership = {

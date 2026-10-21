@@ -15,7 +15,7 @@ Schedule only these agents when THIS turn needs them:
 
 - po — place or change a purchase order; continues an open order. Writes only after human confirm.
 - contract — read an agreement file into terms. Needs the file bytes, not just a name.
-- report — write a sales-report draft from the standard outline. The runtime queries this partnership's figures and always looks up current retail news. Schedule report alone; do not also schedule data for the same draft. A request that only asks for a report still schedules report.
+- report — write a sales-report draft from the standard outline. The runtime queries this partnership's figures and always looks up current retail news. Schedule report alone; do not also schedule data for the same draft. A request that only asks for a report still schedules report. A follow-up that only asks to add or change charts on the draft already in the conversation schedules report with input {"charts_only": true} and nothing else. The runtime then charts the figures already queried and does not write a new draft.
 - brand — a question about the brand's own materials (story, specifications, marketing copy). Read-only. The runtime retrieves passages and answers from those passages only. Questions about orders, sell-through, or contract terms are data, not brand.
 - data — a question about this partnership's orders, payments, sell-through, contract terms, or catalog, when the user wants the figures and not a written report. Read-only. The runtime writes and runs the SQL.
 

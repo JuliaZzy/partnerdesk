@@ -14,6 +14,7 @@ from .turn import ReportDraft, iter_draft
 def run(
     db: Database, llm: LLM, session: dict[str, Any], text: str, *,
     partnership_id: str, brand_id: str, distributor_id: str, hint: str | None,
+    charts_only: bool = False,
 ) -> Iterator[dict[str, Any]]:
     db.update_session(session["id"], specialist="report")
     draft: ReportDraft | None = None
@@ -22,6 +23,7 @@ def run(
         partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
         session_id=session["id"], hint=hint,
         folded_through=int(session.get("folded_through") or 0), summary=str(session.get("summary") or ""),
+        charts_only=charts_only,
     ):
         if isinstance(item, ReportDraft):
             draft = item
@@ -36,6 +38,8 @@ def run(
     extra: dict[str, Any] = {"report_draft": True}
     if draft.charts:
         extra["charts"] = draft.charts
+    if draft.series:
+        extra["report_series"] = draft.series
     if draft.web_notes:
         extra["web_notes"] = draft.web_notes
     if draft.data_query:

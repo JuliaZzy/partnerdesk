@@ -14,7 +14,8 @@ from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any, Protocol
 
-from ..config import LLMSettings, llm_settings, model_timeout, resolve_model_id
+from ..config import LLMSettings, get_chat_model, llm_settings, model_timeout
+from ..llm_config import get_llm_config
 from .parse import parse_json_loose
 from .types import AssistantTurn, Message, ToolCall
 
@@ -59,10 +60,14 @@ class OpenAICompatLLM:
         task: str | None = None,
         *,
         _client: Any | None = None,
+        model_outputs: list[dict[str, Any]] | None = None,
     ):
         from openai import OpenAI
 
         self.settings = settings or llm_settings(task)
+        # One list for this turn. with_model keeps the same list so a dropdown switch
+        # still records every JSON object the desk shows.
+        self.model_outputs = [] if model_outputs is None else model_outputs
         if _client is not None:
             self._client = _client
             return
@@ -72,20 +77,36 @@ class OpenAICompatLLM:
         self._client = OpenAI(**kwargs)
 
     def with_model(self, model: str) -> OpenAICompatLLM:
-        """Same HTTP client, different call name — used when the chat page switches models."""
-        model = resolve_model_id(model)
+        """Dropdown choice: that row's url and call name. Same url keeps this HTTP client."""
+        spec = get_llm_config(model)
+        if spec is None:
+            chosen = (model or "").strip()
+            return OpenAICompatLLM(
+                settings=replace(self.settings, model=chosen, timeout=model_timeout(chosen)),
+                _client=self._client,
+                model_outputs=self.model_outputs,
+            )
+        settings = replace(
+            self.settings, base_url=spec.base_url, model=spec.model, timeout=model_timeout(spec.id),
+        )
+        same_endpoint = settings.base_url == self.settings.base_url
         return OpenAICompatLLM(
-            settings=replace(self.settings, model=model, timeout=model_timeout(model)),
-            _client=self._client,
+            settings=settings, _client=self._client if same_endpoint else None, model_outputs=self.model_outputs,
         )
 
-    def _glm_extra(self) -> dict[str, Any]:
-        # glm-4.x "thinking" occupies the stream (and can empty message.content). The
-        # Python SDK rejects GLM-only fields at the top level — they ride in extra_body.
+    def _request_extra(self) -> dict[str, Any]:
+        """Provider fields the OpenAI SDK rejects as top-level kwargs."""
         url = (self.settings.base_url or "").lower()
+        body: dict[str, Any] = {}
+        # glm-4.x "thinking" occupies the stream (and can empty message.content).
         if "bigmodel.cn" in url or "zhipuai" in url:
-            return {"extra_body": {"thinking": {"type": "disabled"}}}
-        return {}
+            body["thinking"] = {"type": "disabled"}
+        # Qwen3.8 thinks by default, and those tokens count against max_tokens.
+        # A session title only has 200, so the call ends before message.content exists.
+        spec = get_chat_model(self.settings.model)
+        if spec is not None and spec.id == "qwen":
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        return {"extra_body": body} if body else {}
 
     def _response_format(self, schema: dict[str, Any] | None) -> dict[str, Any]:
         if schema and self.settings.json_mode == "schema":
@@ -100,12 +121,15 @@ class OpenAICompatLLM:
             response_format=self._response_format(schema),
             messages=[{"role": "system", "content": system}, *messages],
             timeout=self.settings.timeout,
-            **self._glm_extra(),
+            **self._request_extra(),
         )
         text = resp.choices[0].message.content or ""
         parsed = parse_json_loose(text)
         if not isinstance(parsed, dict):
             raise TypeError("model did not return a JSON object")
+        self.model_outputs.append(parsed)
+        from ..orchestrator.status import note_model_output
+        note_model_output(parsed)
         return parsed
 
     def stream_text(self, *, system, messages, temperature=0.7, max_tokens=300):
@@ -116,7 +140,7 @@ class OpenAICompatLLM:
             stream=True,
             messages=[{"role": "system", "content": system}, *messages],
             timeout=self.settings.timeout,
-            **self._glm_extra(),
+            **self._request_extra(),
         )
         for chunk in stream:
             if not chunk.choices:
@@ -132,7 +156,7 @@ class OpenAICompatLLM:
             "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}, *messages],
             "timeout": self.settings.timeout,
-            **self._glm_extra(),
+            **self._request_extra(),
         }
         if tools:
             kwargs["tools"] = tools

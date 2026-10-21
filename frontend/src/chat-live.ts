@@ -1,0 +1,118 @@
+import { useSyncExternalStore } from "react";
+
+import type { Activity } from "./format";
+
+/** One chat's composer and the reply that is still coming in. Other chats keep their own. */
+export type Flight = {
+  busy: boolean;
+  live: string;
+  activity: Activity[];
+  modelJson: unknown[];
+  error: string | null;
+  draft: string;
+  files: File[];
+};
+
+const EMPTY: Flight = {
+  busy: false,
+  live: "",
+  activity: [],
+  modelJson: [],
+  error: null,
+  draft: "",
+  files: [],
+};
+
+const flights = new Map<string, Flight>();
+const dropped = new Set<string>();
+const forgetListeners = new Set<(id: string) => void>();
+let activeId: string | null = null;
+let presence = { activeId, busyIds: [] as string[] };
+const flightListeners = new Set<() => void>();
+const presenceListeners = new Set<() => void>();
+
+function emitFlight(): void {
+  for (const listener of flightListeners) listener();
+}
+
+function emitPresence(): void {
+  const busyIds: string[] = [];
+  for (const [id, flight] of flights) {
+    if (flight.busy) busyIds.push(id);
+  }
+  presence = { activeId, busyIds };
+  for (const listener of presenceListeners) listener();
+}
+
+export function flightOf(sid: string | null): Flight {
+  if (!sid) return EMPTY;
+  return flights.get(sid) ?? EMPTY;
+}
+
+export function isForgotten(sid: string): boolean {
+  return dropped.has(sid);
+}
+
+export function forgetChat(sid: string): void {
+  dropped.add(sid);
+  flights.delete(sid);
+  if (activeId === sid) activeId = null;
+  emitFlight();
+  emitPresence();
+  for (const listener of forgetListeners) listener(sid);
+}
+
+export function onForgetChat(listener: (id: string) => void): () => void {
+  forgetListeners.add(listener);
+  return () => forgetListeners.delete(listener);
+}
+
+export function patchFlight(sid: string, patch: Partial<Flight>): void {
+  if (dropped.has(sid)) return;
+  const prev = flights.get(sid) ?? EMPTY;
+  const next: Flight = { ...prev, ...patch };
+  flights.set(sid, next);
+  emitFlight();
+  if (prev.busy !== next.busy) emitPresence();
+}
+
+export function isChatBusy(sid: string): boolean {
+  return flights.get(sid)?.busy ?? false;
+}
+
+export function setActiveChat(sid: string | null): void {
+  if (activeId === sid) return;
+  activeId = sid;
+  emitPresence();
+}
+
+export function chatPresence(): { activeId: string | null; busyIds: string[] } {
+  return presence;
+}
+
+function subscribeFlight(listener: () => void): () => void {
+  flightListeners.add(listener);
+  return () => flightListeners.delete(listener);
+}
+
+function subscribePresence(listener: () => void): () => void {
+  presenceListeners.add(listener);
+  return () => presenceListeners.delete(listener);
+}
+
+export function useFlight(sid: string | null): Flight {
+  return useSyncExternalStore(subscribeFlight, () => flightOf(sid), () => EMPTY);
+}
+
+export function useChatPresence(): { activeId: string | null; busyIds: string[] } {
+  return useSyncExternalStore(subscribePresence, () => presence, () => presence);
+}
+
+export function resetChatLive(): void {
+  flights.clear();
+  dropped.clear();
+  activeId = null;
+  presence = { activeId: null, busyIds: [] };
+  emitFlight();
+  emitPresence();
+}

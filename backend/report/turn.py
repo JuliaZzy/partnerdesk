@@ -6,23 +6,27 @@ questions. text2sql runs the questions. web_search always runs at least once.
 Chart points are read from the returned rows. Totals, shares, and changes are
 computed from those rows before the prose is written. The prose follows the fixed
 outline and is a draft for a person to check. It is not written into sales_reports.
+
+A follow-up that only asks for charts does not take that path. The rows from the
+draft already written are charted, and the outline is left where it is.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from ..db import Database, utcnow
 from ..llm import LLM
 from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
-from ..text2sql import QueryResult, answer_question
+from ..text2sql import QueryResult, answer_question, rerun
 from ..tools.web_search import search
 from .analyze import findings
-from .charts import bind_charts, column_kinds
+from .charts import bind_charts, column_kinds, suggest_specs
 from .prompt import CHART, SPLIT, STANDARD_QUESTIONS, WITH_DATA
 
 MAX_QUESTIONS = 4
@@ -31,6 +35,16 @@ _QUESTION = 2_000
 _SEARCH = 200
 _SNIPPET = 300
 _FALLBACK = "recent orders and sell-through for this partnership"
+_BURST = timedelta(minutes=3)
+_CHART_ASK = re.compile(
+    r"(图表|画.{0,2}图|加图|作图|绘图|出图|可视化|\bcharts?\b|\bgraphs?\b|\bplots?\b)",
+    re.IGNORECASE,
+)
+# A new draft, or a new figure. Either one is the full pipeline, not a chart on the last draft.
+_FRESH = re.compile(
+    r"(报告|草稿|重新|再查|查询|订单|销量|渠道|sku|期间|指标|report|draft|sell-through|purchase)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +54,7 @@ class ReportDraft:
     web_notes: list[str]
     warnings: list[str]
     data_query: dict[str, Any] | None
+    series: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -133,10 +148,27 @@ def parse_split(raw: Any, *, today: date | None = None) -> tuple[list[tuple[str,
     return ids, searches
 
 
+def asks_only_for_charts(message: str) -> bool:
+    """True when the message asks for a chart and does not ask for a new draft or new figures."""
+    text = (message or "").strip()
+    if not text or _FRESH.search(text):
+        return False
+    return _CHART_ASK.search(text) is not None
+
+
+def has_report(history: list[dict[str, Any]] | None) -> bool:
+    """A previous turn already wrote a draft, so a chart request has something to draw on."""
+    return any(
+        turn.get("role") == "assistant" and (turn.get("report_draft") or turn.get("report_series"))
+        for turn in history or []
+    )
+
+
 def draft_report(
     db: Database, llm: LLM, *, message: str, history: list[dict[str, Any]],
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     hint: str | None = None, search_fn: Any = None, folded_through: int = 0, summary: str = "",
+    charts_only: bool = False,
 ) -> ReportDraft:
     """Split, query, look up current events, chart, and write the standard outline."""
     draft = None
@@ -144,6 +176,7 @@ def draft_report(
         db, llm, message=message, history=history, partnership_id=partnership_id,
         brand_id=brand_id, distributor_id=distributor_id, session_id=session_id,
         hint=hint, search_fn=search_fn, folded_through=folded_through, summary=summary,
+        charts_only=charts_only,
     ):
         if isinstance(item, ReportDraft):
             draft = item
@@ -156,10 +189,18 @@ def iter_draft(
     db: Database, llm: LLM, *, message: str, history: list[dict[str, Any]],
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     hint: str | None = None, search_fn: Any = None, folded_through: int = 0, summary: str = "",
+    charts_only: bool = False,
 ) -> Iterator[dict[str, Any] | ReportDraft]:
     """Same work as `draft_report`, yielding a status before each slow step."""
     # Importing orchestrator.status at module level loads orchestrator.turn, which imports this module.
     from ..orchestrator.status import status
+
+    if charts_only and has_report(history):
+        yield from _chart_only(
+            db, llm, message=message, history=history, partnership_id=partnership_id,
+            brand_id=brand_id, distributor_id=distributor_id, session_id=session_id,
+        )
+        return
 
     remembered = prompt_context(standing_block(db, partnership_id), summary_block(summary))
     yield status("report-split", "拆问题", "正在决定要查什么、搜什么", state="running")
@@ -200,6 +241,30 @@ def iter_draft(
         web_notes=_notes(found),
         warnings=_warnings(asked, found),
         data_query=_mark(asked),
+        series=series_payload(asked),
+    )
+
+
+def _chart_only(
+    db: Database, llm: LLM, *, message: str, history: list[dict[str, Any]],
+    partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
+) -> Iterator[dict[str, Any] | ReportDraft]:
+    """Chart the last draft's rows. No new questions, no news, no rewritten outline."""
+    from ..orchestrator.status import status
+
+    yield status("report-chart", "图表", "正在用上一份查询结果画图", state="running")
+    asked = saved_asks(history)
+    if not asked:
+        asked = _replay(db, session_id, partnership_id, brand_id, distributor_id)
+    charts = _charts(llm, message, asked) if asked else []
+    yield status("report-chart", "图表", f"{len(charts)} 张图" if charts else "这组数不画图", state="done")
+    yield ReportDraft(
+        text=_chart_note(message, charts),
+        charts=charts,
+        web_notes=[],
+        warnings=[],
+        data_query=None,
+        series=series_payload(asked),
     )
 
 
@@ -253,7 +318,7 @@ def _charts(llm: LLM, message: str, asked: list[_Ask]) -> list[dict[str, Any]]:
         if item.result.ok and item.result.rows
     }
     described = [
-        {"id": item.id, "columns": column_kinds(item.result.rows)}
+        {"id": item.id, "row_count": len(item.result.rows), "columns": column_kinds(item.result.rows)}
         for item in asked
         if item.id in series and column_kinds(item.result.rows)
     ]
@@ -271,7 +336,12 @@ def _charts(llm: LLM, message: str, asked: list[_Ask]) -> list[dict[str, Any]]:
     except Exception:
         raw = {}
     specs = raw.get("charts") if isinstance(raw, dict) else None
-    return bind_charts(specs, series)
+    charts = bind_charts(specs, series)
+    if charts:
+        return charts
+    # The model may still return an empty list after the user asked for a chart.
+    # A category or a time plus a number is enough to draw; a lone total is not.
+    return bind_charts(suggest_specs(series, chinese=_cjk(message)), series)
 
 
 def _analysis(asked: list[_Ask]) -> list[dict[str, Any]]:
@@ -355,3 +425,104 @@ def _mark(asked: list[_Ask]) -> dict[str, Any] | None:
         return None
     result = chosen.result
     return {"ok": result.ok, "row_count": result.row_count, "error": result.error, "log_id": result.log_id}
+
+
+def series_payload(asked: list[_Ask]) -> list[dict[str, Any]]:
+    """Rows a later chart-only turn can draw without asking the database again."""
+    return [
+        {"id": item.id, "question": item.question, "rows": item.result.rows}
+        for item in asked
+        if item.result.ok and item.result.rows
+    ]
+
+
+def saved_asks(history: list[dict[str, Any]] | None) -> list[_Ask]:
+    """Rows stored on the latest draft. An older draft is not used once a newer one has none."""
+    for turn in reversed(list(history or [])):
+        if turn.get("role") != "assistant":
+            continue
+        raw = turn.get("report_series")
+        if isinstance(raw, list) and raw:
+            asked: list[_Ask] = []
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                rows = item.get("rows")
+                if not isinstance(rows, list) or not rows:
+                    continue
+                asked.append(_Ask(
+                    str(item.get("id") or f"q{len(asked) + 1}"),
+                    str(item.get("question") or ""),
+                    QueryResult(
+                        ok=True, sql=None, rows=rows, row_count=len(rows),
+                        error=None, error_type=None, tables=[],
+                    ),
+                ))
+            if asked:
+                return asked
+        if turn.get("report_draft"):
+            return []
+    return []
+
+
+def _replay(
+    db: Database, session_id: str, partnership_id: str, brand_id: str, distributor_id: str,
+) -> list[_Ask]:
+    """Re-execute the last draft's statements when that draft did not keep its rows.
+
+    Logs are newest first. One burst is the queries of one report, not an earlier chat turn.
+    """
+    logs = [
+        row for row in db.list_text2sql_logs(partnership_id, limit=40)
+        if row.get("session_id") == session_id and row.get("execution_success") and row.get("generated_sql")
+    ]
+    asked: list[_Ask] = []
+    for index, row in enumerate(_latest_burst(logs), start=1):
+        try:
+            rows = rerun(
+                db, str(row["generated_sql"]), partnership_id=partnership_id,
+                brand_id=brand_id, distributor_id=distributor_id,
+            )
+        except Exception:
+            continue
+        if not rows:
+            continue
+        asked.append(_Ask(
+            f"q{index}", str(row.get("question") or ""),
+            QueryResult(
+                ok=True, sql=str(row.get("generated_sql") or ""), rows=rows, row_count=len(rows),
+                error=None, error_type=None, tables=list(row.get("selected_tables") or []),
+                log_id=row.get("id") if isinstance(row.get("id"), int) else None,
+            ),
+        ))
+    return asked
+
+
+def _latest_burst(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not logs:
+        return []
+    newest = logs[0].get("created_at")
+    if not isinstance(newest, datetime):
+        return list(reversed(logs[:MAX_QUESTIONS]))
+    burst: list[dict[str, Any]] = []
+    for row in logs:
+        created = row.get("created_at")
+        if not isinstance(created, datetime) or newest - created > _BURST:
+            break
+        burst.append(row)
+        if len(burst) >= MAX_QUESTIONS:
+            break
+    return list(reversed(burst))
+
+
+def _chart_note(message: str, charts: list[dict[str, Any]]) -> str:
+    chinese = _cjk(message)
+    if charts:
+        return "已按上一份草稿的查询结果补上图表。" if chinese else "Added charts from the last draft's figures."
+    if chinese:
+        return "上一份查询结果里没有可以做横轴的分类或时间，所以没有画图。"
+    return "The last draft's figures have no category or time to chart."
+
+
+def _cjk(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text or "")

@@ -11,6 +11,8 @@ PICK = """You choose which database tables are needed to answer a distributor's 
 
 You are given a catalog of tables. Return only tables from that list. Include a table you will filter or aggregate, and a table you will join. Omit tables that are merely background. At most 6. If the question cannot be answered from these tables, return an empty list.
 
+Orders and order totals are purchase_orders. Line quantities and SKUs on an order are purchase_order_items. Sell-through, channels, SKUs sold, and reporting periods are sales_reports and report_facts. Contract terms are contracts. When the question is about any of these, return those tables even if it says "the same figures" or "the previous period".
+
 Return JSON {"tables": ["exact_table_name"]}.
 """
 
@@ -21,6 +23,7 @@ The connection already returns only this distributor's rows, and only this brand
 Rules:
 - One SELECT (a WITH clause is fine). No insert, update, delete, or DDL.
 - Use only tables and columns listed below. Unqualified names, exactly as written.
+- Call a function by its bare name (date_trunc, max). Never write a schema prefix such as pg_catalog, public, or information_schema.
 - Calendar columns (eta_date, period_start, period_end, term_start_date, term_end_date, effective_from, effective_until, reporting_period) are text YYYY-MM-DD or a period label, not timestamps. Compare them as text.
 - created_at, updated_at, submitted_at, confirmed_at, extracted_at are timestamptz.
 - purchase_order_items.quantity is cases.
@@ -35,7 +38,7 @@ Return JSON {"sql": "SELECT ..."}.
 
 REPAIR = """Your previous SELECT failed. Write one replacement SELECT for the same question. You do not estimate a number.
 
-Keep every rule: one SELECT, only the listed tables and columns, unqualified names, no partnership predicate, aggregates for totals, confirmed report facts unless drafts were requested.
+Keep every rule: one SELECT, only the listed tables and columns, unqualified table names, bare function names, no partnership predicate, aggregates for totals, confirmed report facts unless drafts were requested.
 
 Return JSON {"sql": "SELECT ..."}.
 """

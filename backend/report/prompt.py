@@ -10,9 +10,11 @@ from __future__ import annotations
 
 # Used when the user did not name a metric, period, channel, or SKU.
 STANDARD_QUESTIONS = (
-    "What are this partnership's orders and sell-through for the latest period on record?",
-    "What are the same figures for the previous period?",
-    "What is the breakdown by channel or by SKU?",
+    "How many purchase orders does this partnership have, what is their total amount, "
+    "and what is confirmed sell-through for the latest reporting period?",
+    "How many purchase orders does this partnership have, what is their total amount, "
+    "and what is confirmed sell-through for the previous reporting period?",
+    "What is confirmed sell-through broken down by channel and by SKU?",
 )
 
 _STANDARD = "\n".join(f"- {question}" for question in STANDARD_QUESTIONS)
@@ -33,7 +35,7 @@ Return JSON {"questions": [string], "searches": [string]}.
 
 CHART = """You choose charts for a sales-report draft. You do not invent rows, columns, or numbers.
 
-SERIES lists each query id and its columns. kind is "number", "time", or "text". For each chart return query_id, chart_type ("bar", "line", or "pie"), x, y, and a short title in the user's language. x and y must be column names copied from that series. y must be a number column. Use "line" when x is time. Use "pie" when x is text and the series is a share of at most 6 categories. Otherwise use "bar". At most 3 charts. Return an empty list when nothing is worth charting.
+SERIES lists each query id, how many rows came back, and its columns. kind is "number", "time", or "text". For each chart return query_id, chart_type ("bar", "line", or "pie"), x, y, and a short title in the user's language. x and y must be column names copied from that series. y must be a number column. Use "line" when x is time. Use "pie" when x is text and the series is a share of at most 6 categories. Otherwise use "bar". At most 3 charts. When the user asked for a chart, chart every series that has a number column and a text or time column. Return an empty list only when no series has both. A single total with no category is not a chart.
 
 Return JSON {"charts": [{"query_id": string, "chart_type": "bar" | "line" | "pie", "x": string, "y": string, "title": string}]}.
 """

@@ -13,7 +13,7 @@ build/
 *.extract.json
 
 # personal — never push with the project
-CV/
+/docs/cv/
 *.pdf
 *.sqlite3
 *.sqlite3-wal

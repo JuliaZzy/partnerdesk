@@ -27,6 +27,14 @@ def get_llm(request: Request) -> LLM:
 
 
 def llm_for(llm: LLM, model: str | None) -> LLM:
-    if model and isinstance(llm, OpenAICompatLLM):
-        return llm.with_model(model)
+    """A client this request owns.
+
+    The app keeps one OpenAI HTTP client. Concurrent chats must not share its
+    `model_outputs` list, or one turn's JSON is recorded on the other.
+    """
+    if isinstance(llm, OpenAICompatLLM):
+        owned = OpenAICompatLLM(settings=llm.settings, _client=llm._client, model_outputs=[])
+        if model:
+            return owned.with_model(model)
+        return owned
     return llm

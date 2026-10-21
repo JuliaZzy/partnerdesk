@@ -418,6 +418,17 @@ class Database:
                 setattr(row, k, v)
             row.updated_at = utcnow()
 
+    def delete_session(self, id: str) -> None:
+        """Remove the chat. A memory or query log that pointed here keeps its row and loses the link.
+
+        The order it placed stays too: `po_id` points from the chat at the order, not the other way.
+        """
+        with self.tx() as s:
+            row = s.get(orm.ChatSession, id)
+            if row is None:
+                raise KeyError(f"session {id} not found")
+            s.delete(row)
+
     def burn_confirm_token(self, token: str) -> str | None:
         """Atomically consume a confirm token. Returns the session id, or None when the
         token was already used — two clicks landing together see one UPDATE match and one

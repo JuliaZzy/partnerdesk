@@ -141,7 +141,8 @@ def _write_sql(
 def _run(db: Database, sql: str, params: dict[str, str]) -> tuple[bool, str | None, str, list[dict[str, Any]] | None]:
     ok, message, clean = validate(sql)
     if not ok:
-        return False, message, clean, None
+        # validate() returns no statement on failure. Repair and the log need the text the model wrote.
+        return False, message, sql, None
     try:
         rows = db.run_scoped_read(clean, scope_views(), params)
     except Exception as err:
@@ -284,6 +285,17 @@ def _is_validation_error(error: str | None) -> bool:
         or error.startswith("table is not allowed")
         or error.startswith("function is not allowed")
     )
+
+
+def rerun(
+    db: Database, sql: str, *, partnership_id: str, brand_id: str, distributor_id: str,
+) -> list[dict[str, Any]]:
+    """Run a statement this partnership already executed. No model call."""
+    ok, _message, clean = validate(sql)
+    if not ok:
+        return []
+    rows = db.run_scoped_read(clean, scope_views(), _scope_params(partnership_id, brand_id, distributor_id))
+    return _rows_for_prompt(rows)
 
 
 def _scope_params(partnership_id: str, brand_id: str, distributor_id: str) -> dict[str, str]:

@@ -23,6 +23,7 @@ from ..contract import contract_discount_for_next_order
 from ..db import Database
 from ..llm import LLM
 from ..memory import prompt_context, recall, record_history, summary_block, with_memory
+from ..orchestrator.speak import attach_model_json
 from ..orchestrator.status import status
 from ..schemas import AgentSettings, CommercialRule, Partnership
 from .catalog import Catalog
@@ -170,7 +171,9 @@ def run_po_turn(
 
     # 6. Persist the whole transcript, then hand the UI the structured payload.
     #    A long unsummarised prefix is folded into this chat's summary after the reply.
-    history = [*history, {"role": "user", "content": message or "(image)"}, {"role": "assistant", "content": reply_text}]
+    assistant: dict[str, Any] = {"role": "assistant", "content": reply_text}
+    attach_model_json(assistant, llm)
+    history = [*history, {"role": "user", "content": message or "(image)"}, assistant]
     record_history(
         db, session, history, llm=llm,
         slots=slots.model_dump(), stage=stage, specialist="po",

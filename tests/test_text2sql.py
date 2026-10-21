@@ -68,6 +68,77 @@ def test_validator_rejects_writes_and_escapes(sql, message):
     assert not ok and cleaned == "" and message in err
 
 
+def test_validator_allows_a_qualified_column_inside_and_and_or():
+    joined = (
+        "SELECT coalesce(sum(rf.numeric_value), 0) FROM report_facts rf "
+        "JOIN sales_reports sr ON rf.report_id = sr.id "
+        "WHERE rf.status = 'confirmed' AND rf.metric_key = 'units_sold' "
+        "AND sr.status = 'confirmed' AND sr.reporting_period = ("
+        "SELECT max(reporting_period) FROM sales_reports WHERE status = 'confirmed')"
+    )
+    ok, err, sql = validate(joined)
+    assert ok and err == "" and "numeric_value" in sql.lower()
+
+    either = (
+        "SELECT id FROM report_facts rf JOIN sales_reports sr ON rf.report_id = sr.id "
+        "WHERE rf.status = 'confirmed' OR sr.status = 'confirmed'"
+    )
+    ok, err, sql = validate(either)
+    assert ok and err == "" and " or " in sql.lower()
+
+
+def test_validator_accepts_a_bare_function_and_rejects_a_schema_prefix():
+    ok, err, sql = validate("SELECT date_trunc('month', created_at) FROM purchase_orders")
+    assert ok and err == "" and "date_trunc" in sql.lower()
+
+    for qualified in (
+        "SELECT pg_catalog.date_trunc('month', created_at) FROM purchase_orders",
+        "SELECT public.max(total_amount) FROM purchase_orders",
+        'SELECT "pg_catalog.date_trunc"(\'month\', created_at) FROM purchase_orders',
+    ):
+        ok, err, cleaned = validate(qualified)
+        assert not ok and cleaned == "" and "schema-qualified" in err
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT pg_catalog.pg_sleep(1)",
+    "SELECT public.pg_read_file('/etc/passwd')",
+    'SELECT "pg_catalog.pg_sleep"(1)',
+])
+def test_validator_rejects_a_forbidden_function_with_a_schema(sql):
+    ok, err, cleaned = validate(sql)
+    assert not ok and cleaned == "" and "function" in err
+
+
+def test_a_rejected_statement_is_kept_for_the_repair(db):
+    result = answer_question(
+        db, FakeLLM(json_replies=[
+            {"tables": ["purchase_orders"]},
+            {"sql": "SELECT pg_read_file('/etc/passwd')"},
+            {"sql": "SELECT pg_sleep(1)"},
+        ]),
+        question="read a file", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
+    )
+    assert result.ok is False and result.error_type == "validation"
+    logged = db.list_text2sql_logs("ps-1")[0]["generated_sql"]
+    assert logged and "pg_sleep" in logged
+
+
+def test_a_schema_qualified_function_is_rejected_then_repaired(db):
+    db.insert_po(_po(), [], [])
+    result = answer_question(
+        db, FakeLLM(json_replies=[
+            {"tables": ["purchase_orders"]},
+            {"sql": "SELECT pg_catalog.date_trunc('month', submitted_at) AS month FROM purchase_orders"},
+            {"sql": "SELECT date_trunc('month', submitted_at) AS month FROM purchase_orders"},
+        ]),
+        question="orders by month", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
+    )
+    assert result.ok, result.error
+    assert "pg_catalog" not in (result.sql or "").lower()
+    assert "date_trunc" in (result.sql or "").lower()
+
+
 def test_a_question_only_sees_this_partnership(db):
     db.upsert_partnership(Partnership(
         id="ps-2", brand_id="brand-2", distributor_id="dist-2", brand_name="Other", distributor_name="Other",
@@ -182,6 +253,69 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
     assert done["charts"][0]["points"][0]["y"] == 1000
     saved = db.session(sid)["history"][-1]
     assert saved["report_draft"] is True and saved["charts"][0]["points"][0]["y"] == 1000
+    assert saved["report_series"][0]["question"] == "order total"
+    assert saved["report_series"][0]["rows"][0]["total_amount"] == 1000
+
+
+def test_a_chart_followup_draws_saved_rows_without_rewriting_the_report(db):
+    from backend.report.prompt import CHART
+
+    sid = db.create_session("sess-chart", "ps-1")["id"]
+    db.update_session(sid, title="report", history=[
+        {"role": "user", "content": "写一份报告"},
+        {
+            "role": "assistant", "content": "本期订单 1 笔。", "report_draft": True,
+            "report_series": [{
+                "id": "q3", "question": "by channel",
+                "rows": [
+                    {"channel": "Tmall", "units": 10},
+                    {"channel": "JD", "units": 4},
+                    {"channel": "Tmall", "units": 2},
+                ],
+            }],
+        },
+    ])
+    llm = FakeLLM(json_replies=[{"charts": []}], text_reply="should not rewrite the report")
+    events = list(service.handle_message(db, llm, sid, "加一些图表吧，应该能有可以加图的内容吧？"))
+    assert [call["kind"] for call in llm.calls] == ["json"]
+    assert llm.calls[0]["system"] == CHART
+    assert not any(event.get("title") == "拆问题" for event in events)
+    reply = "".join(event.get("text", "") for event in events if event.get("type") == "token")
+    assert "补上图表" in reply and "should not rewrite" not in reply
+    done = events[-1]
+    chart = done["charts"][0]
+    assert chart["chart_type"] == "pie"
+    assert {point["x"]: point["y"] for point in chart["points"]} == {"Tmall": 12, "JD": 4}
+    assert db.session(sid)["history"][-1]["report_series"][0]["id"] == "q3"
+
+
+def test_a_chart_followup_reruns_the_last_statements_when_rows_were_not_kept(db):
+    from backend.db import utcnow
+    from backend.report.prompt import CHART
+
+    db.insert_po(_po(), [], [])
+    db.insert_po(_po(
+        id="po-2", po_number="PO-2", status="confirmed", total_amount=500, subtotal_amount=500,
+    ), [], [])
+    sid = db.create_session("sess-replay", "ps-1")["id"]
+    db.add_text2sql_log({
+        "partnership_id": "ps-1", "session_id": sid, "question": "orders by status",
+        "selected_tables": ["purchase_orders"],
+        "generated_sql": "SELECT status, count(*) AS n FROM purchase_orders GROUP BY status",
+        "execution_success": True, "row_count": 2, "execution_time_ms": 5, "created_at": utcnow(),
+    })
+    db.update_session(sid, title="report", history=[
+        {"role": "user", "content": "写一份报告"},
+        {"role": "assistant", "content": "草稿正文。", "report_draft": True},
+    ])
+    llm = FakeLLM(json_replies=[{"charts": []}], text_reply="should not rewrite the report")
+    events = list(service.handle_message(db, llm, sid, "加一些图表吧"))
+    assert [call["kind"] for call in llm.calls] == ["json"]
+    assert llm.calls[0]["system"] == CHART
+    assert not any(event.get("title") == "查数" for event in events)
+    chart = events[-1]["charts"][0]
+    assert chart["chart_type"] == "pie"
+    assert {point["x"]: point["y"] for point in chart["points"]} == {"submitted": 1, "confirmed": 1}
 
 
 def test_badcase_groups_failures_and_keeps_corrections_for_review():

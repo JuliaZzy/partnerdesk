@@ -5,9 +5,9 @@ from __future__ import annotations
 from backend.llm import FakeLLM
 from backend.report import draft_report
 from backend.report.analyze import findings
-from backend.report.charts import bind_charts, column_kinds
+from backend.report.charts import bind_charts, column_kinds, suggest_specs
 from backend.report.prompt import STANDARD_QUESTIONS, WITH_DATA
-from backend.report.turn import parse_split
+from backend.report.turn import asks_only_for_charts, parse_split
 from backend.schemas import PurchaseOrder
 
 
@@ -18,6 +18,29 @@ def _po() -> PurchaseOrder:
         eta_date=None, ship_to_country="US", notes=None, discount_amount=None, discount_percentage=None,
         subtotal_amount=1000, total_amount=1000,
     )
+
+
+def test_a_chart_request_is_not_a_new_report():
+    assert asks_only_for_charts("加一些图表吧，应该能有可以加图的内容吧？")
+    assert asks_only_for_charts("add a chart")
+    assert not asks_only_for_charts("写一份带图表的销售报告")
+    assert not asks_only_for_charts("what is sell-through by channel")
+
+
+def test_suggest_specs_charts_a_breakdown_and_skips_a_single_total():
+    specs = suggest_specs({
+        "q1": [{"po_count": 2, "total_amount": 1000}],
+        "q3": [
+            {"channel": "Tmall", "sku": "FO-100", "units": 10},
+            {"channel": "JD", "sku": "FO-100", "units": 4},
+            {"channel": "Tmall", "sku": "FO-200", "units": 2},
+        ],
+    }, chinese=True)
+    assert [spec["query_id"] for spec in specs] == ["q3", "q3"]
+    assert specs[0]["chart_type"] == "pie" and specs[0]["x"] == "channel" and specs[0]["y"] == "units"
+    assert "按" in specs[0]["title"]
+    assert specs[1]["x"] == "sku" and specs[1]["chart_type"] == "pie"
+    assert suggest_specs({"q1": [{"total_amount": 1000}]}) == []
 
 
 def test_parse_split_caps_dedupes_and_fills_a_bare_request():

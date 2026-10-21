@@ -43,6 +43,47 @@ def bind_charts(specs: Any, series: dict[str, list[dict[str, Any]]]) -> list[dic
     return charts
 
 
+def suggest_specs(series: dict[str, list[dict[str, Any]]], *, chinese: bool = False) -> list[dict[str, Any]]:
+    """Charts the model left out, when a series has a category or a time and a number.
+
+    A single total has neither axis, so it stays a sentence. A repeated category with
+    a few labels becomes a pie, because a bar would plot the same label once per row.
+    """
+    specs: list[dict[str, Any]] = []
+    for query_id, rows in series.items():
+        if len(specs) >= MAX_CHARTS or len(rows) < 2:
+            continue
+        kinds = {item["name"]: item["kind"] for item in column_kinds(rows)}
+        y_name = next((name for name, kind in kinds.items() if kind == "number" and not _id_like(name)), None)
+        if y_name is None:
+            continue
+        axes: list[tuple[str, str]] = []
+        times = [name for name, kind in kinds.items() if kind == "time"]
+        if times:
+            axes.append((times[0], "line"))
+        texts = sorted(
+            (name for name, kind in kinds.items() if kind == "text"),
+            key=lambda name: _distinct(rows, name),
+        )
+        for name in texts:
+            distinct = _distinct(rows, name)
+            if distinct < 2:
+                continue
+            chart_type = "pie" if 2 <= distinct <= MAX_SLICES and _non_negative(rows, y_name) else "bar"
+            axes.append((name, chart_type))
+            if len(axes) >= 2:
+                break
+        for x_name, chart_type in axes:
+            if len(specs) >= MAX_CHARTS:
+                break
+            title = f"{y_name} 按 {x_name}" if chinese else f"{y_name} by {x_name}"
+            specs.append({
+                "query_id": query_id, "chart_type": chart_type, "x": x_name, "y": y_name,
+                "title": title[:_TITLE],
+            })
+    return specs
+
+
 def column_kinds(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Column names plus whether every present value is numeric. No cell values."""
     names: list[str] = []
@@ -117,6 +158,22 @@ def _column(rows: list[dict[str, Any]], name: str) -> bool:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value
+
+
+def _id_like(name: str) -> bool:
+    folded = name.casefold()
+    return folded == "id" or folded.endswith("_id")
+
+
+def _distinct(rows: list[dict[str, Any]], name: str) -> int:
+    labels = {_label(row.get(name)) for row in rows}
+    labels.discard("")
+    return len(labels)
+
+
+def _non_negative(rows: list[dict[str, Any]], name: str) -> bool:
+    values = [row.get(name) for row in rows if _is_number(row.get(name))]
+    return bool(values) and all(value >= 0 for value in values)
 
 
 def _label(value: Any) -> str:

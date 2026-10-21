@@ -8,15 +8,16 @@ import logging
 from collections.abc import Iterator
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 
 from .. import service
 from ..db import Database
 from ..deps import get_db, get_llm, llm_for
-from ..llm import LLM
+from ..llm import LLM, OpenAICompatLLM
 from ..memory import bind_fold_scheduler, reset_fold_scheduler
 from ..schemas import Confirm, DataFeedback, Inbound, InboundFile, NewSession
+from ..stream_pin import pin_stream
 from ._common import partnership_or_404
 
 router = APIRouter()
@@ -52,6 +53,16 @@ def new_session(body: NewSession, db: Database = Depends(get_db)) -> dict[str, A
         raise HTTPException(404, str(err)) from err
 
 
+@router.delete("/api/sessions/{sid}", status_code=204)
+def delete_session(sid: str, db: Database = Depends(get_db)) -> Response:
+    """Drop one chat. An in-flight reply may still finish and then find the row gone."""
+    try:
+        service.delete_session(db, sid)
+    except KeyError as err:
+        raise HTTPException(404, "session not found") from err
+    return Response(status_code=204)
+
+
 @router.get("/api/sessions/{sid}")
 def get_session(sid: str, db: Database = Depends(get_db)) -> dict[str, Any]:
     s = db.session(sid)
@@ -85,16 +96,37 @@ def message(
     def gen() -> Iterator[bytes]:
         # A model error after the first status frame must still close the stream.
         # The provider body can carry account ids, so the client only gets a fixed line.
+        outputs = llm.model_outputs if isinstance(llm, OpenAICompatLLM) else []
+        sent = 0
+        # Closed in finally so a reader that leaves releases this chat's turn lock.
+        # The lock is held inside the iterator, and closing only this wrapper would
+        # leave that iterator suspended.
+        turn = service.handle_message(db, llm, sid, body.message, body.images, body.attachments, documents)
+
+        def pending() -> Iterator[bytes]:
+            nonlocal sent
+            while sent < len(outputs):
+                event = {"type": "model_json", "json": outputs[sent]}
+                sent += 1
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
+
         try:
-            for e in service.handle_message(db, llm, sid, body.message, body.images, body.attachments, documents):
-                yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n".encode()
-        except Exception:
-            log.exception("chat stream failed")
-            err = {"type": "error", "message": "The model could not finish this reply."}
-            yield f"data: {json.dumps(err)}\n\n".encode()
+            try:
+                for e in turn:
+                    yield from pending()
+                    yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n".encode()
+                yield from pending()
+            except Exception:
+                log.exception("chat stream failed")
+                yield from pending()
+                err = {"type": "error", "message": "The model could not finish this reply."}
+                yield f"data: {json.dumps(err)}\n\n".encode()
+        finally:
+            turn.close()
 
     return StreamingResponse(
-        gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        pin_stream(gen()), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         background=background_tasks,
     )
 

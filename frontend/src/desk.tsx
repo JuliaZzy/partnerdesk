@@ -1,7 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 
 import { api } from "./api";
+import { chatPresence, forgetChat, isForgotten, useChatPresence } from "./chat-live";
 import { chatTitle, tagLabel, type Partnership } from "./format";
 
 export type Meta = {
@@ -31,6 +32,8 @@ type DeskValue = {
   choosePartnership: (id: string) => void;
   sessions: SessionSummary[];
   reloadSessions: () => Promise<void>;
+  nameSession: (id: string, title: string | null, tags: string[]) => void;
+  deleteChat: (id: string) => Promise<void>;
   jump: ChatJump;
   openChat: (sid: string | "new") => void;
 };
@@ -83,8 +86,39 @@ export function DeskProvider({ children }: { children: ReactNode }) {
       setSessions([]);
       return;
     }
-    setSessions(await api<SessionSummary[]>(`/api/sessions?partnership_id=${encodeURIComponent(pid)}`));
+    const rows = await api<SessionSummary[]>(`/api/sessions?partnership_id=${encodeURIComponent(pid)}`);
+    setSessions(rows.filter((row) => !isForgotten(row.id)));
   }, [pid]);
+
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const deleting = useRef(new Set<string>());
+  const deleteChat = useCallback(async (id: string) => {
+    if (deleting.current.has(id)) return;
+    deleting.current.add(id);
+    try {
+      await api<void>(`/api/sessions/${id}`, { method: "DELETE" });
+      const wasOpen = chatPresence().activeId === id;
+      forgetChat(id);
+      const rest = sessionsRef.current.filter((session) => session.id !== id);
+      sessionsRef.current = rest;
+      setSessions(rest);
+      if (wasOpen) {
+        setJump((current) => ({ n: current.n + 1, sid: rest[0]?.id ?? "new" }));
+        navigate("/");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete the chat");
+    } finally {
+      deleting.current.delete(id);
+    }
+  }, [navigate]);
+
+  const nameSession = useCallback((id: string, title: string | null, tags: string[]) => {
+    setSessions((current) => current.map((session) => (
+      session.id === id ? { ...session, title: title ?? session.title, tags } : session
+    )));
+  }, []);
 
   useEffect(() => {
     reloadSessions().catch((err: Error) => setError(err.message));
@@ -103,18 +137,22 @@ export function DeskProvider({ children }: { children: ReactNode }) {
     },
     sessions,
     reloadSessions,
+    nameSession,
+    deleteChat,
     jump,
     openChat: (sid: string | "new") => {
       setJump((current) => ({ n: current.n + 1, sid }));
       navigate("/");
     },
-  }), [ready, error, meta, partnerships, partnership, sessions, reloadSessions, jump, navigate]);
+  }), [ready, error, meta, partnerships, partnership, sessions, reloadSessions, nameSession, deleteChat, jump, navigate]);
 
   return <DeskContext.Provider value={value}>{children}</DeskContext.Provider>;
 }
 
 export function Shell({ children }: { children: ReactNode }) {
   const desk = useDesk();
+  const presence = useChatPresence();
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -146,12 +184,42 @@ export function Shell({ children }: { children: ReactNode }) {
         </nav>
         <div className="side-label">Chats</div>
         <div className="chat-list">
-          {desk.sessions.map((session) => (
-            <button key={session.id} type="button" onClick={() => desk.openChat(session.id)}>
-              {chatTitle(session)}
-              {tagLabel(session.tags) && <small>{tagLabel(session.tags)}</small>}
-            </button>
-          ))}
+          {desk.sessions.map((session) => {
+            const replying = presence.busyIds.includes(session.id);
+            const title = chatTitle(session);
+            const confirming = pendingDelete === session.id;
+            return (
+              <div key={session.id} className={presence.activeId === session.id ? "chat-row on" : "chat-row"}>
+                <button
+                  type="button"
+                  className="chat-open"
+                  onClick={() => {
+                    setPendingDelete(null);
+                    desk.openChat(session.id);
+                  }}
+                >
+                  {title}
+                  {replying && <small className="replying">Replying…</small>}
+                  {tagLabel(session.tags) && <small>{tagLabel(session.tags)}</small>}
+                </button>
+                <button
+                  type="button"
+                  className={confirming ? "chat-delete confirm" : "chat-delete"}
+                  aria-label={confirming ? `Confirm delete ${title}` : `Delete ${title}`}
+                  onClick={() => {
+                    if (!confirming) {
+                      setPendingDelete(session.id);
+                      return;
+                    }
+                    setPendingDelete(null);
+                    void desk.deleteChat(session.id);
+                  }}
+                >
+                  {confirming ? "Delete" : "×"}
+                </button>
+              </div>
+            );
+          })}
         </div>
       </aside>
       <main className="main">
