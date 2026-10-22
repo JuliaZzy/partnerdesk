@@ -1,113 +1,206 @@
-"""Chat report draft: questions and web lookups are slots; chart points come from rows."""
+"""Chat report draft: questions and web lookups are slots; charts are the model's ECharts options."""
 
 from __future__ import annotations
 
-from backend.llm import FakeLLM
-from backend.report import draft_report
-from backend.report.analyze import findings
-from backend.report.charts import bind_charts, column_kinds, suggest_specs
-from backend.report.prompt import STANDARD_QUESTIONS, WITH_DATA
-from backend.report.turn import asks_only_for_charts, parse_split
-from backend.schemas import PurchaseOrder
+from backend.report.analyze import column_kinds, cover_days, findings
+from backend.report.prompt import (
+    CHART_GENERATION_PROMPT,
+    CODE_WIZARD_PROMPT,
+    REPORT_QUESTIONS_PROMPT,
+    REPORT_REVIEW_PROMPT,
+    REPORT_REVISE_PROMPT,
+    SECTIONS,
+    SUMMARY_PROMPT,
+    WRITING_PROMPT,
+    outline_text,
+)
+from backend.report.turn import (
+    finish_report,
+    parse_plan,
+    place_charts_in_sections,
+    relabel_chart_labels,
+    rewrite_product_mentions,
+    shape_prose,
+    stamp_product_labels,
+)
+from backend.report.wizard import execute
 
 
-def _po() -> PurchaseOrder:
-    return PurchaseOrder(
-        id="po-1", po_number="PO-1", brand_id="brand-1", distributor_id="dist-1", partnership_id="ps-1",
-        status="submitted", currency="USD", payment_terms="net_30", incoterms="FOB", shipping_method="sea",
-        eta_date=None, ship_to_country="US", notes=None, discount_amount=None, discount_percentage=None,
-        subtotal_amount=1000, total_amount=1000,
-    )
+def test_cover_days_divides_stock_by_period_units():
+    notes = cover_days([
+        [{"sku": "FO-100", "stock_on_hand": 90}],
+        [{"sku": "FO-100", "units_sold": 30}, {"sku": "FO-200", "units_sold": 10}],
+    ])
+    assert notes == [{"sku": "FO-100", "stock": 90.0, "units": 30.0, "cover_days": 90.0}]
 
 
-def test_a_chart_request_is_not_a_new_report():
-    assert asks_only_for_charts("加一些图表吧，应该能有可以加图的内容吧？")
-    assert asks_only_for_charts("add a chart")
-    assert not asks_only_for_charts("写一份带图表的销售报告")
-    assert not asks_only_for_charts("what is sell-through by channel")
-
-
-def test_suggest_specs_charts_a_breakdown_and_skips_a_single_total():
-    specs = suggest_specs({
-        "q1": [{"po_count": 2, "total_amount": 1000}],
-        "q3": [
-            {"channel": "Tmall", "sku": "FO-100", "units": 10},
-            {"channel": "JD", "sku": "FO-100", "units": 4},
-            {"channel": "Tmall", "sku": "FO-200", "units": 2},
-        ],
-    }, chinese=True)
-    assert [spec["query_id"] for spec in specs] == ["q3", "q3"]
-    assert specs[0]["chart_type"] == "pie" and specs[0]["x"] == "channel" and specs[0]["y"] == "units"
-    assert "按" in specs[0]["title"]
-    assert specs[1]["x"] == "sku" and specs[1]["chart_type"] == "pie"
-    assert suggest_specs({"q1": [{"total_amount": 1000}]}) == []
-
-
-def test_parse_split_caps_dedupes_and_fills_a_bare_request():
+def test_parse_plan_keeps_six_sections_and_drops_a_search_on_a_data_section():
     from datetime import date
 
-    questions, searches = parse_split({
-        "questions": [" A ", "a", "b", "c", "d", "e", 3],
-        "searches": [" Black Friday ", "black friday", "618", ""],
-    }, today=date(2026, 10, 19))
-    assert questions == [("q1", "A"), ("q2", "b"), ("q3", "c"), ("q4", "d")]
-    assert searches == ["Black Friday", "618"]
-    bare_questions, bare_searches = parse_split({}, today=date(2026, 10, 19))
-    assert [question for _, question in bare_questions] == list(STANDARD_QUESTIONS)
-    assert bare_searches == ["2026年10月 零售档期 促销热点"]
-
-
-def test_bind_charts_reads_rows_and_drops_specs_that_do_not_match():
-    series = {"q1": [{"channel": "Tmall", "units": 10}, {"channel": "JD", "units": 4}]}
-    charts = bind_charts([
-        {"query_id": "q1", "chart_type": "bar", "x": "channel", "y": "units", "title": "Units"},
-        {"query_id": "q1", "chart_type": "bar", "x": "channel", "y": "revenue", "title": "Nope"},
-        {"query_id": "q9", "chart_type": "line", "x": "channel", "y": "units", "title": "Missing"},
-        {"query_id": "q1", "chart_type": "pie", "x": "channel", "y": "units", "title": "Pie"},
-        {"query_id": "q2", "chart_type": "bar", "x": "name", "y": "flag", "title": "Flag"},
-        "nope",
-    ], {**series, "q2": [{"name": "a", "flag": True}]})
-    assert charts == [{
-        "title": "Units", "chart_type": "bar",
-        "points": [{"x": "Tmall", "y": 10}, {"x": "JD", "y": 4}],
-    }, {
-        "title": "Pie", "chart_type": "pie",
-        "points": [{"x": "Tmall", "y": 10}, {"x": "JD", "y": 4}],
-    }]
-
-
-def test_bind_charts_caps_points_and_keeps_three():
-    rows = [{"sku": str(i), "units": i + 1} for i in range(20)]
-    series = {f"q{i}": rows for i in range(1, 5)}
-    specs = [
-        {"query_id": f"q{i}", "chart_type": "line", "x": "sku", "y": "units", "title": f"C{i}"}
-        for i in range(1, 5)
-    ]
-    charts = bind_charts(specs, series)
-    assert [chart["title"] for chart in charts] == ["C1", "C2", "C3"]
-    assert len(charts[0]["points"]) == 12
-    assert charts[0]["points"][0] == {"x": "0", "y": 1}
-
-
-def test_bind_charts_drops_a_pie_that_is_not_a_small_non_negative_mix():
-    wide = [{"channel": str(i), "units": i + 1} for i in range(7)]
-    charts = bind_charts([
-        {"query_id": "wide", "chart_type": "pie", "x": "channel", "y": "units", "title": "Wide"},
-        {"query_id": "neg", "chart_type": "pie", "x": "channel", "y": "units", "title": "Neg"},
-        {"query_id": "dup", "chart_type": "pie", "x": "channel", "y": "units", "title": "Dup"},
-    ], {
-        "wide": wide,
-        "neg": [{"channel": "A", "units": 5}, {"channel": "B", "units": -1}],
-        "dup": [
-            {"channel": "Tmall", "units": 3},
-            {"channel": "Tmall", "units": 7},
-            {"channel": "JD", "units": 4},
+    planned = parse_plan({
+        "sections": [
+            {"id": "performance", "questions": [" A ", "a", "b", "c", "d"], "searches": ["should not search"]},
+            {"id": "nope", "questions": ["x"]},
+            {"id": "next", "questions": ["sql?"], "searches": [" 双十一 ", "black friday", "618"]},
+            {"id": "risks", "questions": ["amount"], "searches": []},
+            {"id": "summary", "questions": ["skip"], "searches": ["skip"]},
         ],
-    })
-    assert charts == [{
-        "title": "Dup", "chart_type": "pie",
-        "points": [{"x": "Tmall", "y": 10}, {"x": "JD", "y": 4}],
-    }]
+    }, today=date(2026, 10, 19))
+    assert [section.id for section in planned] == [section["id"] for section in SECTIONS]
+    performance = next(section for section in planned if section.id == "performance")
+    assert performance.questions == ["A", "b", "c"]
+    assert performance.searches == []
+    nxt = next(section for section in planned if section.id == "next")
+    assert nxt.questions == []
+    assert nxt.searches == ["双十一", "black friday"]
+    risks = next(section for section in planned if section.id == "risks")
+    assert risks.questions == ["amount"]
+    assert risks.searches == []
+    summary = next(section for section in planned if section.id == "summary")
+    assert summary.questions == [] and summary.searches == []
+
+
+def test_parse_plan_does_not_invent_questions_when_the_model_returns_nothing():
+    from datetime import date
+
+    planned = parse_plan({}, today=date(2026, 10, 19))
+    performance = next(section for section in planned if section.id == "performance")
+    assert performance.questions == []
+    metrics = next(section for section in planned if section.id == "metrics")
+    assert metrics.questions == []
+    nxt = next(section for section in planned if section.id == "next")
+    assert nxt.searches == ["2026年10月 零售档期 促销热点", "即将到来的节假日 零售促销"]
+    summary = next(section for section in planned if section.id == "summary")
+    assert summary.questions == [] and summary.searches == []
+    risks = next(section for section in planned if section.id == "risks")
+    assert risks.questions == [] and risks.searches == []
+
+
+def test_prompts_use_the_sectioned_shape_and_format_cleanly():
+    assert [section["id"] for section in SECTIONS] == [
+        "metrics", "summary", "performance", "inventory", "next", "risks",
+    ]
+    outline = outline_text()
+    assert "关键指标" in outline and "问题与风险" in outline and "不要原样照抄" in outline
+    for prompt in (
+        REPORT_QUESTIONS_PROMPT, CHART_GENERATION_PROMPT, WRITING_PROMPT, SUMMARY_PROMPT,
+        CODE_WIZARD_PROMPT, REPORT_REVIEW_PROMPT, REPORT_REVISE_PROMPT,
+    ):
+        assert "## 角色" in prompt and "## 输入定义" in prompt
+    assert "问题与风险由你判断" in REPORT_QUESTIONS_PROMPT
+    planned = REPORT_QUESTIONS_PROMPT.format(
+        outline=outline_text(), message="写一份报告", database_structure="- contracts: 协议",
+        max_questions=3, max_searches=2,
+    )
+    assert "写一份报告" in planned and "{outline}" not in planned
+    chart = CHART_GENERATION_PROMPT.format(message="月报", query_results="[]")
+    assert "{c}%" in chart and "860" in chart
+    WRITING_PROMPT.format(message="月报", section_title="业绩表现", section_brief="销量")
+    SUMMARY_PROMPT.format(message="月报")
+    filled = CODE_WIZARD_PROMPT.format(
+        section_title="库存情况",
+        section_brief="采购与库存剩余",
+        questions='["期末库存"]',
+        query_results='[{"question": "期末库存", "rows": []}]',
+    )
+    assert "库存情况" in filled and "期末库存" in filled
+    assert "{section_title}" not in filled and "{query_results}" not in filled
+    reviewed = REPORT_REVIEW_PROMPT.format(
+        message="月报", outline="关键指标", report="正文", evidence="{}", previous_issues="（无）",
+    )
+    assert "月报" in reviewed and "{report}" not in reviewed
+    revised = REPORT_REVISE_PROMPT.format(
+        message="月报", report="正文", score=70, chapters="[]", issues="[]", evidence="{}",
+    )
+    assert "正文" in revised and "{issues}" not in revised
+
+
+def test_insight_code_reads_the_rows_and_rejects_an_import():
+    ran = execute(
+        "def analyze(datasets):\n"
+        "    rows = datasets[0]['rows']\n"
+        "    return [{'title': '订单', 'detail': '两行', 'evidence': {'n': len(rows), 'total': rows[0]['a'] + rows[1]['a']}}]",
+        [{"id": "q1", "question": "合计", "rows": [{"a": 1}, {"a": 2}]}],
+    )
+    assert ran["error"] is None
+    assert ran["insights"] == [{"title": "订单", "detail": "两行", "evidence": {"n": 2, "total": 3}}]
+    blocked = execute("import os\ninsights = []", [])
+    assert blocked["insights"] == [] and blocked["error"]
+
+
+def test_five_chapters_add_up_and_a_missing_one_scores_zero():
+    from backend.report.turn import _review_score
+
+    raw = {"chapters": [
+        {"section": "关键指标", "score": 20},
+        {"section": "摘要", "score": 20},
+        {"section": "业绩表现", "score": 20},
+        {"section": "库存情况", "score": 20},
+        {"section": "下一周期计划", "score": 5},
+    ], "risks_penalty": 0, "score": 99}
+    assert _review_score(raw)[0] == 85
+    raw["risks_penalty"] = 10
+    assert _review_score(raw)[0] == 75
+    raw["chapters"] = [item for item in raw["chapters"] if item["section"] != "摘要"]
+    raw["risks_penalty"] = 0
+    assert _review_score(raw)[0] == 65
+    assert _review_score({"score": 90})[0] == 90
+
+
+def test_review_passes_at_85_and_revises_below_it_for_three_rounds():
+    from backend.llm import FakeLLM
+    from backend.report.turn import _review_rounds
+
+    def run(replies: list[dict], report: str = "原文"):
+        llm = FakeLLM(json_replies=replies)
+        text, score, error = _review_rounds(llm, message="月报", report=report, evidence="{}", remembered="")
+        return llm, text, score, error
+
+    _, text, score, error = run([{"score": 85, "ok": True, "issues": []}])
+    assert text == "原文" and score == 85 and error is None
+
+    issue = {"section": "业绩表现", "problem": "没有提到图表"}
+    llm, text, score, error = run([
+        {"score": 84, "ok": False, "issues": [issue]},
+        {"report": "改后的报告"},
+        {"score": 90, "ok": True, "issues": []},
+    ])
+    assert text == "改后的报告" and score == 90 and error is None
+    assert "没有提到图表" in llm.calls[1]["system"] and "84" in llm.calls[1]["system"]
+    assert "没有提到图表" in llm.calls[2]["system"]
+
+    replies: list[dict] = []
+    for index in range(1, 4):
+        replies.append({"score": 60, "ok": False, "issues": [issue]})
+        replies.append({"report": f"第{index}稿"})
+    replies.append({"score": 70, "ok": False, "issues": [issue]})
+    llm, text, score, error = run(replies, report="原稿")
+    assert text == "第3稿" and score == 70 and error is None
+    assert len(llm.calls) == 7
+
+
+def test_reflection_retries_a_failure_and_keeps_three_tries():
+    from backend.llm import FakeLLM
+    from backend.report.reflect import with_reflection
+
+    def fail_then_ok(artifact: str):
+        if artifact == "ok":
+            return True, "done", None, ""
+        return False, None, f"bad {artifact}", "stdout"
+
+    fixed = FakeLLM(json_replies=[{"fixed_code": "ok"}])
+    value, failures = with_reflection(fixed, kind="code", first="bad", run=fail_then_ok)
+    assert value == "done" and failures == []
+    assert "bad bad" in fixed.calls[0]["system"]
+
+    def always_fail(_artifact: str):
+        return False, None, "boom", "out"
+
+    stuck = FakeLLM(json_replies=[{"fixed_code": "still"}, {"fixed_code": "nope"}])
+    value, failures = with_reflection(stuck, kind="sql", first="a", run=always_fail)
+    assert value is None and len(failures) == 3
+    assert [item["artifact"] for item in failures] == ["a", "still", "nope"]
+    assert all(item["error"] == "boom" for item in failures)
 
 
 def test_findings_sum_a_mix_and_a_trend_and_skip_a_single_row():
@@ -139,50 +232,40 @@ def test_findings_range_when_there_is_no_category():
     }]
 
 
-def test_draft_quotes_rows_and_treats_web_as_context(db):
-    db.insert_po(_po(), [], [])
+def test_product_names_replace_a_bare_sku_and_charts_stay_in_their_section():
+    from backend.report.turn import SectionPlan
 
-    def lookup(query: str, **_kwargs: object) -> list[dict[str, str]]:
-        assert query == "black friday 2026"
-        return [{"title": "Black Friday", "snippet": "Retailers plan promotions.", "url": "https://example.com/bf"}]
-
-    llm = FakeLLM(json_replies=[
-        {"questions": ["order total"], "searches": ["black friday 2026"]},
-        {"tables": ["purchase_orders"]},
-        {"sql": "SELECT total_amount FROM purchase_orders"},
-        {"charts": [{
-            "query_id": "q1", "chart_type": "bar", "x": "total_amount", "y": "total_amount", "title": "Order total",
-        }]},
-    ], text_reply="Draft says 1000.")
-    draft = draft_report(
-        db, llm, message="write a short sales note", history=[],
-        partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1", session_id="sess-1",
-        search_fn=lookup,
+    rows = [{"sku": "FO-100", "units": 30}, {"sku": "SR-200", "product_name": "精华", "units": 10}]
+    labels = stamp_product_labels(rows, {"FO-100": "深海鱼油"})
+    assert rows[0]["product_label"] == "深海鱼油（FO-100）"
+    assert rows[1]["product_label"] == "精华（SR-200）"
+    rewritten = rewrite_product_mentions("FO-100 卖了 30。深海鱼油（FO-100）仍是主力。FO-1000 另算。", labels)
+    assert rewritten.startswith("深海鱼油（FO-100） 卖了 30。")
+    assert "深海鱼油（深海鱼油" not in rewritten
+    assert "FO-1000" in rewritten
+    assert shape_prose("销售额上升。库存偏紧。需要补货。还要看节假日。") == (
+        "销售额上升。库存偏紧。\n\n需要补货。还要看节假日。"
     )
-    text_call = next(call for call in llm.calls if call["kind"] == "text")
-    body = text_call["messages"][-1]["content"]
-    assert text_call["system"] == WITH_DATA
-    assert "1000" in body and "Retailers plan promotions." in body and "SELECT" not in body
-    assert "=== ANALYSIS" in body
-    assert draft.web_notes == ["Black Friday"]
-    assert draft.charts[0]["points"][0]["y"] == 1000
-    assert draft.warnings == []
 
+    chart = {
+        "id": "chart_001", "title": "FO-100 销量", "subtitle": "",
+        "echarts_option": {"xAxis": {"type": "category", "data": ["FO-100", "SR-200"]}},
+    }
+    relabeled = relabel_chart_labels([chart], labels)
+    assert chart["title"] == "FO-100 销量"
+    assert relabeled[0]["id"] == "chart_001"
+    assert relabeled[0]["title"] == "深海鱼油（FO-100） 销量"
+    assert relabeled[0]["echarts_option"]["xAxis"]["data"] == ["深海鱼油（FO-100）", "精华（SR-200）"]
+    assert relabeled[0]["echarts_option"]["xAxis"]["axisLabel"]["rotate"] == 28
 
-def test_a_failed_lookup_still_returns_a_draft(db):
-    def boom(_query: str, **_kwargs: object) -> list[dict[str, str]]:
-        raise RuntimeError("BOCHA_API_KEY is not set")
-
-    llm = FakeLLM(json_replies=[
-        {"questions": ["weather"], "searches": ["halloween"]},
-        {"tables": []},
-    ], text_reply="Numbers are missing.")
-    draft = draft_report(
-        db, llm, message="what about halloween sales", history=[],
-        partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1", session_id="sess-2",
-        search_fn=boom,
-    )
-    assert draft.text == "Numbers are missing."
-    assert draft.charts == []
-    assert any("No figures" in warning for warning in draft.warnings)
-    assert any("BOCHA_API_KEY" in warning for warning in draft.warnings)
+    planned = [
+        SectionPlan("summary", "摘要", "", False, False, False, False, [], []),
+        SectionPlan("performance", "业绩表现", "", True, True, False, False, [], []),
+    ]
+    report = "## 2. 摘要\n\n见 [趋势](chart_001)。\n\n## 3. 业绩表现\n\n销量上升。"
+    placed = place_charts_in_sections(report, planned, {"performance": relabeled})
+    summary, performance = placed.split("业绩表现", 1)
+    assert "chart_001" not in summary
+    assert "(chart_001)" in performance
+    finished = finish_report(report, labels, planned, {"performance": relabeled})
+    assert "chart_001" in finished.split("业绩表现", 1)[1]

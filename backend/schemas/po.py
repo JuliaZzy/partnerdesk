@@ -1,4 +1,4 @@
-"""The fixed slot template a purchase-order turn fills. Not the order row."""
+"""采购单一轮要填的固定槽位模板。不是订单那一行。"""
 
 from __future__ import annotations
 
@@ -32,9 +32,9 @@ class Discount(BaseModel):
 
     def describe(self, currency: str = "") -> str:
         if self.kind == "none":
-            return "list price per contract" if self.source == "contract" else "no discount"
+            return "按合同为目录价" if self.source == "contract" else "无折扣"
         head = f"{self.value:g}%" if self.kind == "percent" else f"{currency} {self.value:g}".strip()
-        return f"contract discount {head}" if self.source == "contract" else f"{head} discount"
+        return f"合同折扣 {head}" if self.source == "contract" else f"折扣 {head}"
 
 
 class PoSlots(BaseModel):

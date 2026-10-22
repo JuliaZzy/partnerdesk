@@ -1,4 +1,4 @@
-"""Brand-level terms the desk fills in when the distributor has not said otherwise."""
+"""经销商没有另外说明时，工作台填上的品牌级条款。"""
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ PAYMENT_TERMS_VALUES: tuple[str, ...] = ("50_50", "100_prepaid", "net_30", "net_
 # What each code means — the semantics claims.py settles money by. Spelled out wherever a
 # model might otherwise improvise ("50/50" was read back to a customer as "50% before shipment").
 PAYMENT_TERMS_LABELS: dict[str, str] = {
-    "50_50": "50% prepaid with the order, 50% balance after the goods are received and inspected",
-    "100_prepaid": "100% prepaid with the order",
-    "net_30": "payable 30 days after receipt",
-    "net_60": "payable 60 days after receipt",
+    "50_50": "下单时预付 50%，货到验收后再付 50% 尾款",
+    "100_prepaid": "下单时 100% 预付",
+    "net_30": "收货后 30 天付款",
+    "net_60": "收货后 60 天付款",
 }
 INCOTERMS_VALUES: tuple[str, ...] = ("FOB", "CIF", "EXW", "DDP", "DAP", "CFR")
 SHIPPING_METHOD_VALUES: tuple[str, ...] = ("sea", "air", "express", "land")
@@ -35,7 +35,7 @@ class AgentSettings(BaseModel):
     eta_days: int = 60
     operating_context: str | None = None
     min_po_confidence: float = 0.0
-    tone: str = "Warm, direct and professional. Short sentences. No filler."
+    tone: str = "语气温暖、直接、专业。句子短。不说空话。"
 
     @field_validator("operating_context")
     @classmethod

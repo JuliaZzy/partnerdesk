@@ -1,1 +1,1 @@
-"""SocialCrawl request form. Live turns call the MCP tools directly."""
+"""SocialCrawl 请求表。实时轮次直接调用 MCP 工具。"""

@@ -1,8 +1,7 @@
-"""File an agreement from chat and hand the stored result back as a table.
+"""从聊天里归档一份协议，并把存下的结果作为一张表交回去。
 
-The chat model does not file and does not invent terms. This module runs `read` (which
-splits chunks) and `ingest`, then returns the rows that were written. `agent` is
-what speaks to the distributor.
+聊天模型不归档，也不编造条款。这个模块运行 `read`（它会切块）和 `ingest`，然后返回写下的行。
+`agent` 负责对经销商说话。
 """
 
 from __future__ import annotations

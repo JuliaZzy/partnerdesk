@@ -21,6 +21,18 @@ def test_reopening_a_database_is_a_noop(make_db):
     assert make_db("twice").partnerships() == []  # second open migrates nothing, loses nothing
 
 
+def test_product_names_prefers_the_native_name(make_db):
+    from backend.schemas import Product
+
+    db = make_db("names")
+    db.upsert_brand("b", "Brand")
+    db.upsert_product("b", Product(id="p", sku="FO-100", product_name_en="Fish Oil", product_name_native="鱼油"))
+    db.upsert_product("b", Product(id="q", sku="SR-200", product_name_en="Serum"))
+    assert db.product_names("b", ["FO-100", "SR-200", "NOPE", " "]) == {"FO-100": "鱼油", "SR-200": "Serum"}
+    assert db.product_names("other", ["FO-100"]) == {}
+    assert db.product_names("b", []) == {}
+
+
 def test_foreign_keys_are_enforced(make_db):
     import pytest
     from sqlalchemy.exc import IntegrityError

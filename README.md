@@ -51,7 +51,7 @@ backend/
   report/          AI Report
     agent.py       聊天里的草稿
     prompt.py      固定大纲
-    spreadsheet.py charts.py    整洁表格收成事实，不是 agent
+    spreadsheet.py    整洁表格收成事实，不是 agent
   contract/        Contract Analysis
     agent.py       聊天里归档，并引用已入库的表
     prompt.py      合同抽取提示词

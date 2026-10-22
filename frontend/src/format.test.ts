@@ -9,7 +9,10 @@ import {
   citationSources,
   confirmReady,
   dataQueryMark,
+  contractFiling,
   reportCharts,
+  resultLink,
+  resultPanes,
   webNotes,
   discountText,
   greeting,
@@ -62,25 +65,47 @@ describe("desk formatters", () => {
     expect(confirmReady(buildLedger("gathering"))).toBe(false);
   });
 
-  it("keeps report charts whose points are finite numbers", () => {
+  it("keeps report charts that carry an echarts option", () => {
+    const option = { series: [{ type: "line", data: [1, 2] }] };
     expect(reportCharts([{
-      title: "Units",
-      chart_type: "bar",
-      points: [{ x: "Tmall", y: 10 }, { x: "", y: 4 }, { x: "JD", y: "4" }],
+      id: "chart_002",
+      title: "已确认动销",
+      subtitle: "近五个报告期",
+      echarts_option: option,
     }, {
-      title: "Mix",
-      chart_type: "pie",
-      points: [{ x: "Tmall", y: 10 }, { x: "JD", y: 4 }],
+      title: " ",
+      echarts_option: option,
     }, {
-      title: "Bad",
-      chart_type: "scatter",
-      points: [{ x: "A", y: 1 }],
+      title: "缺配置",
+    }, {
+      title: "没有编号",
+      echarts_option: option,
     }])).toEqual([
-      { title: "Units", chartType: "bar", points: [{ x: "Tmall", y: 10 }] },
-      { title: "Mix", chartType: "pie", points: [{ x: "Tmall", y: 10 }, { x: "JD", y: 4 }] },
+      { id: "chart_002", title: "已确认动销", subtitle: "近五个报告期", option },
+      { id: "chart_001", title: "没有编号", subtitle: "", option },
     ]);
     expect(reportCharts(null)).toBeUndefined();
     expect(webNotes([" Black Friday ", "", 618])).toEqual(["Black Friday", "618"]);
+  });
+
+  it("builds a tab for each order, report, and contract, and keeps a live one last", () => {
+    const filing = contractFiling({ title: "2026 协议", file_name: "a.pdf", discount_rules: [] });
+    expect(filing?.title).toBe("2026 协议");
+    expect(contractFiling({})).toBeUndefined();
+    expect(resultPanes({
+      hasOrder: true,
+      reports: [{ id: "report-2", text: "九月", charts: [] }, { id: "report-4", text: "十月" }],
+      contracts: [{ id: "contract-3", filing: filing! }],
+      live: { kind: "report", text: "正在写" },
+    }).map((pane) => pane.label)).toEqual(["采购单", "报告 1", "报告 2", "报告 3", "合同"]);
+    expect(resultPanes({ hasOrder: false, reports: [], contracts: [], live: null })).toEqual([]);
+    expect(resultPanes({
+      hasOrder: false, reports: [], contracts: [], live: { kind: "po", text: "" },
+    }).map((pane) => pane.id)).toEqual(["order-live"]);
+    expect(resultLink("报告")).toBe("查看生成的报告");
+    expect(resultLink("报告 2")).toBe("查看生成的报告 2");
+    expect(resultLink("合同")).toBe("查看生成的合同");
+    expect(resultLink("采购单")).toBe("查看采购单");
   });
 
   it("keeps a data-query rating only when the log id is a positive integer", () => {

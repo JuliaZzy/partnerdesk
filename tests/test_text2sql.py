@@ -9,7 +9,6 @@ from backend import service
 from backend.app import create_app
 from backend.db.orm import Base
 from backend.llm import FakeLLM
-from backend.report.prompt import WITH_DATA
 from backend.schemas import Partnership, Product, PurchaseOrder
 from backend.text2sql import answer_question
 from backend.text2sql.analyze_badcase import analyze, classify_error
@@ -235,87 +234,58 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
             {"id": "d", "kind": "agent", "name": "data", "input": {"question": "order total"}, "depends_on": []},
             {"id": "r", "kind": "agent", "name": "report", "input": {}, "depends_on": ["d"]},
         ]},
-        {"questions": ["order total"], "searches": []},
+        {"sections": [
+            {"id": "metrics", "questions": ["order total"], "searches": []},
+            {"id": "summary", "questions": [], "searches": []},
+            {"id": "performance", "questions": ["order total"], "searches": []},
+            {"id": "inventory", "questions": ["order total"], "searches": []},
+            {"id": "next", "questions": [], "searches": []},
+            {"id": "risks", "questions": [], "searches": []},
+        ]},
         {"tables": ["purchase_orders"]},
         {"sql": "SELECT total_amount FROM purchase_orders"},
         {"charts": [{
-            "query_id": "q1", "chart_type": "bar", "x": "total_amount", "y": "total_amount", "title": "Order total",
+            "id": "chart_001",
+            "title": "Order total",
+            "subtitle": "",
+            "type": "bar",
+            "echarts_option": {"series": [{"type": "bar", "data": [1000]}]},
         }]},
+        {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
+        {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
+        {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
+        {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
+        {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"score": 90, "ok": True, "issues": []},
     ], text_reply="Report: 1000.")
     events = list(service.handle_message(db, report_llm, sid, "write a short sales note"))
-    report_call = next(call for call in report_llm.calls if call["kind"] == "text")
-    assert report_call["system"] == WITH_DATA
-    body = report_call["messages"][-1]["content"]
+    write_calls = [call for call in report_llm.calls if call["kind"] == "json" and "营销报告撰写人" in call["system"]]
+    wizard_calls = [call for call in report_llm.calls if call["kind"] == "json" and "text2sql 的全部输出" in call["system"]]
+    assert len(wizard_calls) == 5
+    assert "关键指标" in wizard_calls[0]["system"] and "1000" in wizard_calls[0]["system"]
+    assert "order total" in wizard_calls[0]["system"]
+    review_calls = [call for call in report_llm.calls if call["kind"] == "json" and "报告审核人" in call["system"]]
+    assert len(review_calls) == 1 and "1000" in review_calls[0]["system"]
+    assert write_calls
+    body = write_calls[0]["messages"][-1]["content"]
     assert "1000" in body and "SELECT" not in body
+    plan_write = next(call for call in write_calls if "下一周期计划" in call["system"])
+    assert "1000" in plan_write["messages"][-1]["content"]
     done = events[-1]
     assert done["report_draft"] is True
     assert done["charts"][0]["title"] == "Order total"
-    assert done["charts"][0]["points"][0]["y"] == 1000
+    assert done["charts"][0]["echarts_option"]["series"][0]["data"] == [1000]
     saved = db.session(sid)["history"][-1]
-    assert saved["report_draft"] is True and saved["charts"][0]["points"][0]["y"] == 1000
+    assert saved["report_draft"] is True
+    assert saved["charts"][0]["echarts_option"]["series"][0]["data"] == [1000]
     assert saved["report_series"][0]["question"] == "order total"
     assert saved["report_series"][0]["rows"][0]["total_amount"] == 1000
-
-
-def test_a_chart_followup_draws_saved_rows_without_rewriting_the_report(db):
-    from backend.report.prompt import CHART
-
-    sid = db.create_session("sess-chart", "ps-1")["id"]
-    db.update_session(sid, title="report", history=[
-        {"role": "user", "content": "写一份报告"},
-        {
-            "role": "assistant", "content": "本期订单 1 笔。", "report_draft": True,
-            "report_series": [{
-                "id": "q3", "question": "by channel",
-                "rows": [
-                    {"channel": "Tmall", "units": 10},
-                    {"channel": "JD", "units": 4},
-                    {"channel": "Tmall", "units": 2},
-                ],
-            }],
-        },
-    ])
-    llm = FakeLLM(json_replies=[{"charts": []}], text_reply="should not rewrite the report")
-    events = list(service.handle_message(db, llm, sid, "加一些图表吧，应该能有可以加图的内容吧？"))
-    assert [call["kind"] for call in llm.calls] == ["json"]
-    assert llm.calls[0]["system"] == CHART
-    assert not any(event.get("title") == "拆问题" for event in events)
-    reply = "".join(event.get("text", "") for event in events if event.get("type") == "token")
-    assert "补上图表" in reply and "should not rewrite" not in reply
-    done = events[-1]
-    chart = done["charts"][0]
-    assert chart["chart_type"] == "pie"
-    assert {point["x"]: point["y"] for point in chart["points"]} == {"Tmall": 12, "JD": 4}
-    assert db.session(sid)["history"][-1]["report_series"][0]["id"] == "q3"
-
-
-def test_a_chart_followup_reruns_the_last_statements_when_rows_were_not_kept(db):
-    from backend.db import utcnow
-    from backend.report.prompt import CHART
-
-    db.insert_po(_po(), [], [])
-    db.insert_po(_po(
-        id="po-2", po_number="PO-2", status="confirmed", total_amount=500, subtotal_amount=500,
-    ), [], [])
-    sid = db.create_session("sess-replay", "ps-1")["id"]
-    db.add_text2sql_log({
-        "partnership_id": "ps-1", "session_id": sid, "question": "orders by status",
-        "selected_tables": ["purchase_orders"],
-        "generated_sql": "SELECT status, count(*) AS n FROM purchase_orders GROUP BY status",
-        "execution_success": True, "row_count": 2, "execution_time_ms": 5, "created_at": utcnow(),
-    })
-    db.update_session(sid, title="report", history=[
-        {"role": "user", "content": "写一份报告"},
-        {"role": "assistant", "content": "草稿正文。", "report_draft": True},
-    ])
-    llm = FakeLLM(json_replies=[{"charts": []}], text_reply="should not rewrite the report")
-    events = list(service.handle_message(db, llm, sid, "加一些图表吧"))
-    assert [call["kind"] for call in llm.calls] == ["json"]
-    assert llm.calls[0]["system"] == CHART
-    assert not any(event.get("title") == "查数" for event in events)
-    chart = events[-1]["charts"][0]
-    assert chart["chart_type"] == "pie"
-    assert {point["x"]: point["y"] for point in chart["points"]} == {"submitted": 1, "confirmed": 1}
 
 
 def test_badcase_groups_failures_and_keeps_corrections_for_review():

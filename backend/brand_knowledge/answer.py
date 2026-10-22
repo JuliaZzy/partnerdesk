@@ -1,7 +1,6 @@
-"""Answer one brand question from retrieved passages. This is not an agent.
+"""根据已经检索到的段落回答一个品牌问题。这不是代理。
 
-A later turn is rewritten into a standalone query first. The saved message and
-the answer prompt keep the user's words.
+后一轮会先改写成一条可以单独检索的查询。存下来的消息和回答提示词仍用用户的原话。
 """
 
 from __future__ import annotations
@@ -58,7 +57,7 @@ def _search_query(
         raw = llm.complete_json(
             system=attach(FOLLOWUP, remembered),
             messages=[{"role": "user", "content": (
-                f"=== RECENT CONVERSATION ===\n{recent}\n\n=== LATEST MESSAGE ===\n{text[:4000]}"
+                f"=== 最近对话 ===\n{recent}\n\n=== 最新消息 ===\n{text[:4000]}"
             )}],
             schema=_followup_schema(),
             temperature=0,

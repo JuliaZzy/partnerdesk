@@ -1,9 +1,8 @@
-"""Natural-language questions over this partnership's rows.
+"""用自然语言问这个合作关系的行。
 
-The model picks tables and writes one SELECT. Code checks the statement, runs it
-against views that only contain the current partnership, and returns the rows.
+模型选表并写一条 SELECT。代码检查语句，在只含当前合作关系的视图上执行，然后返回行。
 """
 
-from .text2sql import QueryResult, answer_question, rerun
+from .text2sql import QueryResult, answer_question, run_statement
 
-__all__ = ["QueryResult", "answer_question", "rerun"]
+__all__ = ["QueryResult", "answer_question", "run_statement"]

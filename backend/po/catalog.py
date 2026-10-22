@@ -1,10 +1,7 @@
-"""The product catalog as the agent sees it: an index for resolution and a manifest for
-the prompt.
+"""代理看到的产品目录：一份用于解析的索引，以及放进提示词的清单。
 
-Every visible product is indexed (by id and by lowercased SKU — the id the model echoes
-reliably; it mis-copies UUIDs). Only the first MAX_PRODUCTS_IN_MANIFEST lines go into the
-prompt. Product text is sanitized: a brand-controlled name must not be able to inject a
-signal line into the prompt.
+每个可见产品都建了索引（按 id，以及按小写 SKU——模型能稳定复述这个 id；UUID 它会抄错）。
+提示词里只放前 MAX_PRODUCTS_IN_MANIFEST 行。产品文字会先消毒：品牌控制的名称不能往提示词里注入一行信号。
 """
 
 from __future__ import annotations
@@ -49,26 +46,26 @@ class Catalog:
             name = sanitize(first_non_empty(p.product_name_en, p.product_name_native, p.sku))
             native = f" ({sanitize(p.product_name_native)})" if p.product_name_native and p.product_name_native != p.product_name_en else ""
             attrs = " ".join(x for x in (sanitize(first_non_empty(p.unit_size, p.net_content)), sanitize(p.variant)) if x)
-            pack = f"{p.case_pack}/case" if p.case_pack else "?/case"
-            price = f"${p.case_price:.2f}/case" if p.case_price is not None else "price n/a"
-            moq = f", MOQ {p.moq_units}u" if p.moq_units is not None else ""
-            cat = f", {sanitize(p.category)}" if p.category else ""
+            pack = f"{p.case_pack}/箱" if p.case_pack else "?/箱"
+            price = f"${p.case_price:.2f}/箱" if p.case_price is not None else "无价格"
+            moq = f"，起订量 {p.moq_units} 件" if p.moq_units is not None else ""
+            cat = f"，{sanitize(p.category)}" if p.category else ""
             logi: list[str] = []
             if p.cases_per_layer:
-                logi.append(f"{p.cases_per_layer} case/layer")
+                logi.append(f"{p.cases_per_layer} 箱/层")
                 if p.case_pack:
-                    logi.append(f"{p.cases_per_layer * p.case_pack} unit/layer")
+                    logi.append(f"{p.cases_per_layer * p.case_pack} 件/层")
             if p.layers_per_pallet:
-                logi.append(f"{p.layers_per_pallet} layer/pallet")
+                logi.append(f"{p.layers_per_pallet} 层/托")
             if p.cases_per_pallet:
-                logi.append(f"{p.cases_per_pallet} case/pallet")
+                logi.append(f"{p.cases_per_pallet} 箱/托")
             if p.case_weight is not None:
-                logi.append(f"{p.case_weight:g}kg/case")
+                logi.append(f"{p.case_weight:g} 千克/箱")
             logi_s = f" ▸ {', '.join(logi)}" if logi else ""
             status = f" ▸ {p.product_status}" if p.product_status != "正品" else ""
-            lines.append(f"{sanitize(p.sku) or '(no SKU)'} ▸ {name}{native}{' ▸ ' + attrs if attrs else ''} ▸ {pack}, {price}{moq}{cat}{logi_s}{status}")
+            lines.append(f"{sanitize(p.sku) or '（无 SKU）'} ▸ {name}{native}{' ▸ ' + attrs if attrs else ''} ▸ {pack}，{price}{moq}{cat}{logi_s}{status}")
         if len(self.products) > len(lines):
-            lines.append(f"(+{len(self.products) - len(lines)} more products not listed — they can still be ordered by SKU)")
+            lines.append(f"（另有 {len(self.products) - len(lines)} 个产品未列出——仍可按 SKU 下单）")
         return "\n".join(lines)
 
     def resolver_rows(self) -> list[dict[str, str]]:

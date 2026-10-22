@@ -1,8 +1,7 @@
-"""Brand-material retrieval.
+"""品牌材料检索。
 
-`retrieve` is hybrid search over that brand's chunks, with an optional cross-encoder
-rerank. `evaluate_retrieval` scores a labeled run. `answer` rewrites a follow-up
-into a standalone query, then retrieves and answers. It is not an agent.
+`retrieve` 是这个品牌的块上的混合检索，可选交叉编码器重排。`evaluate_retrieval` 给一次标注过的运行打分。
+`answer` 把追问改写成可以单独检索的查询，然后检索并回答。它不是代理。
 """
 
 from __future__ import annotations

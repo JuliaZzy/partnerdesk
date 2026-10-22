@@ -1,8 +1,7 @@
-"""Callable tools for native function calling (`tools=` / tool_choice=auto).
+"""给原生函数调用用的可调用工具（`tools=` / tool_choice=auto）。
 
-Each native module exposes `run(arguments) -> {ok, data, error}` and a SCHEMA.
-MCP vendor tools are merged at call time from `backend.mcp` so the model fills
-arguments the same way — it never sees API keys.
+每个原生模块提供 `run(arguments) -> {ok, data, error}` 和一份 SCHEMA。
+厂商 MCP 工具在调用时从 `backend.mcp` 合并进来，模型用同样的方式填参数——它永远看不到 API key。
 """
 
 from __future__ import annotations

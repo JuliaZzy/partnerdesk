@@ -172,5 +172,8 @@ def test_chat_files_the_attached_agreement_and_ignores_a_bare_name(db):
     assert table["file_name"] == "agreement.txt" and table["term_start_date"] == "2026-01-01"
     assert table["discount_rules"][0]["tiers"][0]["discount_percent"] == 3
     assert db.active_contract("ps-1").term_start_date == "2026-01-01"
+    saved = db.session(sid)["history"][-1]
+    assert saved["contract_id"] == done["contract_id"]
+    assert saved["contract"]["file_name"] == "agreement.txt"
     told = llm.calls[-1]["messages"][-1]["content"]
-    assert "CONTRACT FILING" in told and "agreement.txt" in told and "2026-01-01" in told
+    assert "合同入库" in told and "agreement.txt" in told and "2026-01-01" in told

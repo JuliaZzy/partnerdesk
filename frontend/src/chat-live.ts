@@ -11,6 +11,7 @@ export type Flight = {
   error: string | null;
   draft: string;
   files: File[];
+  task: "po" | "report" | "contract" | null;
 };
 
 const EMPTY: Flight = {
@@ -21,13 +22,14 @@ const EMPTY: Flight = {
   error: null,
   draft: "",
   files: [],
+  task: null,
 };
 
 const flights = new Map<string, Flight>();
 const dropped = new Set<string>();
 const forgetListeners = new Set<(id: string) => void>();
 let activeId: string | null = null;
-let presence = { activeId, busyIds: [] as string[] };
+let presence: { activeId: string | null; busyIds: string[] } = { activeId, busyIds: [] };
 const flightListeners = new Set<() => void>();
 const presenceListeners = new Set<() => void>();
 

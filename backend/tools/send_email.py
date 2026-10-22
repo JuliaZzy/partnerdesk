@@ -1,17 +1,17 @@
-"""Send an email over SMTP. Side-effect tool — only when the user asked to send.
+"""通过 SMTP 发邮件。有副作用的工具——只有用户要求发送时才用。
 
-Config (env, never shown to the model):
-  SMTP_HOST, SMTP_PORT (587 STARTTLS or 465 SSL), SMTP_USER, SMTP_PASSWORD,
-  SMTP_FROM (defaults to SMTP_USER), SMTP_USE_TLS (default 1; ignored on port 465).
+配置（环境变量，绝不展示给模型）：
+  SMTP_HOST、SMTP_PORT（587 STARTTLS 或 465 SSL）、SMTP_USER、SMTP_PASSWORD、
+  SMTP_FROM（默认等于 SMTP_USER）、SMTP_USE_TLS（默认 1；465 端口上忽略）。
 
-QQ Mail example:
+QQ 邮箱示例：
   SMTP_HOST=smtp.qq.com
   SMTP_PORT=465
   SMTP_USER=you@qq.com
-  SMTP_PASSWORD=<QQ mailbox authorization code, not the login password>
+  SMTP_PASSWORD=<QQ 邮箱授权码，不是登录密码>
   SMTP_FROM=you@qq.com
 
-If SMTP_HOST is empty, the tool refuses. Set EMAIL_DRY_RUN=1 to accept without sending.
+SMTP_HOST 为空时，工具拒绝发送。设 EMAIL_DRY_RUN=1 则接受请求但不真正发出。
 """
 
 from __future__ import annotations
@@ -30,27 +30,27 @@ SCHEMA: dict[str, Any] = {
     "function": {
         "name": "send_email",
         "description": (
-            "Send an email when the user explicitly asked to email someone. "
-            "Do not invent recipients. Prefer a short clear subject and body."
+            "用户明确要求给某人发邮件时发送。不要编造收件人。"
+            "主题和正文尽量短、清楚。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "to": {
                     "type": "string",
-                    "description": "Recipient email address",
+                    "description": "收件人邮箱",
                 },
                 "subject": {
                     "type": "string",
-                    "description": "Email subject line",
+                    "description": "邮件主题",
                 },
                 "body": {
                     "type": "string",
-                    "description": "Plain-text email body",
+                    "description": "纯文本正文",
                 },
                 "cc": {
                     "type": "string",
-                    "description": "Optional CC address",
+                    "description": "可选的抄送地址",
                 },
             },
             "required": ["to", "subject", "body"],

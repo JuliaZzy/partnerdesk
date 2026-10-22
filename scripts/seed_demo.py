@@ -353,7 +353,7 @@ def _seed_sales(db: Database, link: dict) -> int:
 
 
 def _write_contract(link: dict) -> None:
-    """A short agreement the upload path can split on 第N条. Today's order is container 1."""
+    """The demo agreement. Headings stay splittable on 第N条; today's order is container 1."""
     products = link["products"][:4]
     prices = "\n".join(
         f"{product.sku}  {product.display_name}  每箱 {link['currency']} {float(product.case_price or 0):.2f}，单位为 per case。"
@@ -363,42 +363,21 @@ def _write_contract(link: dict) -> None:
         f"{product.sku} 的最低订货量为 {product.moq_units or (product.case_pack or 12)} units，按每张采购单、该 SKU 计算。"
         for product in products
     )
-    body = f"""经销协议
-
-本协议由甲方 {link['brand_name']} 与乙方 {DIST_NAME}有限公司于 2026-10-01 签订。
-本文件是为上传测试准备的虚构协议。产品名称与条码来自 Open Food Facts，箱价由目录推导。
-
-第一条 期限
-本协议为经销协议（distribution agreement）。
-生效日为 2026-10-01。期限自 2026-10-01 起至 2027-09-30 止。
-期限届满后自动续展一年，除非任何一方在届满前六十日书面通知不再续展。
-
-第二条 区域
-乙方在中华人民共和国大陆地区享有独家经销权。exclusivity 为 exclusive。
-允许销售的国家为 CN。区域表述：中国大陆，独家。
-
-第三条 年度销售目标
-每个协议年度的销售目标为 1200000 {link['currency']}。币种为 {link['currency']}。
-
-第四条 价格
-下列价格为每箱价格，币种 {link['currency']}，单位 per case。
-{prices}
-
-第五条 最低订货量
-下列最低订货量按每张采购单、每个 SKU 分别计算，单位为 units。
-{moqs}
-
-第六条 集装箱折扣
-折扣按本协议年度内已提交采购单的先后顺序计算。每一个已提交的采购单计为一个集装箱。
-计数期间为每个协议年度（each contract year）。计算基础为集装箱顺序（shipping container sequence）。
-本协议年度自 2026-10-01 起算。2026 年 10 月之前的历史订单不计入本协议年度。
-6.1 第一柜
-第 1 个集装箱的折扣为 3%。
-6.2 第二柜
-第 2 个集装箱的折扣为 5%。
-6.3 第三柜及以后
-第 3 个集装箱起，以及其后的每一个集装箱，折扣为 8%。
-"""
+    body = (ROOT / "fixtures" / "demo" / "联采贸易-经销协议.md").read_text(encoding="utf-8")
+    brand = link["brand_name"]
+    body = body.replace("甲方 Activia", f"甲方 {brand}", 1)
+    body = body.replace("甲方（签字）：Activia", f"甲方（签字）：{brand}", 1)
+    body = body.replace("每箱 USD ", f"每箱 {link['currency']} ")
+    body = body.replace("币种为 USD", f"币种为 {link['currency']}")
+    body = body.replace("币种 USD", f"币种 {link['currency']}")
+    body = body.replace("1200000 USD", f"1200000 {link['currency']}")
+    old_prices = "\n".join(
+        line for line in body.splitlines() if line.startswith("DAI-") and "每箱" in line
+    )
+    old_moqs = "\n".join(
+        line for line in body.splitlines() if "最低订货量为" in line
+    )
+    body = body.replace(old_prices, prices).replace(old_moqs, moqs)
     CONTRACT_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONTRACT_PATH.write_text(body, encoding="utf-8")
 

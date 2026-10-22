@@ -1,15 +1,12 @@
-"""The PO agent's deterministic "code check" gate.
+"""采购单代理的确定性「代码检查」闸门。
 
-The LLM only extracts the conversation into slots (a product REFERENCE + cases per line);
-THIS resolves references to catalog products and decides whether the order is enough to
-build a valid, rule-compliant PO — in code, not by the model. It:
-  1. resolves each line reference against the catalog (search + disambiguation: an exact
-     SKU, one fuzzy match, several matches → ask, or none → ask),
-  2. prices each line and enforces MOQ (units → cases),
-  3. runs the same commercial-rules engine the submit path relies on, so a passing check
-     means submit won't be rejected.
+模型只把对话抽进槽位（每一行是产品说法加箱数）；这里把说法解析到目录产品，并决定这张订单是否足够
+做成一张有效、符合规则的采购单——由代码决定，不是模型。它：
+  1. 把每一行的说法对上目录（搜索加消歧：精确 SKU、一个模糊匹配、多个匹配就问、没有就问），
+  2. 给每一行计价并执行起订量（件换算成箱），
+  3. 跑提交路径依赖的同一套商业规则，所以检查通过就意味着提交不会被拒。
 
-`ready` is the only thing standing between an LLM turn and a real purchase order.
+`ready` 是模型一轮和一张真采购单之间唯一的那道门。
 """
 
 from __future__ import annotations
@@ -227,24 +224,24 @@ def _apply_llm_resolution(lines: list[ResolvedLine], catalog: Catalog, resolve: 
 def _collect_gaps(lines: list[ResolvedLine], subtotal: float, slots: PoSlots) -> list[Gap]:
     gaps: list[Gap] = []
     if not lines:
-        gaps.append(Gap("no_items", "What would you like to order? Tell me the products and how many cases of each."))
+        gaps.append(Gap("no_items", "想订什么？告诉我产品和各要多少箱。"))
     for l in lines:
         if l.cases > MAX_CASES_PER_LINE:
-            gaps.append(Gap("implausible_quantity", f"{l.product_name}: {l.cases:,} cases looks like a mistake — please confirm the quantity you meant.", l.reference))
+            gaps.append(Gap("implausible_quantity", f"{l.product_name}：{l.cases:,} 箱看起来像是填错了——请确认你要的数量。", l.reference))
             continue  # one question per line; quantity first
         if l.ambiguous:
-            names = ", ".join(c["name"] for c in l.candidates)
-            gaps.append(Gap("ambiguous_product", f'Several products match "{l.reference}" — which did you mean: {names}?', l.reference, l.candidates))
+            names = "、".join(c["name"] for c in l.candidates)
+            gaps.append(Gap("ambiguous_product", f"「{l.reference}」对上了好几款——你指的是哪一款：{names}？", l.reference, l.candidates))
         elif l.unresolved:
-            gaps.append(Gap("unresolved_reference", f'I couldn\'t find "{l.reference}" in your catalog — which product did you mean?', l.reference))
+            gaps.append(Gap("unresolved_reference", f"目录里找不到「{l.reference}」——你指的是哪一款？", l.reference))
         elif l.below_moq:
-            gaps.append(Gap("below_moq", f"{l.product_name} needs at least {l.moq_cases} cases (minimum order quantity) — you have {l.cases}.", l.reference))
+            gaps.append(Gap("below_moq", f"{l.product_name} 至少要 {l.moq_cases} 箱（起订量）——你现在是 {l.cases} 箱。", l.reference))
         elif l.missing_price:
-            gaps.append(Gap("missing_price", f"{l.product_name} has no price on file — please confirm the case price or pick another product.", l.reference))
+            gaps.append(Gap("missing_price", f"{l.product_name} 没有价格——请确认箱价，或换一款。", l.reference))
     if lines and all(l.resolved for l in lines) and subtotal <= 0:
-        gaps.append(Gap("zero_total", "The order total is $0 — please add quantities or products with a price."))
+        gaps.append(Gap("zero_total", "订单总额是 0——请加上有价格的数量或产品。"))
     if slots.discount is None:
-        gaps.append(Gap("discount_unaddressed", "Is this order at list price, or is there an agreed discount to put on it?"))
+        gaps.append(Gap("discount_unaddressed", "这张单按目录价，还是有约定的折扣要写上？"))
     return gaps
 
 

@@ -1,15 +1,14 @@
-"""Brand RAG: chunk stored pages, embed, hybrid-search Milvus, optionally rerank, then measure.
+"""品牌资料检索：把已存的页面切块、嵌入、在 Milvus 里混合检索，可选重排，然后度量。
 
-Dense search is the embedding endpoint (`EMBEDDING_*`) plus a cosine index in Milvus.
-Keyword search is BM25 over the same stored chunk text — the text already sits on the
-vector row, so this does not add Elasticsearch. The two ranked lists are fused by
-reciprocal rank; cosine and BM25 are not on one scale. Reranking, when `RERANK_BASE_URL`
-is set, is the cross-encoder `BAAI/bge-reranker-v2-m3`: the question and one passage are
-scored together. `evaluate_retrieval` scores a labeled run with `ranx` (MRR, nDCG,
-Precision, Recall, MAP, hit rate). The chat model does none of this.
+稠密检索是嵌入端点（`EMBEDDING_*`）加上 Milvus 里的余弦索引。
+关键词检索是同一段已存块文本上的 BM25——文本已经在向量行上，所以这里不加 Elasticsearch。
+两份排序用倒数排名融合；余弦和 BM25 不在同一个尺度上。设了 `RERANK_BASE_URL` 时，
+重排用交叉编码器 `BAAI/bge-reranker-v2-m3`：问题和一段一起打分。
+`evaluate_retrieval` 用 `ranx` 给一次标注过的运行打分（MRR、nDCG、Precision、Recall、MAP、命中率）。
+聊天模型不做这些。
 
-Indexing is explicit (`index_brand` / `python -m backend.brand_knowledge.rag <brand_id>`).
-A question does not rebuild the index.
+建索引是显式的（`index_brand` / `python -m backend.brand_knowledge.rag <brand_id>`）。
+一个问题不会重建索引。
 """
 
 from __future__ import annotations
@@ -62,8 +61,8 @@ def evidence_prompt(question: str, hits: list[dict[str, Any]]) -> str:
             blocks.append(f"[{n}] {label}\n{hit.get('text') or ''}")
         context = "\n\n".join(blocks)
     else:
-        context = "(no passages retrieved)"
-    return f"Passages:\n{context}\n\nQuestion: {question}"
+        context = "（没有检索到段落）"
+    return f"段落：\n{context}\n\n问题：{question}"
 
 
 def _brand(brand_id: str) -> str:

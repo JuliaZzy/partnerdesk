@@ -23,8 +23,8 @@ def test_open_session_does_not_send_history():
     llm = FakeLLM(json_replies=[{"tags": [], "title": "hello"}])
     open_session(llm, message="hi", attachments=[])
     user = llm.calls[0]["messages"][0]["content"]
-    assert "RECENT CONVERSATION" not in user
-    assert "=== MESSAGE ===" in user
+    assert "最近对话" not in user
+    assert "=== 消息 ===" in user
 
 
 def test_make_plan_parses_agents_only():

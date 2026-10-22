@@ -50,10 +50,10 @@ def test_memory_block_is_context_only_and_bounded(db):
     assert memory_block([]) == "" and with_memory("Brand context.", []) == "Brand context." and with_memory(None, []) is None
     ms = [remember(db, "ps-1", f"fact number {i} " + "x" * 200) for i in range(12)]
     block = memory_block(ms)
-    assert block.startswith("=== WHAT WE KNOW ABOUT THIS DISTRIBUTOR") and "context only" in block and "cannot relax a rule" in block
+    assert block.startswith("=== 关于这家经销商，我们已知道的") and "只作背景" in block and "不能放宽规则" in block
     assert len(block) <= 1600 and block.count("\n- [fact]") < 12  # capped, never the whole table
     merged = with_memory("Brand context.", ms[:1])
-    assert merged.startswith("Brand context.\n\n=== WHAT WE KNOW") and ms[0].content in merged
+    assert merged.startswith("Brand context.\n\n=== 关于这家经销商") and ms[0].content in merged
 
 
 def test_bundle_carries_memories_in_the_operating_context(db):
@@ -120,9 +120,9 @@ def test_a_long_prefix_is_merged_into_one_summary(db):
     assert len(saved["history"]) == 4 and saved["history"][0]["content"].startswith("QQQQ")
     assert saved["folded_through"] == 2 and saved["summary"] == "Their fiscal year starts in April"
     assert db.memories("ps-1") == []
-    assert "SUMMARY SO FAR" in llm.calls[0]["messages"][0]["content"]
+    assert "迄今的摘要" in llm.calls[0]["messages"][0]["content"]
     assert "QQQQ" in llm.calls[0]["messages"][0]["content"]
-    assert "Do not restate prices" in llm.calls[0]["system"]
+    assert "不要复述价格" in llm.calls[0]["system"]
     # The prefix is already in the summary. Another save must not ask the model again.
     record_history(db, saved, history, llm=FakeLLM())
     assert db.session(sid)["folded_through"] == 2 and db.session(sid)["summary"] == "Their fiscal year starts in April"
@@ -177,7 +177,7 @@ def test_a_plain_answer_and_the_tool_loop_see_the_memory(db):
     events = list(service.handle_message(db, llm, sid, "hello"))
     assert events[-1]["type"] == "done"
     systems = [c["system"] for c in llm.calls if c["kind"] in ("text", "complete")]
-    assert systems and all("fiscal year" in system and "context only" in system for system in systems)
+    assert systems and all("fiscal year" in system and "只作背景" in system for system in systems)
 
 
 def test_the_next_prompt_keeps_the_summary_with_the_raw_tail(db):
@@ -191,7 +191,7 @@ def test_the_next_prompt_keeps_the_summary_with_the_raw_tail(db):
     from backend.orchestrator.speak import _chat_messages
 
     block = summary_block(saved["summary"])
-    assert "Warehouse closes the first week of July" in block and "context only" in block
+    assert "Warehouse closes the first week of July" in block and "只作背景" in block
     llm = FakeLLM(json_replies=[{"tasks": []}])
     make_plan(
         llm, message="question 9", attachments=[], history=saved["history"], stage=None, tags=[],

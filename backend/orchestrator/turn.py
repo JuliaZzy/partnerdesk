@@ -1,12 +1,15 @@
-"""Chat entry: open the session, ask for a plan, then call one agent by name.
+"""聊天入口：新会话的标题在一旁取，计划不等它。然后按名字调用一个代理。
 
-Tools and MCP stay here. They are not agents: the model picks them with `tools=`.
-Brand retrieval is not an agent either; the plan name `brand` calls that function.
+工具和 MCP 留在这里。它们不是代理：模型用 `tools=` 自己挑选。
+品牌检索也不是代理；计划里的名字 `brand` 调用的是那个函数。
+会话取名也不是代理：它只写聊天列表上的标题和标签。
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
@@ -21,7 +24,6 @@ from ..memory import attach, prompt_context, prompt_turns, standing_block, summa
 from ..po.agent import run as run_po
 from ..po.turn import load_bundle
 from ..report.agent import run as run_report
-from ..report.turn import asks_only_for_charts, has_report
 from ..text2sql.agent import run as run_data
 from ..tools import all_schemas, all_tools
 from .prompt import OPEN, PLAN, REACT
@@ -29,6 +31,7 @@ from .speak import answer_directly, one_shot
 from .status import begin_activity, status
 
 _HANDOFF = {"po": "采购单", "contract": "合同", "report": "报表", "data": "查数", "brand": "品牌资料"}
+log = logging.getLogger(__name__)
 
 MAX_IMAGES = 3
 MAX_TOOL_ROUNDS = 4
@@ -91,8 +94,8 @@ def plan_schema() -> dict[str, Any]:
 def open_session(llm: LLM, *, message: str, attachments: list[str]) -> SessionOpen:
     """First-turn only: tags + title. No history — the session does not have one yet."""
     user = (
-        f"=== ATTACHMENTS ===\n{', '.join(attachments) or '(none)'}\n\n"
-        f"=== MESSAGE ===\n{message[:4000] or '(no text)'}"
+        f"=== 附件 ===\n{', '.join(attachments) or '（无）'}\n\n"
+        f"=== 消息 ===\n{message[:4000] or '（无文字）'}"
     )
     raw = llm.complete_json(
         system=OPEN, messages=[{"role": "user", "content": user}],
@@ -104,6 +107,86 @@ def open_session(llm: LLM, *, message: str, attachments: list[str]) -> SessionOp
     return SessionOpen(title=title[:80], tags=tags)
 
 
+def _scripted_json(llm: LLM) -> bool:
+    """A test double hands out JSON replies in call order.
+
+    Naming on the side would take the reply the plan is about to consume.
+    """
+    return hasattr(llm, "json_replies")
+
+
+class _ChatTitle:
+    """Name a new chat beside the plan. The plan does not wait.
+
+    The worker does not copy this turn's activity context, so the title JSON
+    stays off the step list the distributor watches.
+    """
+
+    def __init__(self, db: Database, llm: LLM, session_id: str, message: str, attachments: list[str]) -> None:
+        self._db = db
+        self._llm = llm
+        self._session_id = session_id
+        self._message = message
+        self._attachments = attachments
+        self._event: dict[str, Any] | None = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="chat-title", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            opened = open_session(self._llm, message=self._message, attachments=self._attachments)
+            self._db.update_session(self._session_id, title=opened.title, tags=opened.tags)
+            self._event = {"type": "session", "title": opened.title, "tags": opened.tags}
+        except Exception:
+            log.exception("chat title failed")
+        finally:
+            self._ready.set()
+
+    def poll(self) -> dict[str, Any] | None:
+        if not self._ready.is_set():
+            return None
+        return self._take()
+
+    def wait(self) -> dict[str, Any] | None:
+        self._thread.join()
+        return self._take()
+
+    def join(self) -> None:
+        self._thread.join()
+
+    def _take(self) -> dict[str, Any] | None:
+        event, self._event = self._event, None
+        return event
+
+
+def _beside(title: _ChatTitle | None, source: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """Yield the title event once it is ready, without holding the plan back.
+
+    Join before returning so the next turn on this chat sees the stored title.
+    The session lock is still held here.
+    """
+    sent = False
+    try:
+        for item in source:
+            if title is not None and not sent:
+                event = title.poll()
+                if event is not None:
+                    sent = True
+                    yield event
+            yield item
+        if title is not None and not sent:
+            event = title.wait()
+            if event is not None:
+                yield event
+                sent = True
+    finally:
+        if title is not None:
+            title.join()
+
+
 def make_plan(
     llm: LLM, *, message: str, attachments: list[str], history: list[dict[str, str]],
     stage: str | None, tags: list[str], memory: str | None = None, folded_through: int = 0,
@@ -112,11 +195,11 @@ def make_plan(
         f"{m['role']}: {str(m['content'])[:500]}" for m in prompt_turns(history, folded_through)
     )
     user = (
-        f"=== SESSION TAGS ===\n{', '.join(tags) or '(none)'}\n"
-        f"=== STAGE ===\n{stage or '(none)'}\n\n"
-        f"=== RECENT CONVERSATION ===\n{recent or '(none)'}\n\n"
-        f"=== ATTACHMENTS ===\n{', '.join(attachments) or '(none)'}\n\n"
-        f"=== MESSAGE ===\n{message[:4000] or '(no text)'}"
+        f"=== 会话标签 ===\n{', '.join(tags) or '（无）'}\n"
+        f"=== 阶段 ===\n{stage or '（无）'}\n\n"
+        f"=== 最近对话 ===\n{recent or '（无）'}\n\n"
+        f"=== 附件 ===\n{', '.join(attachments) or '（无）'}\n\n"
+        f"=== 消息 ===\n{message[:4000] or '（无文字）'}"
     )
     raw = llm.complete_json(
         system=attach(PLAN, memory or ""), messages=[{"role": "user", "content": user}],
@@ -240,91 +323,84 @@ def handle_message(
     names = [*(attachments or []), *[n for n, _ in documents], *[f"image-{i + 1}.jpg" for i in range(len(images))]]
     history = session.get("history") or []
 
+    # The title is for the chat list. It is not a step the distributor watches.
+    # A live model names the chat beside the plan. This turn's plan therefore
+    # sees the tags already stored, which on a new chat are still empty.
+    title_job: _ChatTitle | None = None
     if not session.get("title"):
-        # The title is for the chat list. It is not a step the distributor watches.
-        opened = open_session(llm, message=text, attachments=names)
-        db.update_session(session_id, title=opened.title, tags=opened.tags)
-        session = db.session(session_id) or session
-        yield {"type": "session", "title": opened.title, "tags": opened.tags}
+        if _scripted_json(llm):
+            opened = open_session(llm, message=text, attachments=names)
+            db.update_session(session_id, title=opened.title, tags=opened.tags)
+            session = db.session(session_id) or session
+            yield {"type": "session", "title": opened.title, "tags": opened.tags}
+        else:
+            title_job = _ChatTitle(db, llm, session_id, text, names)
+            title_job.start()
 
-    tags = list(session.get("tags") or [])
-    folded = int(session.get("folded_through") or 0)
-    remembered = prompt_context(standing_block(db, bundle.partnership.id), summary_block(session.get("summary")))
-    partnership_id = bundle.partnership.id
-    brand_id = bundle.partnership.brand_id
-    distributor_id = bundle.partnership.distributor_id
-    # A chart on the draft already written is not a new report. Deciding that here
-    # keeps the planner from scheduling split, query, news, and a rewrite.
-    if asks_only_for_charts(text) and has_report(history):
-        yield status("plan", "Planning", "只补图表", state="done")
-        yield {"type": "plan", "tasks": [{"id": "charts", "kind": "agent", "name": "report", "depends_on": []}]}
-        yield from run_report(
-            db, llm, session, text,
-            partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
-            hint=None, charts_only=True,
+    def turn() -> Iterator[dict[str, Any]]:
+        tags = list(session.get("tags") or [])
+        folded = int(session.get("folded_through") or 0)
+        remembered = prompt_context(standing_block(db, bundle.partnership.id), summary_block(session.get("summary")))
+        partnership_id = bundle.partnership.id
+        brand_id = bundle.partnership.brand_id
+        distributor_id = bundle.partnership.distributor_id
+        yield status("plan", "Planning", "LLM is planning the next step", state="running")
+        tasks = make_plan(
+            llm, message=text, attachments=names, history=history,
+            stage=session.get("stage"), tags=tags, memory=remembered, folded_through=folded,
         )
-        return
+        yield {
+            "type": "plan",
+            "tasks": [{"id": t.id, "kind": t.kind, "name": t.name, "depends_on": t.depends_on} for t in tasks],
+        }
+        chosen = next((name for name in _HANDOFF if name in _agent_names(tasks) or (
+            name == "po" and session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm")
+        )), None)
 
-    yield status("plan", "Planning", "LLM is planning the next step", state="running")
-    tasks = make_plan(
-        llm, message=text, attachments=names, history=history,
-        stage=session.get("stage"), tags=tags, memory=remembered, folded_through=folded,
-    )
-    yield {
-        "type": "plan",
-        "tasks": [{"id": t.id, "kind": t.kind, "name": t.name, "depends_on": t.depends_on} for t in tasks],
-    }
-    chosen = next((name for name in _HANDOFF if name in _agent_names(tasks) or (
-        name == "po" and session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm")
-    )), None)
+        agents = _agent_names(tasks)
+        if session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm"):
+            agents = set(agents) | {"po"}
+            chosen = chosen or "po"
+        yield status("plan", "Planning", _HANDOFF.get(chosen or "", "直接回答"), state="done")
 
-    agents = _agent_names(tasks)
-    if session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm"):
-        agents = set(agents) | {"po"}
-        chosen = chosen or "po"
-    yield status("plan", "Planning", _HANDOFF.get(chosen or "", "直接回答"), state="done")
+        if "po" in agents:
+            yield from run_po(db, llm, session, text, images, bundle)
+            return
+        if "contract" in agents:
+            yield from run_contract(db, llm, session, text, documents)
+            return
+        if "report" in agents:
+            # The draft queries for itself. A co-scheduled data task is only a hint.
+            yield from run_report(
+                db, llm, session, text,
+                partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
+                hint=_task_text(tasks, "data") or _task_text(tasks, "report"),
+            )
+            return
+        if "data" in agents:
+            yield from run_data(
+                db, llm, session, text, _task_text(tasks, "data") or text,
+                partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
+            )
+            return
+        if "brand" in agents:
+            yield from answer_in_chat(db, llm, session, text, history, brand_id)
+            return
 
-    if "po" in agents:
-        yield from run_po(db, llm, session, text, images, bundle)
-        return
-    if "contract" in agents:
-        yield from run_contract(db, llm, session, text, documents)
-        return
-    if "report" in agents:
-        # The draft queries for itself. A co-scheduled data task is only a hint.
-        # charts_only is the planner's backup when the message did not match the chart check above.
-        charts_only = has_report(history) and any(
-            task.name == "report" and task.input.get("charts_only") is True for task in tasks
+        yield status("tools", "工具", "正在看要不要查新闻、汇率或翻译", state="running")
+        tool_reply = run_tool_calls(
+            llm, text=text, history=history, extra={"last_report": session.get("last_report")},
+            memory=remembered, folded_through=folded,
         )
-        yield from run_report(
-            db, llm, session, text,
-            partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
-            hint=_task_text(tasks, "data") or _task_text(tasks, "report"),
-            charts_only=charts_only,
-        )
-        return
-    if "data" in agents:
-        yield from run_data(
-            db, llm, session, text, _task_text(tasks, "data") or text,
-            partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
-        )
-        return
-    if "brand" in agents:
-        yield from answer_in_chat(db, llm, session, text, history, brand_id)
-        return
+        if tool_reply is not None:
+            yield status("tools", "工具", "工具已返回", state="done")
+            yield {"type": "tools", "used": True}
+            yield from one_shot(db, session, tool_reply, llm=llm)
+            return
+        yield status("tools", "工具", "这一轮没有调用工具", state="done")
+        yield status("answer", "回答", "正在直接回复", state="running")
+        done = yield from answer_directly(db, llm, session, text)
+        yield status("answer", "回答", "回复已写完", state="done")
+        yield done
 
-    yield status("tools", "工具", "正在看要不要查新闻、汇率或翻译", state="running")
-    tool_reply = run_tool_calls(
-        llm, text=text, history=history, extra={"last_report": session.get("last_report")},
-        memory=remembered, folded_through=folded,
-    )
-    if tool_reply is not None:
-        yield status("tools", "工具", "工具已返回", state="done")
-        yield {"type": "tools", "used": True}
-        yield from one_shot(db, session, tool_reply, llm=llm)
-        return
-    yield status("tools", "工具", "这一轮没有调用工具", state="done")
-    yield status("answer", "回答", "正在直接回复", state="running")
-    done = yield from answer_directly(db, llm, session, text)
-    yield status("answer", "回答", "回复已写完", state="done")
-    yield done
+    yield from _beside(title_job, turn())

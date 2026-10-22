@@ -1,12 +1,10 @@
-"""Turn one natural-language question into rows from this partnership's tables.
+"""把一个自然语言问题变成这个合作关系表里的行。
 
-The model picks tables, then writes one SELECT. Code parses that statement, runs it
-against views that already exclude every other partnership, and returns the rows.
-A later chat turn may quote those rows. It does not recompute them.
+模型选表，然后写一条 SELECT。代码解析这条语句，在已经排除其他合作关系的视图上执行，并返回行。
+之后的聊天轮次可以引用这些行。它不重算它们。
 
-Failed and corrected attempts are stored on `text2sql_logs` for `analyze_badcase`.
-Reviewed corrections are not fed back into the prompt on their own — a wrong fix
-would teach the next question the same mistake.
+失败和改对的尝试记在 `text2sql_logs` 上，供 `analyze_badcase` 看。
+审过的改正不会自己喂回提示词——一次改错会让下一个问题学会同一个错误。
 """
 
 from __future__ import annotations
@@ -98,9 +96,9 @@ def _rows_for_prompt(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _pick_tables(llm: LLM, question: str) -> list[str]:
     raw = llm.complete_json(
-        system=f"{PICK}\n\n=== TABLES ===\n{catalog_text()}",
+        system=f"{PICK}\n\n=== 表 ===\n{catalog_text()}",
         messages=[{"role": "user", "content": question}],
-        schema=pick_schema(), temperature=0, max_tokens=300,
+        schema=pick_schema(), temperature=0.2, max_tokens=1000,
     )
     names = raw.get("tables") if isinstance(raw, dict) else None
     if not isinstance(names, list):
@@ -117,7 +115,7 @@ def _question_text(question: str, history: list[dict[str, Any]] | None, folded_t
     )
     if not recent:
         return question
-    return f"=== RECENT CONVERSATION ===\n{recent}\n\n=== QUESTION ===\n{question}"
+    return f"=== 最近对话 ===\n{recent}\n\n=== 问题 ===\n{question}"
 
 
 def _write_sql(
@@ -126,10 +124,10 @@ def _write_sql(
 ) -> str:
     asked = _question_text(question, history, folded_through)
     if previous:
-        system = attach(f"{REPAIR}\n\n=== SCHEMA ===\n{schema_text}", context)
-        user = f"Question:\n{asked}\n\nPrevious SQL:\n{previous}\n\nError:\n{(error or '')[:500]}"
+        system = attach(f"{REPAIR}\n\n=== 结构 ===\n{schema_text}", context)
+        user = f"问题：\n{asked}\n\n上一条 SQL：\n{previous}\n\n错误：\n{(error or '')[:500]}"
     else:
-        system = attach(f"{SQL}\n\n=== SCHEMA ===\n{schema_text}", context)
+        system = attach(f"{SQL}\n\n=== 结构 ===\n{schema_text}", context)
         user = asked
     raw = llm.complete_json(
         system=system, messages=[{"role": "user", "content": user}],
@@ -252,6 +250,30 @@ def _attempt(
     )
 
 
+def run_statement(
+    db: Database, sql: str, *, question: str,
+    partnership_id: str, brand_id: str, distributor_id: str, session_id: str | None = None,
+    tables: list[str] | None = None,
+) -> QueryResult:
+    """Run one statement the reflection step already wrote. No second model call."""
+    started = time.perf_counter()
+    params = _scope_params(partnership_id, brand_id, distributor_id)
+    ok, error, clean, raw_rows = _run(db, sql, params)
+    rows = _rows_for_prompt(raw_rows) if ok and raw_rows is not None else []
+    error_type = None
+    if not ok:
+        error_type = "validation" if _is_validation_error(error) else "execution"
+    elapsed = int((time.perf_counter() - started) * 1000)
+    log_id = _log(
+        db, partnership_id=partnership_id, session_id=session_id, question=question, tables=list(tables or []),
+        sql=clean or sql, ok=ok, row_count=len(rows), elapsed=elapsed, error_type=error_type, error=error,
+    )
+    return QueryResult(
+        ok=ok, sql=clean or sql, rows=rows, row_count=len(rows), error=error if not ok else None,
+        error_type=error_type if not ok else None, tables=list(tables or []), log_id=log_id,
+    )
+
+
 def _reflect(llm: LLM, question: str, result: QueryResult) -> tuple[bool, str]:
     raw = llm.complete_json(
         system=REFLECT,
@@ -285,17 +307,6 @@ def _is_validation_error(error: str | None) -> bool:
         or error.startswith("table is not allowed")
         or error.startswith("function is not allowed")
     )
-
-
-def rerun(
-    db: Database, sql: str, *, partnership_id: str, brand_id: str, distributor_id: str,
-) -> list[dict[str, Any]]:
-    """Run a statement this partnership already executed. No model call."""
-    ok, _message, clean = validate(sql)
-    if not ok:
-        return []
-    rows = db.run_scoped_read(clean, scope_views(), _scope_params(partnership_id, brand_id, distributor_id))
-    return _rows_for_prompt(rows)
 
 
 def _scope_params(partnership_id: str, brand_id: str, distributor_id: str) -> dict[str, str]:

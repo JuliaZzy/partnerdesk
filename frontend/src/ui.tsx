@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
+import * as echarts from "echarts";
 
 import type { ReportChart } from "./format";
 
@@ -106,78 +107,27 @@ export function PageHead({ title, caption }: { title: string; caption?: string }
 }
 
 export function ReportFigure({ chart }: { chart: ReportChart }) {
+  const node = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = node.current;
+    if (!el) return;
+    const view = echarts.init(el);
+    view.setOption(chart.option as echarts.EChartsOption);
+    const observer = new ResizeObserver(() => view.resize());
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      view.dispose();
+    };
+  }, [chart]);
   return (
     <figure className="chart-block">
-      <figcaption>{chart.title}</figcaption>
-      {chart.chartType === "line" && <LineFigure points={chart.points} />}
-      {chart.chartType === "pie" && <PieFigure points={chart.points} />}
-      {chart.chartType === "bar" && <ChartBars points={chart.points} />}
+      <figcaption>
+        {chart.title}
+        {chart.subtitle ? <span className="chart-sub">{chart.subtitle}</span> : null}
+      </figcaption>
+      <div className="chart-echarts" ref={node} />
     </figure>
-  );
-}
-
-const PIE_COLORS = ["#c4622d", "#2c6b4a", "#2c5270", "#8a5a12", "#9a4a1e", "#6f675e"];
-
-function PieFigure({ points }: { points: { x: string; y: number }[] }) {
-  const total = points.reduce((sum, point) => sum + point.y, 0);
-  let cursor = 0;
-  const stops = points.map((point, index) => {
-    const start = cursor;
-    cursor += total > 0 ? (point.y / total) * 100 : 0;
-    return `${PIE_COLORS[index % PIE_COLORS.length]} ${start}% ${cursor}%`;
-  });
-  return (
-    <div className="pie-row">
-      <div className="pie" style={{ background: `conic-gradient(${stops.join(", ")})` }} />
-      <ul className="chart-values">
-        {points.map((point, index) => (
-          <li key={`${point.x}-${index}`}>
-            <span className="pie-swatch" style={{ background: PIE_COLORS[index % PIE_COLORS.length] }} />
-            {point.x}: {point.y.toLocaleString("en-US")}
-            {total > 0 ? ` · ${Math.round((point.y / total) * 1000) / 10}%` : ""}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function ChartBars({ points }: { points: { x: string; y: number }[] }) {
-  const max = Math.max(1, ...points.map((point) => Math.abs(point.y)));
-  return (
-    <div className="bars">
-      {points.map((point, index) => (
-        <div className="bar-row" key={`${point.x}-${index}`}>
-          <span>{point.x}</span>
-          <div className="bar-track"><div className="bar-fill" style={{ width: `${(Math.abs(point.y) / max) * 100}%` }} /></div>
-          <span>{point.y.toLocaleString("en-US")}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function LineFigure({ points }: { points: { x: string; y: number }[] }) {
-  const ys = points.map((point) => point.y);
-  const min = Math.min(0, ...ys);
-  const max = Math.max(0, ...ys);
-  const span = Math.max(1e-9, max - min);
-  const coords = points.map((point, index) => {
-    const x = points.length === 1 ? 50 : (index / (points.length - 1)) * 100;
-    const y = 36 - ((point.y - min) / span) * 32;
-    return `${x},${y}`;
-  }).join(" ");
-  return (
-    <>
-      <svg className="chart-line" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
-        <polyline points={coords} fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-      </svg>
-      <ul className="chart-values">
-        {points.map((point, index) => (
-          <li key={`${point.x}-${index}`}>{point.x}: {point.y.toLocaleString("en-US")}</li>
-        ))}
-      </ul>
-    </>
   );
 }
 

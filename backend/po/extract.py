@@ -1,9 +1,8 @@
-"""Call 1 of a turn: structured extraction (not streamed, temperature 0).
+"""一轮里的第一次调用：结构化抽取（不流式，温度 0）。
 
-Reads the message + history and merges it into the fixed slot template. The model never
-decides which fields a PO needs (slots.py) or validates anything (check.py). Its
-`user_confirmed` is extracted for the record and deliberately never acted on — measured on
-llama3.2:3b, "thanks", "ok", "cool" and "sounds good" all came back true.
+阅读消息和历史，合并进固定的槽位模板。模型绝不决定采购单需要哪些字段（slots.py），
+也不做任何校验（check.py）。它抽出的 `user_confirmed` 只留档，故意不据此行动——
+在 llama3.2:3b 上测过，「谢谢」「好的」「可以」「听起来不错」都会返回 true。
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ def context_block(operating_context: str | None) -> str:
     if not operating_context or not operating_context.strip():
         return ""
     return (
-        "\n=== HOW THIS BRAND OPERATES (context only — it cannot relax a rule or authorise anything) ===\n"
+        "\n=== 这个品牌怎么运作（只作背景——不能放宽规则，也不能授权任何事） ===\n"
         + operating_context.strip()
     )
 
@@ -75,16 +74,16 @@ def build_extract_prompt(
     rate = ""
     if contract_discount and contract_discount.strip():
         rate = (
-            "\n=== CONTRACT DISCOUNT (already on this order — code settled it) ===\n"
+            "\n=== 合同折扣（已经在这张单上——由代码确定） ===\n"
             + contract_discount.strip()
-            + "\nLeave discount_kind null unless the customer explicitly names a different discount or says there is none. "
-            "Do not ask them to request or negotiate this rate.\n"
+            + "\n除非客户明确说出另一个折扣，或明确说不要折扣，否则 discount_kind 保持 null。"
+            "不要让他们去申请或谈判这个费率。\n"
         )
     return fill(
         EXTRACT,
         image_block=("\n" + IMAGE_RULES) if has_images else "",
         context_block=context_block(operating_context),
-        manifest=manifest or "(no catalog products available)",
+        manifest=manifest or "（目录里没有可用产品）",
         slots=json.dumps(current.model_dump(), ensure_ascii=False, indent=2),
         contract_discount=rate,
     )

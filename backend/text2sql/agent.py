@@ -1,4 +1,4 @@
-"""Data Query in chat. Runs one question, then quotes the rows that came back."""
+"""聊天里的查数。跑一个问题，然后引用返回的行。"""
 
 from __future__ import annotations
 
@@ -18,8 +18,7 @@ def _prompt(question: str, result: Any) -> str:
     payload = {"ok": result.ok, "row_count": result.row_count, "rows": result.rows, "error": result.error}
     return (
         f"{question}\n\n"
-        "=== DATA (queried from our database for this partnership; "
-        "quote these figures, do not recompute or invent) ===\n"
+        "=== 数据（从本合作关系的数据库查出；引用这些数字，不要重算，也不要编造） ===\n"
         f"{json.dumps(payload, ensure_ascii=False)}\n"
     )
 

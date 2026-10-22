@@ -93,32 +93,131 @@ export function citationSources(raw: unknown): Citation[] | undefined {
 }
 
 export type ReportChart = {
+  id: string;
   title: string;
-  chartType: "bar" | "line" | "pie";
-  points: { x: string; y: number }[];
+  subtitle: string;
+  option: Record<string, unknown>;
 };
 
-/** Charts the report runtime already bound to query rows. Junk specs are dropped. */
+/** Charts whose `echarts_option` can be passed to ECharts. Specs without one are dropped. */
 export function reportCharts(raw: unknown): ReportChart[] | undefined {
   if (!Array.isArray(raw)) return undefined;
-  const charts = raw.flatMap((item): ReportChart[] => {
-    if (!item || typeof item !== "object") return [];
-    const row = item as { title?: unknown; chart_type?: unknown; points?: unknown };
+  const charts: ReportChart[] = [];
+  for (const item of raw) {
+    if (charts.length >= 4) break;
+    if (!item || typeof item !== "object") continue;
+    const row = item as { id?: unknown; title?: unknown; subtitle?: unknown; echarts_option?: unknown };
     const title = String(row.title ?? "").trim();
-    const chartType = row.chart_type === "line" || row.chart_type === "bar" || row.chart_type === "pie"
-      ? row.chart_type
-      : "";
-    if (!title || !chartType || !Array.isArray(row.points)) return [];
-    const points = row.points.flatMap((point) => {
-      if (!point || typeof point !== "object") return [];
-      const cell = point as { x?: unknown; y?: unknown };
-      const x = typeof cell.x === "string" ? cell.x.trim() : "";
-      if (!x || typeof cell.y !== "number" || !Number.isFinite(cell.y)) return [];
-      return [{ x, y: cell.y }];
-    }).slice(0, 12);
-    return points.length ? [{ title, chartType, points }] : [];
-  }).slice(0, 3);
+    const option = row.echarts_option;
+    if (!title || !option || typeof option !== "object" || Array.isArray(option)) continue;
+    const given = String(row.id ?? "").trim();
+    const used = new Set(charts.map((chart) => chart.id));
+    let id = given;
+    if (!id || used.has(id)) {
+      let n = 1;
+      while (used.has(`chart_${String(n).padStart(3, "0")}`)) n += 1;
+      id = `chart_${String(n).padStart(3, "0")}`;
+    }
+    charts.push({ id, title, subtitle: String(row.subtitle ?? "").trim(), option: option as Record<string, unknown> });
+  }
   return charts.length ? charts : undefined;
+}
+
+export type ContractFiling = {
+  contract_id?: string;
+  title?: string | null;
+  file_name?: string | null;
+  contract_type?: string | null;
+  term_start_date?: string | null;
+  term_end_date?: string | null;
+  auto_renewal?: boolean | null;
+  exclusivity_type?: string | null;
+  territory_text?: string | null;
+  discount_rules?: {
+    title?: string | null;
+    section_reference?: string | null;
+    applies_per?: string | null;
+    basis?: string | null;
+    tiers?: { from_container?: number | null; to_container?: number | null; discount_percent?: number | null }[];
+  }[];
+  moqs?: Record<string, unknown>[];
+  territories?: { country_code?: string; kind?: string }[];
+  price_list?: Record<string, unknown>[];
+  derived_rules?: { name?: string; rule_type?: string; severity?: string; rule_config?: Record<string, unknown> }[];
+  skipped?: string[];
+};
+
+/** The filing table stored on a contract turn. Empty objects are dropped. */
+export function contractFiling(raw: unknown): ContractFiling | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const row = raw as ContractFiling;
+  const named = String(row.title || row.file_name || row.contract_id || "").trim();
+  const hasTerms = Array.isArray(row.discount_rules) || Array.isArray(row.moqs) || Array.isArray(row.derived_rules);
+  if (!named && !hasTerms) return undefined;
+  return row;
+}
+
+export type ResultPane =
+  | { id: string; kind: "order"; label: string; pending?: boolean }
+  | { id: string; kind: "report"; label: string; text: string; charts?: ReportChart[]; pending?: boolean }
+  | { id: string; kind: "contract"; label: string; filing: ContractFiling | null; pending?: boolean };
+
+function numbered(name: string, index: number, count: number): string {
+  return count > 1 ? `${name} ${index + 1}` : name;
+}
+
+/** One tab per artifact in this chat. A live task is the last tab of its kind. */
+export function resultPanes(input: {
+  hasOrder: boolean;
+  reports: { id: string; text: string; charts?: ReportChart[] }[];
+  contracts: { id: string; filing: ContractFiling }[];
+  live: { kind: "report" | "contract" | "po"; text: string } | null;
+}): ResultPane[] {
+  const reports = [...input.reports];
+  if (input.live?.kind === "report") reports.push({ id: "report-live", text: input.live.text });
+  const contracts = [...input.contracts];
+  const pendingContract = input.live?.kind === "contract";
+  const pendingOrder = input.live?.kind === "po" && !input.hasOrder;
+  const panes: ResultPane[] = [];
+  if (input.hasOrder || pendingOrder) {
+    panes.push({ id: pendingOrder ? "order-live" : "order", kind: "order", label: "采购单", pending: pendingOrder });
+  }
+  reports.forEach((report, index) => {
+    panes.push({
+      id: report.id,
+      kind: "report",
+      label: numbered("报告", index, reports.length),
+      text: report.text,
+      charts: report.charts,
+      pending: report.id === "report-live" && !report.text,
+    });
+  });
+  contracts.forEach((contract, index) => {
+    panes.push({
+      id: contract.id,
+      kind: "contract",
+      label: numbered("合同", index, contracts.length + (pendingContract ? 1 : 0)),
+      filing: contract.filing,
+    });
+  });
+  if (pendingContract) {
+    panes.push({
+      id: "contract-live",
+      kind: "contract",
+      label: numbered("合同", contracts.length, contracts.length + 1),
+      filing: null,
+      pending: true,
+    });
+  }
+  return panes;
+}
+
+/** The one line a chat bubble shows instead of the artifact itself. */
+export function resultLink(label: string): string {
+  const match = /^(采购单|报告|合同)(?:\s+(\d+))?$/.exec(label);
+  if (!match) return `查看${label}`;
+  const name = match[1] === "采购单" ? "查看采购单" : `查看生成的${match[1]}`;
+  return match[2] ? `${name} ${match[2]}` : name;
 }
 
 /** Titles of public pages consulted while drafting. Empty and non-strings are dropped. */

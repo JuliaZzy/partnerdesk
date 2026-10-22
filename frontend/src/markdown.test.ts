@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseMarkdown } from "./markdown";
+import { parseMarkdown, shapeProse } from "./markdown";
 
 const REPORT = `## 本期情况
 由于数据查询未返回有效结果，本期的订单量和售罄率数据缺失。
@@ -44,6 +44,46 @@ describe("parseMarkdown", () => {
         ],
       },
     ]);
+  });
+
+  it("draws a pipe table and keeps a chart link", () => {
+    expect(parseMarkdown([
+      "| 指标 | 9月 |",
+      "|:---|---:|",
+      "| 销售额 | 3,491.93 |",
+      "",
+      "详见 [销售趋势](chart_001)。",
+    ].join("\n"))).toEqual([
+      {
+        kind: "table",
+        aligns: ["left", "right"],
+        header: [
+          [{ kind: "text", text: "指标" }],
+          [{ kind: "text", text: "9月" }],
+        ],
+        rows: [[
+          [{ kind: "text", text: "销售额" }],
+          [{ kind: "text", text: "3,491.93" }],
+        ]],
+      },
+      {
+        kind: "paragraph",
+        lines: [[
+          { kind: "text", text: "详见 " },
+          { kind: "link", text: "销售趋势", href: "chart_001" },
+          { kind: "text", text: "。" },
+        ]],
+      },
+    ]);
+  });
+
+  it("splits a long report paragraph and leaves the table intact", () => {
+    const shaped = shapeProse("销售额上升。库存偏紧。需要补货。还要看节假日。\n| 指标 | 本月 |\n|---|---|\n| 销售额 | 1 |");
+    expect(shaped).toBe([
+      "销售额上升。库存偏紧。",
+      "需要补货。还要看节假日。",
+      "| 指标 | 本月 |\n|---|---|\n| 销售额 | 1 |",
+    ].join("\n\n"));
   });
 
   it("marks bold and code without treating a bold line as a bullet", () => {

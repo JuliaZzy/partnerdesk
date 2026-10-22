@@ -1,23 +1,20 @@
-"""The fixed PO slot template the agent fills through conversation.
+"""代理在对话里填的固定采购单槽位模板。
 
-The template is KNOWN up front — it mirrors the PO create fields — so the model never
-decides which values a PO needs; it only extracts the user's message into these slots.
-The deterministic code-check (check.py) then decides whether the slots are enough to
-build a valid, rule-compliant PO.
+模板事先就是知道的——它对应创建采购单的字段——所以模型绝不决定采购单需要哪些值；
+它只把用户的消息抽进这些槽位。然后确定性的代码检查（check.py）决定这些槽位是否足够
+做成一张有效、符合规则的采购单。
 
-Which slots gate the conversation vs. which auto-default:
-  - line_items ........ REQUIRED — must resolve to catalog SKUs, be priced, pass MOQ + rules.
-  - discount .......... REQUIRED to ADDRESS — None means "nothing has settled it yet".
-                        The partnership's contract settles it on the first order turn, before
-                        any product is named (turn.py pre-fills the agreed rate, source="contract",
-                        and both the extract and reply models are told). Only without a contract
-                        rate does the agent ask (money-sensitive). Whatever the customer then says
-                        (source="customer") overrides the pre-fill; {"kind": "none"} once
-                        they say the order is at list price.
-  - payment_terms / incoterms / shipping_method / eta_date .... have defaults; they are
-                        shown in the draft table and ratified by the user's Confirm.
-  - notes ............. optional.
-System fields (PO number, currency, ship-to, totals) are never slots — they are derived.
+哪些槽位卡住对话，哪些自动用默认值：
+  - line_items ........ 必需——必须解析到目录 SKU、有价格，并通过起订量和规则。
+  - discount .......... 必须被处理——None 表示「还没有任何东西把它定下来」。
+                        合作关系的合同在第一轮下单、任何产品被点名之前就把它定下
+                        （turn.py 预填约定费率，source="contract"，抽取和回复两个模型都会被告知）。
+                        只有没有合同费率时，代理才去问（这跟钱有关）。客户随后说的
+                        （source="customer"）覆盖预填；他们说这张单按目录价时，用 {"kind": "none"}。
+  - payment_terms / incoterms / shipping_method / eta_date .... 有默认值；
+                        显示在草稿表里，由用户的确认一并认可。
+  - notes ............. 可选。
+系统字段（采购单号、货币、收货地、总额）从来不是槽位——它们是推导出来的。
 """
 
 from __future__ import annotations

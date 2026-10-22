@@ -1,4 +1,4 @@
-"""Chat entry: open a session, plan the turn, then run one specialist or the tool loop."""
+"""聊天入口：打开会话，规划这一轮，然后运行一个专员或工具循环。"""
 
 from .turn import MAX_IMAGES, TOPIC_KEYS, handle_message, make_plan, open_session, run_tool_calls
 

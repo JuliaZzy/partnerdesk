@@ -1,12 +1,11 @@
-"""LLM product resolver — the semantic fallback for the code-check's deterministic search.
+"""代码检查的确定性搜索对不上时，用模型做语义回退。
 
-Token-overlap search catches exact SKUs, shared words and sizes, but it can't bridge
-meaning: an English "essence water" against a Chinese-only 精华水, or "the anti-aging
-serum". When search returns ZERO matches for a reference, ask the model — ONCE per turn,
-batched over all unresolved references — to map each to the SKU(s) it most plausibly
-means. It never invents a SKU: the caller keeps only SKUs that exist in the catalog.
+词面重叠能抓住完全一致的 SKU、共有的词和规格，但跨不过意思：英文 “essence water”
+对上只有中文名的精华水，或 “the anti-aging serum”。某个指称的搜索返回零条时，问一次模型——
+每一轮只问一次，把所有没解析的指称放在一起——让它把每一个映射到最可能的 SKU。
+它绝不编造 SKU：调用方只保留目录里真实存在的。
 
-No synonym lists in the prompt. The model reasons over the full product attributes.
+提示词里没有同义词表。模型根据完整的产品属性来判断。
 """
 
 from __future__ import annotations
@@ -23,21 +22,21 @@ def build_resolver_prompt(references: list[str], products: list[dict[str, str]])
     )
     refs = "\n".join(f"{i + 1}. {r}" for i, r in enumerate(references))
     shape = ", ".join(f'{json.dumps(r, ensure_ascii=False)}: ["SKU", ...]' for r in references)
-    return f"""You match a distributor's informal product references to catalog SKUs. Reason over ALL attributes (English name, native name, size, variant, category) and across languages — an English phrase can mean a Chinese-only product and vice versa. Consider size ("100ml") and variant ("single"/"单支" vs "double"/"双支").
+    return f"""你把经销商对产品的非正式说法对应到目录 SKU。综合全部属性来判断（英文名、本地名、规格、变体、品类），并且跨语言——一句英语可以指一款只有中文名的产品，反过来也一样。要考虑规格（“100ml”）和变体（“single”/“单支” 相对 “double”/“双支”）。
 
-=== CATALOG (SKU | name · native · size · variant · category) ===
+=== 目录（SKU | 名称 · 本地名 · 规格 · 变体 · 品类） ===
 {catalog}
 
-=== REFERENCES TO RESOLVE ===
+=== 待解析的说法 ===
 {refs}
 
-For EACH reference, return the SKU(s) it most plausibly means:
-- exactly one clear match → one SKU
-- a few plausible matches (e.g. size/variant not specified) → list them, best first
-- nothing in the catalog fits → empty array
-NEVER invent a SKU — only use SKUs from the catalog above. Do not force a match.
+对每一个说法，返回它最可能指的 SKU：
+- 恰好一个明确匹配 → 一个 SKU
+- 几个都说得通（例如没说规格或变体） → 列出来，最好的放前面
+- 目录里没有合适的 → 空数组
+绝不要编造 SKU——只用上面目录里的。不要硬配。
 
-Respond with ONLY a raw JSON object mapping each reference string to an array of SKUs:
+只返回一个原始 JSON 对象，把每个说法原文映射到 SKU 数组：
 {{ {shape} }}"""
 
 
@@ -48,7 +47,7 @@ def resolve_references(llm: LLM, references: list[str], products: list[dict[str,
         return {}
     raw = llm.complete_json(
         system=build_resolver_prompt(references, products),
-        messages=[{"role": "user", "content": "Resolve the references above."}],
+        messages=[{"role": "user", "content": "请解析上面的说法。"}],
         temperature=0, max_tokens=400,
     )
     out: dict[str, list[str]] = {}

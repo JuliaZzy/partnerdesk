@@ -1,9 +1,8 @@
-"""Numbers derived from query rows. The model quotes these; it does not recompute them.
+"""从查询行推导出的数字。模型引用这些；它不重算。
 
-One finding per numeric column. A time column plus a number is a trend (first period,
-last period, change). A short text column plus a number is a mix (sum and share).
-A number with neither is a range (min, max, mean). A single value is left in the row.
-Shares are rounded to one decimal. The mean is rounded to two.
+每个数字列一条发现。时间列加数字是趋势（首期、末期、变化）。短文本列加数字是结构（合计和占比）。
+两者都没有的数字是范围（最小、最大、均值）。单独一个值留在行里。
+占比四舍五入到一位小数。均值四舍五入到两位。
 """
 
 from __future__ import annotations
@@ -56,6 +55,14 @@ def value_kind(name: str, values: list[Any]) -> str:
     if all(_is_number(value) for value in present):
         return "number"
     return "text"
+
+
+def column_kinds(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Column name and kind for the chart prompt. The cells themselves stay out."""
+    return [
+        {"name": name, "kind": value_kind(name, _values(rows, name))}
+        for name in _names(rows)[:12]
+    ]
 
 
 def _names(rows: list[dict[str, Any]]) -> list[str]:
@@ -173,6 +180,58 @@ def _mix(query_id: str, rows: list[dict[str, Any]], x_name: str, y_name: str) ->
         "top": groups[0], "bottom": min(groups, key=lambda group: (group["value"], group["label"])),
         "groups": groups[:MAX_GROUPS],
     }
+
+
+def cover_days(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Days of cover for a SKU that has both ending stock and period units.
+
+    ``stock / units * 30``. Thirty days is the reporting month. This is not a forecast.
+    """
+    stock_by_sku: dict[str, float] = {}
+    units_by_sku: dict[str, float] = {}
+    for rows in groups:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sku = str(row.get("sku") or "").strip()
+            if not sku:
+                continue
+            for key, value in row.items():
+                number = _number(value)
+                if number is None:
+                    continue
+                label = str(key)
+                if _stock_column(label):
+                    stock_by_sku[sku] = float(number)
+                elif _units_column(label):
+                    units_by_sku[sku] = float(number)
+    notes: list[dict[str, Any]] = []
+    for sku in sorted(set(stock_by_sku) & set(units_by_sku)):
+        stock = stock_by_sku[sku]
+        units = units_by_sku[sku]
+        if units <= 0 or stock < 0:
+            continue
+        notes.append({
+            "sku": sku, "stock": stock, "units": units,
+            "cover_days": round(stock / units * 30, 1),
+        })
+    return notes
+
+
+def _stock_column(name: str) -> bool:
+    folded = name.casefold()
+    if "库存" in name:
+        return True
+    return any(token in folded for token in ("stock", "inventory", "on_hand"))
+
+
+def _units_column(name: str) -> bool:
+    if _stock_column(name):
+        return False
+    if "销量" in name:
+        return True
+    folded = name.casefold()
+    return "units" in folded or folded in {"qty", "quantity"}
 
 
 def _range(query_id: str, rows: list[dict[str, Any]], y_name: str) -> dict[str, Any] | None:

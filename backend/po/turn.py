@@ -1,13 +1,11 @@
-"""One turn of the PO conversation, and the confirm gate.
+"""采购单对话的一轮，以及确认闸门。
 
-    contract discount (code) → extract (LLM) → merge → code-check (code, + LLM resolver fallback) → draft → reply (LLM, streamed)
+    合同折扣（代码）→ 抽取（模型）→ 合并 → 代码检查（代码，外加模型解析回退）→ 草稿 → 回复（模型，流式）
 
-The reply is streamed as `token` events; the draft table, gaps and ledger arrive in the
-final `done` event — the UI renders them from code, never from the model.
+回复以 `token` 事件流出；草稿表、缺口和流水账在最后的 `done` 事件里——界面根据代码渲染，绝不根据模型。
 
-Confirmation is a separate, deterministic path: no LLM, the check is re-run against the
-live catalog and rules, the draft hash must equal the one the token was minted for, and
-the token is burned BEFORE the order is created.
+确认是另一条确定性的路：没有模型，对着当前目录和规则重跑检查，草稿哈希必须等于签发令牌时的那个，
+并且令牌在创建订单之前烧掉。
 """
 
 from __future__ import annotations
@@ -171,7 +169,9 @@ def run_po_turn(
 
     # 6. Persist the whole transcript, then hand the UI the structured payload.
     #    A long unsummarised prefix is folded into this chat's summary after the reply.
-    assistant: dict[str, Any] = {"role": "assistant", "content": reply_text}
+    assistant: dict[str, Any] = {"role": "assistant", "content": reply_text, "order": True}
+    if draft:
+        assistant["order_draft"] = draft
     attach_model_json(assistant, llm)
     history = [*history, {"role": "user", "content": message or "(image)"}, assistant]
     record_history(

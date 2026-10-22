@@ -1,7 +1,7 @@
-"""FX quote via Frankfurter (ECB). No API key.
+"""通过 Frankfurter（欧洲央行）查汇率。不需要 API key。
 
 https://api.frankfurter.app/latest?amount=1&from=CNY&to=EUR
-Read-only colour — not a source of ledger totals we already store.
+只读的背景——不是我们已经存着的账本总额的来源。
 """
 
 from __future__ import annotations
@@ -29,23 +29,23 @@ SCHEMA: dict[str, Any] = {
     "function": {
         "name": "exchange_rate",
         "description": (
-            "Look up a foreign-exchange rate (European Central Bank via Frankfurter). "
-            "Use for currency conversion questions; do not invent a rate."
+            "查询汇率（欧洲央行，经由 Frankfurter）。"
+            "用于货币换算的问题；不要编造汇率。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "base_currency": {
                     "type": "string",
-                    "description": "Source currency ISO code, e.g. CNY, USD, EUR (RMB accepted)",
+                    "description": "源货币的 ISO 代码，例如 CNY、USD、EUR（也接受 RMB）",
                 },
                 "target_currency": {
                     "type": "string",
-                    "description": "Target currency ISO code, e.g. EUR, USD, CNY",
+                    "description": "目标货币的 ISO 代码，例如 EUR、USD、CNY",
                 },
                 "amount": {
                     "type": "number",
-                    "description": "Amount in base currency to convert (default 1)",
+                    "description": "要换算的源货币金额（默认 1）",
                 },
             },
             "required": ["base_currency", "target_currency"],

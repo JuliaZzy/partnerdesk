@@ -55,6 +55,38 @@ def test_two_sessions_overlap_on_the_model(db):
     assert [m["content"] for m in db.session(second)["history"] if m["role"] == "user"] == ["hello"]
 
 
+def test_naming_a_new_chat_does_not_block_the_plan(db):
+    """The title call runs beside the plan. The plan's model call starts first."""
+    from backend.llm.types import AssistantTurn
+
+    order: list[str] = []
+    plan_entered = threading.Event()
+
+    class Live:
+        def complete_json(self, *, system, messages, schema=None, temperature=0.0, max_tokens=900):
+            if system.startswith("你在为一场"):
+                order.append("open-start")
+                assert plan_entered.wait(2), "plan did not start while the title was in flight"
+                order.append("open-end")
+                return {"tags": ["data"], "title": "订单总额"}
+            order.append("plan")
+            plan_entered.set()
+            return {"tasks": []}
+
+        def stream_text(self, *, system, messages, temperature=0.7, max_tokens=300):
+            yield "Hello"
+
+        def complete(self, *, system, messages, tools=None, temperature=0.0, max_tokens=900):
+            return AssistantTurn()
+
+    sid = service.new_session(db, "ps-1")["id"]
+    events = list(service.handle_message(db, Live(), sid, "how much did I order"))
+    assert order.index("plan") < order.index("open-end")
+    assert {"type": "session", "title": "订单总额", "tags": ["data"]} in events
+    assert db.session(sid)["title"] == "订单总额"
+    assert db.session(sid)["tags"] == ["data"]
+
+
 def test_one_session_finishes_a_turn_before_the_next_starts(db):
     state = {"inside": 0, "max": 0}
     mu = threading.Lock()

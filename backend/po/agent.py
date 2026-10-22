@@ -1,7 +1,6 @@
-"""PO Agent. One chat turn: a claim on a submitted order, or the order conversation.
+"""采购单代理。一轮聊天：对已提交订单的一则声明，或下单对话。
 
-Pricing, MOQ, and commercial rules stay in `check` and `rules`. This module
-only chooses which path this message takes.
+定价、起订量和商业规则留在 `check` 和 `rules`。这个模块只选择这条消息走哪条路。
 """
 
 from __future__ import annotations

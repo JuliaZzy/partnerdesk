@@ -9,6 +9,7 @@ import {
   buildLedger,
   citationSources,
   confirmReady,
+  contractFiling,
   dataQueryMark,
   discountText,
   greeting,
@@ -16,16 +17,20 @@ import {
   looseModelJson,
   money,
   readActivity,
+  trimNum,
   reportCharts,
+  resultLink,
+  resultPanes,
   webNotes,
   type Activity,
+  type ContractFiling,
   type DataQueryMark,
   type DraftLine,
   type ReportChart,
   type Step,
 } from "../format";
 import { Markdown } from "../markdown-view";
-import { ReportFigure } from "../ui";
+import { DataTable, Tabs } from "../ui";
 
 type Turn = {
   role: "user" | "assistant";
@@ -39,6 +44,8 @@ type Turn = {
   charts?: ReportChart[];
   webNotes?: string[];
   reportDraft?: boolean;
+  contract?: ContractFiling;
+  order?: boolean;
   activity?: Activity[];
   modelJson?: unknown[];
 };
@@ -85,6 +92,9 @@ type SessionRow = {
     model_json?: unknown;
     activity?: unknown;
     report_draft?: boolean;
+    contract?: unknown;
+    order?: boolean;
+    order_draft?: unknown;
   }[];
 };
 
@@ -104,8 +114,15 @@ function readDataUrl(file: File): Promise<string> {
   });
 }
 
+function orderDraft(raw: unknown): Draft | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Draft;
+  return Array.isArray(row.lines) ? row : null;
+}
+
 function fromSession(session: SessionRow, hello: string): Snap {
   const turns: Turn[] = [{ role: "assistant", text: hello }];
+  let draft: Draft | null = null;
   for (const message of session.history ?? []) {
     const text = String(message.content ?? "");
     if ((message.role === "user" || message.role === "assistant") && !SKIP.has(text)) {
@@ -114,16 +131,23 @@ function fromSession(session: SessionRow, hello: string): Snap {
       const charts = message.role === "assistant" ? reportCharts(message.charts) : undefined;
       const notes = message.role === "assistant" ? webNotes(message.web_notes) : undefined;
       const reportDraft = message.role === "assistant" && message.report_draft === true;
+      const contract = message.role === "assistant" ? contractFiling(message.contract) : undefined;
+      const order = message.role === "assistant" && message.order === true;
+      const savedDraft = orderDraft(message.order_draft);
+      if (savedDraft) draft = savedDraft;
       const activity = message.role === "assistant" ? readActivity(message.activity) : undefined;
       const stored = message.role === "assistant" && Array.isArray(message.model_json) ? message.model_json : undefined;
       const modelJson = looseModelJson(stored, activity);
-      turns.push({ role: message.role, text, sources, dataQuery, charts, webNotes: notes, reportDraft, activity, modelJson });
+      turns.push({
+        role: message.role, text, sources, dataQuery, charts, webNotes: notes,
+        reportDraft, contract, order, activity, modelJson,
+      });
     }
   }
   const stage = session.stage || "gathering";
   return {
     turns,
-    draft: null,
+    draft,
     gaps: [],
     steps: buildLedger(stage),
     stage,
@@ -153,8 +177,49 @@ function ChatDesk() {
   const bootKey = useRef("");
   const sidRef = useRef<string | null>(null);
   const openSeq = useRef(0);
+  // True while an IME preedit is still uncommitted. Enter confirms that
+  // preedit; it must not also send, or the commit lands in the cleared box.
+  const composing = useRef(false);
   const flight = useFlight(sid);
   sidRef.current = sid;
+  const liveKind = flight.task === "report" || flight.task === "contract" || flight.task === "po" ? flight.task : null;
+  const liveTask = liveKind ? { kind: liveKind, text: flight.live } : null;
+  const panes = resultPanes({
+    hasOrder: Boolean(snap?.draft),
+    reports: (snap?.turns ?? []).flatMap((turn, index) => (
+      turn.reportDraft ? [{ id: `report-${index}`, text: turn.text, charts: turn.charts }] : []
+    )),
+    contracts: (snap?.turns ?? []).flatMap((turn, index) => (
+      turn.contract ? [{ id: `contract-${index}`, filing: turn.contract }] : []
+    )),
+    live: liveTask,
+  });
+  const paneKey = panes.map((pane) => pane.id).join("|");
+  const [picked, setPicked] = useState<string | null>(null);
+  const [panelOpen, setPanelOpen] = useState(true);
+  const seenPanes = useRef("");
+  const seenChat = useRef<string | null>(null);
+  useEffect(() => {
+    if (seenChat.current !== sid) {
+      seenChat.current = sid;
+      seenPanes.current = "";
+      setPanelOpen(true);
+    }
+    const ids = paneKey ? paneKey.split("|") : [];
+    const previous = seenPanes.current ? seenPanes.current.split("|") : [];
+    const added = ids.filter((id) => !previous.includes(id));
+    seenPanes.current = paneKey;
+    if (added.length) {
+      setPicked(added[added.length - 1]);
+      setPanelOpen(true);
+    } else setPicked((current) => (current && ids.includes(current) ? current : ids.at(-1) ?? null));
+  }, [paneKey, sid]);
+  const activePane = panes.find((pane) => pane.id === picked) ?? panes.at(-1) ?? null;
+
+  function openResult(id: string) {
+    setPicked(id);
+    setPanelOpen(true);
+  }
 
   function focus(nextSid: string, next: Snap) {
     if (isForgotten(nextSid)) return;
@@ -213,6 +278,15 @@ function ChatDesk() {
     setBootError(null);
     const run = async () => {
       if (jump.n > 0 && jump.sid === "new") {
+        // Paint the switch before the create request. A reply still holding its
+        // stream used to leave this click with nothing on screen until that request returned.
+        sidRef.current = null;
+        setSid(null);
+        setActiveChat(null);
+        setSnap({
+          turns: [{ role: "assistant", text: "Opening…" }],
+          draft: null, gaps: [], steps: [], stage: "gathering", confirmToken: null, route: "", title: null, tags: [],
+        });
         await startNew(seq);
         return;
       }
@@ -247,7 +321,7 @@ function ChatDesk() {
     const chosen = attached ?? flightOf(chatId).files;
     const trimmed = message.trim();
     if (!trimmed && chosen.length === 0) return;
-    patchFlight(chatId, { busy: true, error: null, draft: "", files: [], live: "", activity: [], modelJson: [] });
+    patchFlight(chatId, { busy: true, error: null, draft: "", files: [], live: "", activity: [], modelJson: [], task: null });
     const images: string[] = [];
     const documents: { name: string; data: string }[] = [];
     for (const file of chosen) {
@@ -266,6 +340,44 @@ function ChatDesk() {
     let tags = base.tags;
     let route = base.route;
     const modelJson: unknown[] = [];
+    // The reply is finished when `done` arrives. Waiting for the socket to close,
+    // then for the chat list, kept "Replying…" up after the answer was already on screen.
+    let committed = false;
+    function finish() {
+      if (committed) return;
+      committed = true;
+      const done = finished.event;
+      const artifact = done?.report_draft === true || contractFiling(done?.contract) != null;
+      const order = !artifact && orderDraft(done?.draft) != null;
+      const next: Snap = {
+        ...base,
+        title,
+        tags,
+        route,
+        turns: [...base.turns, {
+          role: "assistant",
+          text: reply || "(no reply from the model)",
+          model: model || undefined,
+          warnings,
+          sources: citationSources(done?.brand_hits),
+          dataQuery: dataQueryMark(done?.data_query),
+          charts: reportCharts(done?.charts),
+          webNotes: webNotes(done?.web_notes),
+          reportDraft: done?.report_draft === true,
+          contract: contractFiling(done?.contract),
+          order,
+          activity: steps,
+          modelJson: looseModelJson(modelJson, steps),
+        }],
+        stage: done ? String(done.stage ?? base.stage) : base.stage,
+        draft: artifact ? base.draft : (done ? ((done.draft as Draft | null) ?? null) : base.draft),
+        gaps: artifact ? base.gaps : (done ? ((done.gaps_detail as Gap[] | undefined) ?? []) : base.gaps),
+        steps: artifact ? base.steps : (done ? ((done.steps as Step[] | undefined) ?? base.steps) : base.steps),
+        confirmToken: artifact ? base.confirmToken : (done ? ((done.confirm_token as string | null) ?? null) : base.confirmToken),
+      };
+      commitSnap(chatId, next);
+      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [], task: null });
+    }
     try {
       await streamMessage(chatId, {
         message: trimmed,
@@ -294,49 +406,26 @@ function ChatDesk() {
           }
         } else if (event.type === "plan") {
           const tasks = (event.tasks as { name?: string }[]) ?? [];
-          const names = tasks.map((task) => task.name).filter(Boolean);
+          const names = tasks.map((task) => String(task.name || "")).filter(Boolean);
           route = `→ ${names.join(" · ") || "answer"}`;
+          const task = names.includes("report") ? "report" : names.includes("contract") ? "contract" : names.includes("po") ? "po" : null;
+          if (task) patchFlight(chatId, { task });
         } else if (event.type === "warning") {
           warnings.push(String(event.message ?? ""));
         } else if (event.type === "error") {
           throw new Error(String(event.message ?? "The model could not finish this reply."));
         } else if (event.type === "done") {
           finished.event = event;
+          finish();
         }
       });
-      const done = finished.event;
-      const next: Snap = {
-        ...base,
-        title,
-        tags,
-        route,
-        turns: [...base.turns, {
-          role: "assistant",
-          text: reply || "(no reply from the model)",
-          model: model || undefined,
-          warnings,
-          sources: citationSources(done?.brand_hits),
-          dataQuery: dataQueryMark(done?.data_query),
-          charts: reportCharts(done?.charts),
-          webNotes: webNotes(done?.web_notes),
-          reportDraft: done?.report_draft === true,
-          activity: steps,
-          modelJson: looseModelJson(modelJson, steps),
-        }],
-        stage: done ? String(done.stage ?? base.stage) : base.stage,
-        draft: done ? ((done.draft as Draft | null) ?? null) : base.draft,
-        gaps: done ? ((done.gaps_detail as Gap[] | undefined) ?? []) : base.gaps,
-        steps: done ? ((done.steps as Step[] | undefined) ?? base.steps) : base.steps,
-        confirmToken: done ? ((done.confirm_token as string | null) ?? null) : base.confirmToken,
-      };
-      commitSnap(chatId, next);
-      patchFlight(chatId, { live: "", activity: [], modelJson: [] });
-      await desk.reloadSessions();
+      finish();
     } catch (err) {
-      patchFlight(chatId, { error: err instanceof Error ? err.message : "send failed" });
+      if (!committed) patchFlight(chatId, { error: err instanceof Error ? err.message : "send failed" });
     } finally {
-      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [] });
+      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [], task: null });
     }
+    void desk.reloadSessions().catch(() => undefined);
   }
 
   async function confirm() {
@@ -383,9 +472,23 @@ function ChatDesk() {
   }
 
   const ready = confirmReady(snap?.steps);
+  const showPanel = panelOpen && panes.length > 0;
+  const livePane = liveKind === "report"
+    ? panes.find((pane) => pane.id === "report-live")
+    : liveKind === "contract"
+      ? panes.find((pane) => pane.id === "contract-live")
+      : liveKind === "po"
+        ? panes.find((pane) => pane.kind === "order")
+        : undefined;
+  const reportNotes = activePane?.kind === "report" && activePane.id.startsWith("report-") && activePane.id !== "report-live"
+    ? snap?.turns[Number(activePane.id.slice("report-".length))]?.webNotes
+    : undefined;
+  const panelTitle = activePane?.kind === "contract" && activePane.filing?.title
+    ? activePane.filing.title
+    : activePane?.label ?? "结果";
 
   return (
-    <div className="chat-layout">
+    <div className={`chat-layout${showPanel ? " with-result" : ""}`}>
       <section className="thread-col">
         <header className="page-head">
           <h1>{partnership.brand_name} · {partnership.distributor_name}</h1>
@@ -393,17 +496,21 @@ function ChatDesk() {
         </header>
         {(bootError || flight.error) && <div className="error">{bootError || flight.error}</div>}
         <div className="thread" ref={threadRef}>
-          {snap?.turns.map((turn, index) => (
+          {snap?.turns.map((turn, index) => {
+            const paneId = turn.reportDraft ? `report-${index}` : turn.contract ? `contract-${index}` : turn.order ? "order" : null;
+            const pane = paneId ? panes.find((item) => item.id === paneId) ?? panes.find((item) => item.kind === (turn.order ? "order" : turn.reportDraft ? "report" : "contract")) : undefined;
+            const artifact = Boolean(pane);
+            return (
             <div className={`turn ${turn.role}`} key={index}>
               <div className="bubble">
-                {turn.activity && turn.activity.length > 0 && <ActivityList steps={turn.activity} />}
+                {turn.activity && turn.activity.length > 0 && <ActivityList steps={turn.activity} quiet={artifact} />}
                 {turn.model && <div className="who">{models.find((item) => item.id === turn.model)?.short || turn.model}</div>}
-                {turn.reportDraft && <div className="draft-tag">Draft</div>}
-                {turn.role === "assistant" ? <Markdown text={turn.text} /> : <p>{turn.text}</p>}
-                {turn.charts?.map((chart, chartIndex) => (
-                  <ReportFigure key={`${chart.title}-${chartIndex}`} chart={chart} />
-                ))}
-                {turn.webNotes && turn.webNotes.length > 0 && (
+                {artifact && pane
+                  ? <button type="button" className="result-link" onClick={() => openResult(pane.id)}>{resultLink(pane.label)}</button>
+                  : turn.role === "assistant"
+                    ? <Markdown text={turn.text} charts={turn.charts} />
+                    : <p>{turn.text}</p>}
+                {!artifact && turn.webNotes && turn.webNotes.length > 0 && (
                   <div className="refs">
                     <div className="refs-label">参考资料：</div>
                     {turn.webNotes.map((note, noteIndex) => (
@@ -411,7 +518,7 @@ function ChatDesk() {
                     ))}
                   </div>
                 )}
-                {turn.modelJson && turn.modelJson.length > 0 && <ModelJson items={turn.modelJson} />}
+                {!artifact && turn.modelJson && turn.modelJson.length > 0 && <ModelJson items={turn.modelJson} />}
                 {turn.files?.map((name) => <div className="who" key={name}>📎 {name}</div>)}
                 {turn.images?.map((src) => <img key={src.slice(0, 32)} alt="" src={src} />)}
                 {turn.sources?.map((source) => (
@@ -427,13 +534,16 @@ function ChatDesk() {
                 )}
               </div>
             </div>
-          ))}
-          {(flight.activity.length > 0 || flight.live || flight.modelJson.length > 0) && (
+            );
+          })}
+          {(flight.activity.length > 0 || flight.live || flight.modelJson.length > 0 || liveKind) && (
             <div className="turn assistant">
               <div className="bubble">
-                {flight.activity.length > 0 && <ActivityList steps={flight.activity} />}
-                {flight.modelJson.length > 0 && <ModelJson items={flight.modelJson} />}
-                {flight.live && <Markdown text={flight.live} />}
+                {flight.activity.length > 0 && <ActivityList steps={flight.activity} quiet={Boolean(liveKind)} />}
+                {!liveKind && flight.modelJson.length > 0 && <ModelJson items={flight.modelJson} />}
+                {livePane
+                  ? <button type="button" className="result-link" onClick={() => openResult(livePane.id)}>{resultLink(livePane.label)}</button>
+                  : flight.live && <Markdown text={flight.live} />}
               </div>
             </div>
           )}
@@ -448,14 +558,23 @@ function ChatDesk() {
           <textarea
             value={flight.draft}
             placeholder="An order, or attach an agreement (PDF / Word)…"
+            onCompositionStart={() => {
+              composing.current = true;
+            }}
+            onCompositionEnd={() => {
+              composing.current = false;
+            }}
             onChange={(event) => {
               if (sid) patchFlight(sid, { draft: event.target.value });
             }}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void send(flight.draft);
-              }
+              if (event.key !== "Enter" || event.shiftKey) return;
+              // keyCode 229: Chrome still delivering this Enter to the IME.
+              // Safari reports isComposing false on that same key, so the ref counts too.
+              const native = event.nativeEvent;
+              if (native.isComposing || native.keyCode === 229 || composing.current) return;
+              event.preventDefault();
+              void send(flight.draft);
             }}
           />
           <div className="row">
@@ -486,49 +605,80 @@ function ChatDesk() {
           </div>
         </form>
       </section>
-      <aside className="draft-col">
-        <div className="panel">
-          <h2>Order draft</h2>
-          <DraftView draft={snap?.draft ?? null} />
-          {snap?.gaps.map((gap, index) => (
-            <div key={index}>
-              <div className="warn">{gap.message}</div>
-              <div className="actions">
-                {gap.candidates?.map((candidate) => (
-                  <button key={candidate.sku} className="btn" type="button" onClick={() => void send(`I mean: ${candidate.name}`, [])}>
-                    {candidate.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-          {flight.busy && flight.activity.length > 0 && (
-            <>
-              <h2>这一轮</h2>
-              <ActivityList steps={flight.activity} />
-            </>
-          )}
-          <h2>Progress</h2>
-          <ul className="steps">
-            {(snap?.steps?.length ? snap.steps : [
-              { title: "Understand request", status: "pending" },
-              { title: "Check inputs", status: "pending" },
-              { title: "Confirm draft", status: "pending" },
-              { title: "Create & submit order", status: "pending" },
-            ]).map((step) => (
-              <li key={step.title}>{STEP_MARK[step.status] ?? "·"} {step.title}</li>
-            ))}
-          </ul>
-          {snap?.stage === "confirm" && snap.confirmToken && (
-            <button className="btn-primary" type="button" disabled={!ready || flight.busy} onClick={() => void confirm()}>
-              Confirm — place the order
-            </button>
-          )}
-          {snap?.stage === "submitted" && (
-            <p className="ok-note">Order placed. Say “received” or “paid” when the time comes, or start another order.</p>
-          )}
-        </div>
-      </aside>
+      {showPanel && (
+        <aside className="result-float">
+          <div className="result-bar">
+            <h2>{panelTitle}</h2>
+            <button type="button" className="result-close" aria-label="关闭" onClick={() => setPanelOpen(false)}>×</button>
+          </div>
+          <div className="panel">
+            {panes.length > 1 && (
+              <Tabs labels={panes.map((pane) => pane.label)} value={activePane?.label ?? ""} onChange={(label) => {
+                const pane = panes.find((item) => item.label === label);
+                if (pane) setPicked(pane.id);
+              }} />
+            )}
+            {activePane?.kind === "order" && (
+              activePane.pending
+                ? <p className="muted">正在整理采购单…</p>
+                : (
+                  <>
+                    <DraftView draft={snap?.draft ?? null} />
+                    {snap?.gaps.map((gap, index) => (
+                      <div key={index}>
+                        <div className="warn">{gap.message}</div>
+                        <div className="actions">
+                          {gap.candidates?.map((candidate) => (
+                            <button key={candidate.sku} className="btn" type="button" onClick={() => void send(`I mean: ${candidate.name}`, [])}>
+                              {candidate.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    <h2>Progress</h2>
+                    <ul className="steps">
+                      {(snap?.steps?.length ? snap.steps : [
+                        { title: "Understand request", status: "pending" },
+                        { title: "Check inputs", status: "pending" },
+                        { title: "Confirm draft", status: "pending" },
+                        { title: "Create & submit order", status: "pending" },
+                      ]).map((step) => (
+                        <li key={step.title}>{STEP_MARK[step.status] ?? "·"} {step.title}</li>
+                      ))}
+                    </ul>
+                    {snap?.stage === "confirm" && snap.confirmToken && (
+                      <button className="btn-primary" type="button" disabled={!ready || flight.busy} onClick={() => void confirm()}>
+                        Confirm — place the order
+                      </button>
+                    )}
+                    {snap?.stage === "submitted" && (
+                      <p className="ok-note">Order placed. Say “received” or “paid” when the time comes, or start another order.</p>
+                    )}
+                  </>
+                )
+            )}
+            {activePane?.kind === "report" && (
+              activePane.pending
+                ? <p className="muted">正在写报告…</p>
+                : (
+                  <div className="result-doc">
+                    <Markdown text={activePane.text} charts={activePane.charts} prose />
+                    {reportNotes && reportNotes.length > 0 && (
+                      <div className="refs">
+                        <div className="refs-label">参考资料：</div>
+                        {reportNotes.map((note, noteIndex) => (
+                          <div className="source" key={`${noteIndex}-${note}`}>[{noteIndex + 1}] {note}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+            )}
+            {activePane?.kind === "contract" && <ContractResult filing={activePane.filing} pending={activePane.pending} />}
+          </div>
+        </aside>
+      )}
     </div>
   );
 }
@@ -566,7 +716,7 @@ function StepMark({ state }: { state: Activity["state"] }) {
   );
 }
 
-function ActivityList({ steps }: { steps: Activity[] }) {
+function ActivityList({ steps, quiet }: { steps: Activity[]; quiet?: boolean }) {
   return (
     <ol className="activity">
       {steps.map((step, index) => (
@@ -576,7 +726,7 @@ function ActivityList({ steps }: { steps: Activity[] }) {
             <span className="detail">{step.detail}</span>
             <StepMark state={step.state} />
           </div>
-          {step.outputs.length > 0 && <ModelJson items={step.outputs} />}
+          {!quiet && step.outputs.length > 0 && <ModelJson items={step.outputs} />}
         </li>
       ))}
     </ol>
@@ -640,6 +790,77 @@ function DataRating({
       )}
       {error && <div className="warn">{error}</div>}
     </div>
+  );
+}
+
+function ContractResult({ filing, pending }: { filing: ContractFiling | null; pending?: boolean }) {
+  if (pending || !filing) return <p className="muted">正在读取合同…</p>;
+  const rules = filing.discount_rules ?? [];
+  const moqs = filing.moqs ?? [];
+  const prices = filing.price_list ?? [];
+  const derived = filing.derived_rules ?? [];
+  const caption = [
+    filing.contract_type?.replaceAll("_", " "),
+    filing.file_name,
+    (filing.term_start_date || filing.term_end_date) ? `${filing.term_start_date || "?"} → ${filing.term_end_date || "?"}` : null,
+    filing.auto_renewal === true ? "auto-renews" : filing.auto_renewal === false ? "no auto-renewal" : null,
+    filing.exclusivity_type,
+  ].filter(Boolean).join(" · ");
+  return (
+    <>
+      {caption && <p className="muted">{caption}</p>}
+      {filing.territory_text && <p><strong>Territory</strong> {filing.territory_text}</p>}
+      {filing.territories && filing.territories.length > 0 && (
+        <p>
+          {filing.territories.map((territory) => (
+            <span key={`${territory.kind}-${territory.country_code}`} className={`badge ${territory.kind === "allowed" ? "ok" : "bad"}`} style={{ marginRight: 6 }}>
+              {territory.country_code}{territory.kind === "excluded" ? " excluded" : ""}
+            </span>
+          ))}
+        </p>
+      )}
+      {filing.skipped && filing.skipped.length > 0 && <div className="warn">Skipped: {filing.skipped.join("; ")}</div>}
+      <h3>Discount schedules</h3>
+      {rules.length === 0 && <p className="muted">None extracted.</p>}
+      {rules.map((rule, index) => (
+        <div className="card" key={index}>
+          <strong>{rule.title || "Discount rule"}</strong>
+          {rule.section_reference ? ` · §${rule.section_reference}` : ""}
+          <div className="muted">{(rule.applies_per || "").replaceAll("_", " ")} · {(rule.basis || "").replaceAll("_", " ")}</div>
+          <DataTable
+            rows={rule.tiers ?? []}
+            columns={[
+              { key: "containers", label: "Containers", render: (tier) => `${tier.from_container || 1} – ${tier.to_container ?? "∞"}` },
+              { key: "discount", label: "Discount", render: (tier) => tier.discount_percent == null ? "—" : `${trimNum(tier.discount_percent)}%` },
+            ]}
+          />
+        </div>
+      ))}
+      {moqs.length > 0 && (
+        <>
+          <h3>Minimum order quantities</h3>
+          <DataTable rows={moqs} columns={Object.keys(moqs[0]).map((key) => ({ key, label: key }))} />
+        </>
+      )}
+      {prices.length > 0 && (
+        <>
+          <h3>Price list</h3>
+          <DataTable rows={prices} columns={Object.keys(prices[0]).map((key) => ({ key, label: key }))} />
+        </>
+      )}
+      <h3>PO rules</h3>
+      {derived.length === 0 ? <p className="muted">No rules derived.</p> : (
+        <DataTable
+          rows={derived}
+          columns={[
+            { key: "name", label: "Rule" },
+            { key: "rule_type", label: "Type" },
+            { key: "severity", label: "Severity" },
+            { key: "rule_config", label: "Config", wrap: true, render: (row) => JSON.stringify(row.rule_config ?? {}) },
+          ]}
+        />
+      )}
+    </>
   );
 }
 

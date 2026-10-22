@@ -1,11 +1,10 @@
-"""One live step on the chat stream.
+"""聊天流上的一个实时步骤。
 
-Yield this before a slow call. The same `id` updates in place, so the page can
-turn "正在…" into "完成" without waiting for the whole turn.
+慢调用之前先产出这个。同一个 `id` 就地更新，所以页面可以把「正在…」换成「完成」，
+而不必等整轮结束。
 
-The list collected here is this turn only. `begin_activity` starts it, each
-`status` updates one step, and `note_model_output` hangs the JSON just parsed
-on the step that is open. The desk reads that list back off the saved message.
+这里收集的列表只属于这一轮。`begin_activity` 开始它，每次 `status` 更新一步，
+`note_model_output` 把刚解析的 JSON 挂在当前开着的那一步上。工作台从存下的消息里读回这份列表。
 """
 
 from __future__ import annotations

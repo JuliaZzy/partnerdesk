@@ -230,11 +230,11 @@ def test_evidence_prompt_numbers_passages_and_names_the_file():
         "cid": "d#p1-0", "doc": "d", "page": 1, "text": "8 hours",
         "source": "品牌手册.pdf，第1页",
     }])
-    assert filled.startswith("Passages:\n[1] 品牌手册.pdf，第1页\n8 hours")
+    assert filled.startswith("段落：\n[1] 品牌手册.pdf，第1页\n8 hours")
     assert "how long?" in filled
     plain = evidence_prompt("how long?", [{"cid": "d#p1-0", "doc": "d", "page": 1, "text": "8 hours"}])
     assert "[1] d，第1页" in plain
-    assert "(no passages retrieved)" in evidence_prompt("how long?", [])
+    assert "（没有检索到段落）" in evidence_prompt("how long?", [])
 
 
 def test_brand_question_is_retrieved_then_answered_by_the_text_model(db, monkeypatch):
@@ -256,7 +256,7 @@ def test_brand_question_is_retrieved_then_answered_by_the_text_model(db, monkeyp
     assert seen == {"q": "How long does it run at 42 C?", "brand": "brand-1"}
     assert next(event for event in events if event["type"] == "plan")["tasks"][0]["name"] == "brand"
     told = llm.calls[-1]
-    assert told["kind"] == "text" and "passages" in told["system"].lower()
+    assert told["kind"] == "text" and "段落" in told["system"]
     assert "Runs 8 hours at 42 C." in told["messages"][-1]["content"]
     assert "How long does it run at 42 C?" in told["messages"][-1]["content"]
     assert "8 hours" in "".join(e.get("text", "") for e in events)

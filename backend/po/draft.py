@@ -1,10 +1,8 @@
-"""The draft purchase order, built from code — never from the model.
+"""草稿采购单，由代码生成——绝不由模型生成。
 
-One builder with three consumers that must agree exactly: the chat UI's draft table, the
-summary the reply model reads, and `hash_draft`, the fingerprint the confirm token is bound
-to. The hash's whole job is to prove "the order being submitted is the order the user
-looked at", and that proof is worthless if the page renders one object and the hash covers
-another.
+一个构造函数，三个必须完全一致的使用者：聊天界面的草稿表、回复模型读到的摘要，
+以及 `hash_draft`，确认令牌绑定的指纹。哈希的全部职责是证明「正在提交的订单就是用户看过的那张」，
+如果页面渲染的是一个对象、哈希覆盖的是另一个，这个证明就一文不值。
 """
 
 from __future__ import annotations
@@ -60,30 +58,30 @@ def build_draft_summary(slots: PoSlots, check: CheckResult, settings: AgentSetti
     on screen. Quantities are spelled out as CASES — "200×" alone was read back to a
     customer as 200 pieces."""
     if not check.lines:
-        return "nothing yet"
+        return "还没有"
     s = with_defaults(slots, settings, today)
     parts = []
     for l in check.lines:
         who = (
-            f"{l.reference} (several match — needs picking)" if l.ambiguous
-            else f"{l.reference} (not found)" if l.unresolved
+            f"{l.reference}（有多个匹配，需要挑选）" if l.ambiguous
+            else f"{l.reference}（没找到）" if l.unresolved
             else l.product_name
         )
-        flag = f" (below MOQ {l.moq_cases})" if l.below_moq else " (no price)" if l.missing_price else ""
-        parts.append(f"{l.cases} cases of {who}{flag}")
-    disc = "discount not yet settled" if not s.discount else s.discount.describe(currency)
+        flag = f"（低于起订量 {l.moq_cases} 箱）" if l.below_moq else "（没有价格）" if l.missing_price else ""
+        parts.append(f"{l.cases} 箱 {who}{flag}")
+    disc = "折扣还没定" if not s.discount else s.discount.describe(currency)
     if s.discount and s.discount.source == "contract" and s.discount.note:
-        disc += f" ({s.discount.note})"
+        disc += f"（{s.discount.note}）"
     money = ""
     if check.subtotal > 0:
         draft = build_draft(slots, check, currency, settings, today) or {}
         cur = f"{currency} " if currency else ""
-        money = f" Subtotal {cur}{check.subtotal:,.2f}"
+        money = f" 小计 {cur}{check.subtotal:,.2f}"
         if draft.get("discount_amount"):
-            money += f", discount {cur}{draft['discount_amount']:,.2f}"
-        money += f", total {cur}{draft.get('total', check.subtotal):,.2f}."
-    pay = f"{s.payment_terms} ({PAYMENT_TERMS_LABELS[s.payment_terms]})" if s.payment_terms in PAYMENT_TERMS_LABELS else s.payment_terms
-    return f"{', '.join(parts)}. Payment {pay}, {s.incoterms}, {s.shipping_method}, ETA {s.eta_date}, {disc}.{money}"
+            money += f"，折扣 {cur}{draft['discount_amount']:,.2f}"
+        money += f"，合计 {cur}{draft.get('total', check.subtotal):,.2f}。"
+    pay = f"{s.payment_terms}（{PAYMENT_TERMS_LABELS[s.payment_terms]}）" if s.payment_terms in PAYMENT_TERMS_LABELS else s.payment_terms
+    return f"{'、'.join(parts)}。付款 {pay}，{s.incoterms}，{s.shipping_method}，预计到货 {s.eta_date}，{disc}。{money}"
 
 
 def hash_draft(draft: dict[str, Any]) -> str:

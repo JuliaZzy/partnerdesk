@@ -138,6 +138,26 @@ class Database:
             rows = s.scalars(select(orm.Product).where(orm.Product.brand_id == brand_id).order_by(orm.Product.id)).all()
             return [Product(**_row_dict(r)) for r in rows]
 
+    def product_names(self, brand_id: str, skus: list[str]) -> dict[str, str]:
+        """Native name, else English, for these SKUs on this brand. Unknown SKUs are omitted.
+
+        The catalog is large, so this looks up the given SKUs instead of loading every product.
+        """
+        wanted = list(dict.fromkeys(sku.strip() for sku in skus if isinstance(sku, str) and sku.strip()))
+        if not wanted:
+            return {}
+        with self.tx() as s:
+            found = s.execute(
+                select(orm.Product.sku, orm.Product.product_name_native, orm.Product.product_name_en)
+                .where(orm.Product.brand_id == brand_id, orm.Product.sku.in_(wanted))
+            ).all()
+        names: dict[str, str] = {}
+        for sku, native, english in found:
+            name = (native or "").strip() or (english or "").strip()
+            if name:
+                names[sku] = name
+        return names
+
     def rules(self, brand_id: str) -> list[CommercialRule]:
         with self.tx() as s:
             rows = s.scalars(select(orm.CommercialRule).where(orm.CommercialRule.brand_id == brand_id).order_by(orm.CommercialRule.id)).all()

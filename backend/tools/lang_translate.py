@@ -1,7 +1,7 @@
-"""Translate a string. The model only changes language; it does not add or drop facts.
+"""翻译一段文字。模型只改语言，不增加事实，也不删事实。
 
-Chat understanding ("把刚刚的报告译成英语") belongs in the caller. This module only
-resolves which string to translate, then makes one LLM call.
+「把刚刚的报告译成英语」这种理解属于调用方。这个模块只决定翻译哪一段，
+然后做一次模型调用。
 """
 
 from __future__ import annotations
@@ -10,9 +10,9 @@ from typing import Any, Literal
 
 from ..llm import LLM
 
-SYSTEM = """You're an expert translator. Translate the text the user provides into the requested language.
-Output the translation only — no quotes, no 'here is the translation', no extra commentary.
-Do not add facts that are not in the source. Keep names, SKUs and numbers as written unless the target language has a conventional form."""
+SYSTEM = """你是翻译。把用户给出的文字译成要求的语言。
+只输出译文——不要引号，不要「译文如下」，不要额外说明。
+不要添加原文里没有的事实。名称、SKU 和数字保持原样，除非目标语言有约定的写法。"""
 
 Source = Literal["message", "last_assistant", "report"]
 SOURCES = ("message", "last_assistant", "report")
@@ -23,22 +23,22 @@ SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": "translate",
-        "description": "Translate text into another language when the user asks for a translation.",
+        "description": "用户要求翻译时，把文字译成另一种语言。",
         "parameters": {
             "type": "object",
             "properties": {
                 "target_language": {
                     "type": "string",
-                    "description": "Language to translate into, e.g. English, Deutcher, 中文",
+                    "description": "要译成的语言，例如英语、德语、中文",
                 },
                 "text": {
                     "type": "string",
-                    "description": "The exact words to translate, when they are in this user message",
+                    "description": "要翻译的原话，当这些话就在这条用户消息里时填写",
                 },
                 "source": {
                     "type": "string",
                     "enum": list(SOURCES),
-                    "description": "Where to get the text if `text` is empty",
+                    "description": "`text` 为空时，从哪里取文字",
                 },
             },
             "required": ["target_language"],
@@ -83,7 +83,7 @@ def translate(llm: LLM, *, text: str, target_language: str) -> str:
         system=SYSTEM,
         messages=[{
             "role": "user",
-            "content": f"Target language: {target_language}\n\nText:\n{text}",
+            "content": f"目标语言：{target_language}\n\n原文：\n{text}",
         }],
         schema={
             "name": "translation",

@@ -1,6 +1,6 @@
-"""Contract Analysis in chat. Files the agreement, then quotes the stored table.
+"""聊天里的合同分析。把协议入库，然后引用已经存下的表。
 
-`read` fills the form and `ingest` stores it. The reply does not recompute terms.
+`read` 填表，`ingest` 入库。回复不重算条款。
 """
 
 from __future__ import annotations
@@ -22,10 +22,10 @@ def _prompt(text: str, filed: dict[str, Any]) -> str:
     """The chat model quotes this table. It does not recompute the filing."""
     return (
         f"{text}\n\n"
-        "=== CONTRACT FILING (from code — quote these figures, do not recompute or invent terms) ===\n"
+        "=== 合同入库（来自代码——引用这些数字，不要重算，也不要编造条款） ===\n"
         f"{json.dumps(filed, ensure_ascii=False)}\n"
-        "If status is need_file, ask for the agreement file. If failed, say what went wrong. "
-        "If filed, tell them what was stored, including skipped rows."
+        "若 status 是 need_file，请对方提供协议文件。若 failed，说明出了什么问题。"
+        "若 filed，告诉他们入库了什么，包括被跳过的行。"
     )
 
 

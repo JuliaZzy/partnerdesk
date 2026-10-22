@@ -1,1 +1,1 @@
-"""Brand-answer prompt. Retrieval happens before this string is used."""
+"""品牌回答用的提示词。检索发生在使用这段字符串之前。"""

@@ -81,12 +81,16 @@ export function DeskProvider({ children }: { children: ReactNode }) {
 
   const partnership = partnerships.find((p) => p.id === pid) ?? null;
 
+  // A slow list from an earlier turn must not paint over a chat that was created since.
+  const reloadGen = useRef(0);
   const reloadSessions = useCallback(async () => {
     if (!pid) {
       setSessions([]);
       return;
     }
+    const gen = ++reloadGen.current;
     const rows = await api<SessionSummary[]>(`/api/sessions?partnership_id=${encodeURIComponent(pid)}`);
+    if (gen !== reloadGen.current) return;
     setSessions(rows.filter((row) => !isForgotten(row.id)));
   }, [pid]);
 

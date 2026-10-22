@@ -1,4 +1,4 @@
-"""AI Report in chat. One draft: queries and news stay in `turn`, this module streams it."""
+"""聊天里的报表。一份草稿：查询和新闻留在 `turn`，这个模块把它流式送出。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from .turn import ReportDraft, iter_draft
 def run(
     db: Database, llm: LLM, session: dict[str, Any], text: str, *,
     partnership_id: str, brand_id: str, distributor_id: str, hint: str | None,
-    charts_only: bool = False,
 ) -> Iterator[dict[str, Any]]:
     db.update_session(session["id"], specialist="report")
     draft: ReportDraft | None = None
@@ -23,7 +22,6 @@ def run(
         partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
         session_id=session["id"], hint=hint,
         folded_through=int(session.get("folded_through") or 0), summary=str(session.get("summary") or ""),
-        charts_only=charts_only,
     ):
         if isinstance(item, ReportDraft):
             draft = item

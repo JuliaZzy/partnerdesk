@@ -36,9 +36,9 @@ def test_fill_leaves_json_braces_and_fills_slots():
 
 def test_build_extract_prompt_uses_the_po_constants(catalog):
     prompt = build_extract_prompt(catalog.manifest(), PoSlots(), has_images=True, operating_context="Ship on Friday.")
-    assert "ATTACHED IMAGE" in prompt and "Ship on Friday" in prompt and "FO-100" in prompt
-    assert PLAN.startswith("You are the orchestrator")
-    assert OPEN.startswith("You open a new chat")
+    assert "附件图片" in prompt and "Ship on Friday" in prompt and "FO-100" in prompt
+    assert PLAN.startswith("你是品牌经销商工作台的编排器")
+    assert OPEN.startswith("你在为一场品牌与已入驻经销商的新对话做开场标记")
     assert "PLACEHOLDER" not in data_query.REFLECT and '"complete"' in data_query.REFLECT
-    assert "PLACEHOLDER" not in report.SPLIT and '"questions"' in report.SPLIT
-    assert '"charts"' in report.CHART and not hasattr(report, "REFLECT")
+    assert "PLACEHOLDER" not in report.REPORT_QUESTIONS_PROMPT and '"questions"' in report.REPORT_QUESTIONS_PROMPT
+    assert '"charts"' in report.CHART_GENERATION_PROMPT and not hasattr(report, "REFLECT")

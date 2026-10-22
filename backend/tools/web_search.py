@@ -1,6 +1,6 @@
-"""Public web search via Bocha. Read-only colour for a report — not a source of our ledger.
+"""通过博查做公开网页检索。只给报告添一层只读的背景——不是我们账本的来源。
 
-https://api.bocha.cn/v1/web-search  (`BOCHA_API_KEY`)
+https://api.bocha.cn/v1/web-search  （`BOCHA_API_KEY`）
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the public web for current information, news, or reports the model does not already know.",
+        "description": "检索公开网页，查找模型还不知道的当前信息、新闻或报告。",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search keywords"},
+                "query": {"type": "string", "description": "检索关键词"},
             },
             "required": ["query"],
         },

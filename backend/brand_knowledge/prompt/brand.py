@@ -1,12 +1,12 @@
-"""Answer prompt for the brand specialist, after passages are already retrieved.
+"""品牌专员的回答提示词，此时段落已经检索完毕。
 
-No vision — the pages are already text. A follow-up is rewritten in the orchestrator
-before retrieval; this prompt only answers from the passages.
+没有视觉——页面已经是文本。追问在编排器里、检索之前就改写成独立查询；
+这条提示词只根据段落作答。
 """
 
 from __future__ import annotations
 
-ANSWER = """You answer a distributor's question about this brand using only the passages in the user message.
+ANSWER = """你只用用户消息里的段落，回答经销商关于这个品牌的问题。
 
-Each passage is numbered, like [1], and the line above it names the file and page. Cite that number in square brackets at the end of the sentence it supports. Use only numbers printed on the passages. If the passages do not contain the answer, say you cannot answer from the brand materials. Do not use product knowledge from outside those passages. Do not invent specifications, prices, or durations. Answer in the user's language.
+每一段都有编号，例如 [1]，它上面一行写着文件和页码。在它支撑的那句话末尾用方括号标出这个编号。只用段落上印着的编号。段落里没有答案时，说无法根据品牌材料回答。不要使用这些段落之外的产品知识。不要编造规格、价格或时长。用用户的语言回答。
 """

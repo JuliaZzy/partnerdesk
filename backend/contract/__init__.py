@@ -1,9 +1,8 @@
-"""Agreement filing, kept in one package.
+"""协议归档，放在一个包里。
 
-`read` fills the extraction form. `chunks` splits an agreement on its headings.
-`ingest` stores every term and derives PO rules in code. `turn` files from chat and
-returns that stored result as a table; the orchestrator speaks.
-The model does not decide whether a term applies.
+`read` 填抽取表。`chunks` 按标题把协议切开。`ingest` 存下每一条条款，并在代码里推导采购单规则。
+`turn` 从聊天里归档，并把存下的结果作为一张表返回；编排器负责说话。
+模型不决定一条条款是否适用。
 """
 
 from __future__ import annotations

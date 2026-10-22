@@ -1,7 +1,6 @@
-"""Write one chat reply into the session and yield the events the desk reads.
+"""把一条聊天回复写入会话，并产出工作台要读的事件。
 
-Each agent calls this after its own work. The orchestrator uses it for tools
-and for a plain answer when the plan names nobody.
+每个代理做完自己的事之后调用这里。编排器用它处理工具，以及计划里没有点名任何人时的直接回答。
 """
 
 from __future__ import annotations
@@ -74,6 +73,11 @@ def save_reply(
         assistant["web_notes"] = notes
     if (extra or {}).get("report_draft"):
         assistant["report_draft"] = True
+    filing = (extra or {}).get("contract")
+    if isinstance(filing, dict) and filing:
+        assistant["contract"] = filing
+    if (extra or {}).get("contract_id"):
+        assistant["contract_id"] = (extra or {}).get("contract_id")
     series = (extra or {}).get("report_series")
     if isinstance(series, list) and series:
         assistant["report_series"] = series
