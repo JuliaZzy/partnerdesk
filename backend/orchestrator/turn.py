@@ -1,7 +1,8 @@
-"""聊天入口：新会话的标题在一旁取，计划不等它。然后按名字调用一个代理。
+"""聊天入口：新会话的标题在一旁取，计划不等它。然后按计划一起调用。
 
-工具和 MCP 留在这里。它们不是代理：模型用 `tools=` 自己挑选。
-品牌检索也不是代理；计划里的名字 `brand` 调用的是那个函数。
+计划里可以同时有代理、工具和 MCP。只有一项、并且是代理时，仍由那个代理自己回复。
+有多项时，它们并行跑，结果先写入 Redis，到齐后由一次回复写进会话。
+品牌检索不是代理；计划里的名字 `brand` 调用的是那个函数。
 会话取名也不是代理：它只写聊天列表上的标题和标签。
 """
 
@@ -26,6 +27,7 @@ from ..po.turn import load_bundle
 from ..report.agent import run as run_report
 from ..text2sql.agent import run as run_data
 from ..tools import all_schemas, all_tools
+from .gather import fan_out, scheduled
 from .prompt import OPEN, PLAN, REACT
 from .speak import answer_directly, one_shot
 from .status import begin_activity, status
@@ -78,7 +80,7 @@ def plan_schema() -> dict[str, Any]:
                     "type": "object", "additionalProperties": False,
                     "properties": {
                         "id": {"type": "string"},
-                        "kind": {"type": "string", "enum": ["agent"]},
+                        "kind": {"type": "string", "enum": ["agent", "tool"]},
                         "name": {"type": "string"},
                         "input": {"type": "object"},
                         "depends_on": {"type": "array", "items": {"type": "string"}},
@@ -201,22 +203,50 @@ def make_plan(
         f"=== 附件 ===\n{', '.join(attachments) or '（无）'}\n\n"
         f"=== 消息 ===\n{message[:4000] or '（无文字）'}"
     )
+    catalog = _tool_catalog()
+    system = f"{PLAN.rstrip()}\n\n{catalog}" if catalog else PLAN
     raw = llm.complete_json(
-        system=attach(PLAN, memory or ""), messages=[{"role": "user", "content": user}],
-        schema=plan_schema(), temperature=0, max_tokens=600,
+        system=attach(system, memory or ""), messages=[{"role": "user", "content": user}],
+        schema=plan_schema(), temperature=0, max_tokens=900,
     )
     out: list[PlanTask] = []
+    seen: set[str] = set()
     for t in raw.get("tasks") or []:
         if not isinstance(t, dict):
             continue
-        kind, name = str(t.get("kind") or "agent"), str(t.get("name") or "")
-        if kind != "agent" or name not in TOPIC_KEYS:
+        kind, name = str(t.get("kind") or "agent"), str(t.get("name") or "").strip()
+        if kind == "agent" and name not in TOPIC_KEYS:
+            continue
+        if kind == "tool" and not name:
+            continue
+        if kind not in ("agent", "tool"):
             continue
         deps = [d for d in (t.get("depends_on") or []) if isinstance(d, str)]
         inp = t.get("input") if isinstance(t.get("input"), dict) else {}
-        tid = str(t.get("id") or f"agent-{name}-{len(out)}")
-        out.append(PlanTask(id=tid, kind="agent", name=name, input=inp, depends_on=deps))
+        tid = str(t.get("id") or f"{kind}-{name}-{len(out)}")
+        if tid in seen:
+            tid = f"{tid}-{len(out)}"
+        seen.add(tid)
+        out.append(PlanTask(id=tid, kind=kind, name=name, input=inp, depends_on=deps))
     return out
+
+
+def _tool_catalog() -> str:
+    """Names the planner may put on a tool task. MCP is included when it is enabled."""
+    lines: list[str] = []
+    for schema in all_schemas():
+        fn = schema.get("function") or {}
+        name = str(fn.get("name") or "").strip()
+        if not name:
+            continue
+        desc = " ".join(str(fn.get("description") or "").split())
+        params = (fn.get("parameters") or {}).get("properties") or {}
+        required = set((fn.get("parameters") or {}).get("required") or [])
+        keys = ", ".join(f"{key}{'*' if key in required else ''}" for key in params)
+        lines.append(f"- {name}({keys}): {desc[:140]}")
+    if not lines:
+        return ""
+    return "可用工具和 MCP（kind 用 tool，name 用函数名，参数放进 input）：\n" + "\n".join(lines)
 
 
 def _run_one_tool(
@@ -349,20 +379,26 @@ def handle_message(
             llm, message=text, attachments=names, history=history,
             stage=session.get("stage"), tags=tags, memory=remembered, folded_through=folded,
         )
+        # An open purchase order stays on this chat, and other tasks still run beside it.
+        if session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm"):
+            if not any(task.kind == "agent" and task.name == "po" for task in tasks):
+                tasks.append(PlanTask(id="po-open", kind="agent", name="po", input={}, depends_on=[]))
         yield {
             "type": "plan",
             "tasks": [{"id": t.id, "kind": t.kind, "name": t.name, "depends_on": t.depends_on} for t in tasks],
         }
-        chosen = next((name for name in _HANDOFF if name in _agent_names(tasks) or (
-            name == "po" and session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm")
-        )), None)
+        work = scheduled(tasks)
+        label = "、".join(_HANDOFF.get(task.name, task.name) for task in work) or "直接回答"
+        yield status("plan", "Planning", label, state="done")
 
-        agents = _agent_names(tasks)
-        if session.get("specialist") == "po" and session.get("stage") in ("gathering", "confirm"):
-            agents = set(agents) | {"po"}
-            chosen = chosen or "po"
-        yield status("plan", "Planning", _HANDOFF.get(chosen or "", "直接回答"), state="done")
-
+        # One agent still speaks for itself. Several tasks share one reply after they all return.
+        if len(work) > 1 or (len(work) == 1 and work[0].kind != "agent"):
+            yield from fan_out(
+                db, llm, session, text, images=images, documents=documents, bundle=bundle,
+                tasks=tasks, work=work,
+            )
+            return
+        agents = _agent_names(work)
         if "po" in agents:
             yield from run_po(db, llm, session, text, images, bundle)
             return
@@ -399,8 +435,9 @@ def handle_message(
             return
         yield status("tools", "工具", "这一轮没有调用工具", state="done")
         yield status("answer", "回答", "正在直接回复", state="running")
-        done = yield from answer_directly(db, llm, session, text)
-        yield status("answer", "回答", "回复已写完", state="done")
+        done = yield from answer_directly(
+            db, llm, session, text, done_step=("answer", "回答", "回复已写完"),
+        )
         yield done
 
     yield from _beside(title_job, turn())

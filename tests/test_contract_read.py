@@ -152,7 +152,7 @@ def _plan(name: str) -> dict:
     return {"tasks": [{"id": "1", "kind": "agent", "name": name, "input": {}, "depends_on": []}]}
 
 
-def test_chat_files_the_attached_agreement_and_ignores_a_bare_name(db):
+def test_chat_holds_the_agreement_until_confirm(db):
     sid = service.new_session(db, "ps-1")["id"]
     named = FakeLLM(
         json_replies=[{"tags": ["contract"], "title": "agreement"}, _plan("contract")],
@@ -167,13 +167,40 @@ def test_chat_files_the_attached_agreement_and_ignores_a_bare_name(db):
     llm = FakeLLM(json_replies=[_plan("contract"), dict(EXTRACTION)], text_reply="Filed the agreement.")
     ev = list(service.handle_message(db, llm, sid, "please file this", documents=[("agreement.txt", AGREEMENT.encode())]))
     done = ev[-1]
-    assert done["contract_id"]
+    assert done.get("contract_id") in (None, "")
     table = done["contract"]
+    assert table["pending_id"] and table["confirmed"] is False
     assert table["file_name"] == "agreement.txt" and table["term_start_date"] == "2026-01-01"
     assert table["discount_rules"][0]["tiers"][0]["discount_percent"] == 3
-    assert db.active_contract("ps-1").term_start_date == "2026-01-01"
+    assert db.active_contract("ps-1") is None
     saved = db.session(sid)["history"][-1]
-    assert saved["contract_id"] == done["contract_id"]
+    assert "contract_id" not in saved
     assert saved["contract"]["file_name"] == "agreement.txt"
+    assert saved["contract_pending"]["extraction"]["term_start_date"] == "2026-01-01"
+    assert "contract_pending" not in done
+    reply_done = next(e for e in ev if e["type"] == "status" and e["id"] == "contract-reply" and e["state"] == "done")
+    last_token = max(i for i, e in enumerate(ev) if e["type"] == "token")
+    assert last_token < ev.index(reply_done) < ev.index(done)
+    assert reply_done["detail"] == "回复已写完"
+    stored_step = next(step for step in saved["activity"] if step["id"] == "contract-reply")
+    assert stored_step["state"] == "done" and stored_step["detail"] == "回复已写完"
     told = llm.calls[-1]["messages"][-1]["content"]
-    assert "合同入库" in told and "agreement.txt" in told and "2026-01-01" in told
+    assert "合同解析" in told and "还没写入数据库" in told and "agreement.txt" in told and "2026-01-01" in told
+    assert "contract_pending" not in told
+
+    filing = dict(table)
+    filing["title"] = "Nordic edited"
+    filing["discount_rules"] = [{
+        **filing["discount_rules"][0],
+        "tiers": [{**filing["discount_rules"][0]["tiers"][0], "discount_percent": 8}],
+    }]
+    filed = service.confirm_contract(db, sid, table["pending_id"], filing)
+    stored = db.active_contract("ps-1")
+    assert stored and stored.id == filed["contract_id"] and stored.title == "Nordic edited"
+    assert stored.term_start_date == "2026-01-01"
+    terms = db.contract_terms(stored.id)
+    assert terms.discount_rules[0].tiers[0].discount_percent == 8
+    assert db.contract_chunks(stored.id)
+    again = service.confirm_contract(db, sid, table["pending_id"], filing)
+    assert again["contract_id"] == stored.id
+    assert len(db.contracts("ps-1")) == 1

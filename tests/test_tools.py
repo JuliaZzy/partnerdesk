@@ -23,6 +23,13 @@ def test_translate_returns_only_the_model_text():
     assert "10 箱鱼油" in llm.calls[0]["messages"][0]["content"]
 
 
+def test_translate_accepts_target_as_the_language():
+    llm = FakeLLM(json_replies=[{"translation": "Hello"}])
+    out = translate_run({"text": "你好", "target": "en"}, llm=llm)
+    assert out["ok"] is True and out["data"]["translation"] == "Hello"
+    assert "目标语言：en" in llm.calls[0]["messages"][0]["content"]
+
+
 def test_translate_rejects_an_empty_request():
     assert translate_run({"text": "  "}, llm=FakeLLM())["ok"] is False
     assert translate_run({"target_language": "English", "source": "message"}, llm=FakeLLM())["error"] == "text required when source is message"
@@ -102,6 +109,9 @@ def test_tools_registry_names():
 
 
 def test_exchange_rate_normalizes_rmb_and_quotes(monkeypatch):
+    from backend.redis_store import fx_drop
+
+    fx_drop("CNY", "EUR")
     payload = {"amount": 1.0, "base": "CNY", "date": "2026-10-14", "rates": {"EUR": 0.13}}
 
     class _Resp:
@@ -114,8 +124,18 @@ def test_exchange_rate_normalizes_rmb_and_quotes(monkeypatch):
         def read(self):
             return json.dumps(payload).encode()
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    opened: list[object] = []
+
+    def _open(req, timeout=8):
+        del timeout
+        opened.append(req)
+        return _Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", _open)
     data = quote("rmb", "eur")
+    sent = opened[0]
+    assert "api.frankfurter.dev" in sent.full_url
+    assert sent.get_header("User-agent") == "PartnerDesk/1.0"
     assert data["base"] == "CNY" and data["target"] == "EUR" and data["converted"] == 0.13
     assert fx_run({"base_currency": "CNY", "target_currency": "EUR"})["ok"] is True
     assert fx_run({"base_currency": "", "target_currency": "EUR"})["ok"] is False

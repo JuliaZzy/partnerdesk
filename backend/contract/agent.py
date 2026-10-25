@@ -1,6 +1,6 @@
-"""聊天里的合同分析。把协议入库，然后引用已经存下的表。
+"""聊天里的合同分析。读出条款，等用户确认后才入库。
 
-`read` 填表，`ingest` 入库。回复不重算条款。
+`read` 填表。回复不重算条款，也不要说已经写入。
 """
 
 from __future__ import annotations
@@ -15,17 +15,19 @@ from ..orchestrator.speak import answer_directly
 from ..orchestrator.status import status
 from .turn import file_contract
 
-_FILED = {"filed": "已入库", "need_file": "还没有协议文件", "failed": "读取失败"}
+_FILED = {"ready": "条款已抽出，等确认", "need_file": "还没有协议文件", "failed": "读取失败"}
 
 
 def _prompt(text: str, filed: dict[str, Any]) -> str:
     """The chat model quotes this table. It does not recompute the filing."""
+    shown = {key: value for key, value in filed.items() if key != "pending"}
     return (
         f"{text}\n\n"
-        "=== 合同入库（来自代码——引用这些数字，不要重算，也不要编造条款） ===\n"
-        f"{json.dumps(filed, ensure_ascii=False)}\n"
+        "=== 合同解析（来自代码——引用这些数字，不要重算，也不要编造条款） ===\n"
+        f"{json.dumps(shown, ensure_ascii=False)}\n"
         "若 status 是 need_file，请对方提供协议文件。若 failed，说明出了什么问题。"
-        "若 filed，告诉他们入库了什么，包括被跳过的行。"
+        "若 ready，条款还在右侧浮窗里，还没写入数据库。请对方核对、修改，并点确认后才会入库。"
+        "不要说已经入库。被跳过的行也要提到。"
     )
 
 
@@ -42,11 +44,16 @@ def run(
         "contract_id": filed["contract_id"],
         "table": filed["table"],
     }
-    yield status("contract-reply", "说明", "正在根据入库结果回复", state="running")
+    yield status("contract-reply", "说明", "正在根据解析结果回复", state="running")
+    extra: dict[str, Any] = {}
+    if filed["table"]:
+        extra["contract"] = filed["table"]
+    if filed.get("pending"):
+        extra["contract_pending"] = filed["pending"]
     done = yield from answer_directly(
         db, llm, session, text,
         prompt_text=_prompt(text, filed),
-        extra={"contract_id": filed["contract_id"], "contract": filed["table"]},
+        extra=extra,
+        done_step=("contract-reply", "说明", "回复已写完"),
     )
-    yield status("contract-reply", "说明", "回复已写完", state="done")
     yield done

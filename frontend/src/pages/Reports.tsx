@@ -6,13 +6,23 @@ import {
   lastMonth,
   liveSummary,
   orderedVsSold,
+  reportCharts,
   revenueLabel,
   shortDate,
   sumBy,
   unitsLabel,
   type Fact,
 } from "../format";
+import { Markdown } from "../markdown-view";
 import { Badge, Bars, DataTable, Metrics, PageHead } from "../ui";
+
+type Narrative = {
+  id: string;
+  title: string;
+  body: string;
+  charts: unknown;
+  confirmed_at: string | null;
+};
 
 type Report = {
   id: string;
@@ -54,6 +64,8 @@ function ReportsDesk() {
   const { partnership } = useDesk();
   const p = partnership!;
   const [rows, setRows] = useState<Report[]>([]);
+  const [narratives, setNarratives] = useState<Narrative[]>([]);
+  const [narrativeId, setNarrativeId] = useState("");
   const [pick, setPick] = useState("");
   const [facts, setFacts] = useState<FactRow[]>([]);
   const [runs, setRuns] = useState<Extraction[]>([]);
@@ -69,12 +81,15 @@ function ReportsDesk() {
   const [busy, setBusy] = useState(false);
 
   async function refresh(selectId?: string) {
-    const [list, confirmed, placed] = await Promise.all([
+    const [list, confirmed, placed, writes] = await Promise.all([
       api<Report[]>(`/api/partnerships/${p.id}/reports`),
       api<FactRow[]>(`/api/partnerships/${p.id}/facts`),
       api<Order[]>(`/api/orders?partnership_id=${encodeURIComponent(p.id)}`),
+      api<Narrative[]>(`/api/partnerships/${p.id}/narratives`),
     ]);
     setRows(list);
+    setNarratives(writes);
+    setNarrativeId((current) => (current && writes.some((row) => row.id === current) ? current : writes[0]?.id ?? ""));
     setLive(confirmed);
     setOrders(placed);
     const id = selectId && list.some((row) => row.id === selectId) ? selectId : (pick && list.some((row) => row.id === pick) ? pick : list[0]?.id ?? "");
@@ -133,6 +148,7 @@ function ReportsDesk() {
   }
 
   const current = rows.find((row) => row.id === pick);
+  const narrative = narratives.find((row) => row.id === narrativeId) ?? narratives[0];
   const summary = liveSummary(live, p.currency);
   const compared = orderedVsSold(orders, summary.unitRows);
 
@@ -141,7 +157,26 @@ function ReportsDesk() {
       <PageHead title="Reports" caption={`${p.brand_name} · ${p.distributor_name} — every number is read from a cell by code, sits in draft until confirmed, and a re-sent month replaces the earlier one.`} />
       {error && <div className="error">{error}</div>}
       {toast && <div className="card ok-note">{toast}</div>}
-      <details className="card" open={rows.length === 0}>
+      {narratives.length > 0 && (
+        <>
+          <h2>Confirmed write-ups</h2>
+          <p className="muted">Edited in chat and confirmed. The one you saved last is selected.</p>
+          {narratives.length > 1 && (
+            <label className="field">Write-up
+              <select value={narrative?.id ?? ""} onChange={(event) => setNarrativeId(event.target.value)}>
+                {narratives.map((row) => <option key={row.id} value={row.id}>{row.title}</option>)}
+              </select>
+            </label>
+          )}
+          {narrative && (
+            <div className="card result-doc">
+              <p><strong>{narrative.title}</strong> <Badge status="confirmed" /> · {shortDate(narrative.confirmed_at)}</p>
+              <Markdown text={narrative.body} charts={reportCharts(narrative.charts)} prose />
+            </div>
+          )}
+        </>
+      )}
+      <details className="card" open={rows.length === 0 && narratives.length === 0}>
         <summary>Upload a report</summary>
         <p className="muted">A tidy table: one header row, one row per period / product / channel, numeric columns (.xlsx or .csv).</p>
         <div className="filters">
@@ -167,7 +202,7 @@ function ReportsDesk() {
         </div>
         {preview && <PreviewView preview={preview} />}
       </details>
-      {rows.length === 0 && <div className="empty">No reports yet.</div>}
+      {rows.length === 0 && narratives.length === 0 && <div className="empty">No reports yet.</div>}
       {rows.length > 0 && (
         <>
           <h2>On file</h2>

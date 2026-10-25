@@ -4,6 +4,7 @@
 
 不包含 `sessions`：里面有确认令牌、草稿槽位和聊天记录。
 不包含 `text2sql_logs`，这样查询不能读到或改写自己的审计。
+不包含 `narrative_reports`：那是确认后的叙述正文，不是可以相加的数字。动销仍在 `report_facts`。
 不包含 `brand_documents.file_bytes`；页面文本在 `brand_document_pages`。
 
 每个视图已经滤到当前合作关系；目录和品牌材料则滤到这个品牌。模型不要再自己加合作关系条件。
@@ -14,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 # Tables that exist in the database and must never be queried from here.
-EXCLUDED_TABLES = frozenset({"sessions", "text2sql_logs"})
+EXCLUDED_TABLES = frozenset({"sessions", "text2sql_logs", "narrative_reports"})
 # Columns that exist on a queryable table but are not in its view.
 HIDDEN_COLUMNS = {"brand_documents": frozenset({"file_bytes"})}
 

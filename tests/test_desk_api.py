@@ -126,3 +126,67 @@ def test_report_confirm_and_delete(db, partnership: Partnership):
     assert len(facts) == 4
     assert c.delete(f"/api/reports/{saved['id']}").status_code == 204
     assert db.report(saved["id"]) is None
+
+
+def test_confirming_chat_drafts_files_them(db):
+    from backend import service
+
+    sid = service.new_session(db, "ps-1")["id"]
+    extraction = {
+        "term_start_date": "2026-01-01",
+        "term_end_date": "2027-12-31",
+        "territory_text": "Sweden",
+        "allowed_countries": ["SE"],
+        "excluded_countries": [],
+        "minimum_order_quantities": [{"quantity": 500, "unit": "USD", "applies_per": "per_order"}],
+        "commercial_discount_rules": [{
+            "title": "Container sequence", "applies_per": "each_contract_year", "basis": "shipping_container_sequence",
+            "tiers": [{"from_container": 1, "to_container": 2, "discount_percent": 3}],
+        }],
+        "product_price_list": [],
+    }
+    filing = {
+        "pending_id": "cp_test", "title": "Draft", "file_name": "agreement.txt", "confirmed": False,
+        "term_start_date": "2026-01-01", "discount_rules": extraction["commercial_discount_rules"],
+        "moqs": extraction["minimum_order_quantities"],
+        "territories": [{"country_code": "SE", "kind": "allowed"}], "price_list": [],
+    }
+    db.update_session(sid, history=[
+        {
+            "role": "assistant", "content": "ready", "contract": filing,
+            "contract_pending": {"id": "cp_test", "extraction": extraction, "chunks": [], "file_name": "agreement.txt"},
+        },
+        {
+            "role": "assistant", "content": "# September\n\nSold well.", "report_draft": True, "report_pending_id": "rp_test",
+            "charts": [{"id": "chart_001", "title": "Units", "subtitle": "", "echarts_option": {"series": [{"data": [1]}]}}],
+        },
+    ])
+    c = client(db)
+    loaded = c.get(f"/api/sessions/{sid}").json()
+    assert "contract_pending" not in loaded["history"][0]
+    assert loaded["history"][0]["contract"]["pending_id"] == "cp_test"
+
+    edited = {**filing, "title": "Nordic edited", "discount_rules": [{
+        **extraction["commercial_discount_rules"][0],
+        "tiers": [{"from_container": 1, "to_container": 2, "discount_percent": 8}],
+    }]}
+    filed = c.post(f"/api/sessions/{sid}/confirm-contract", json={"pending_id": "cp_test", "filing": edited}).json()
+    assert filed["contract"]["confirmed"] is True and filed["contract"]["title"] == "Nordic edited"
+    listed = c.get("/api/partnerships/ps-1/contracts").json()
+    assert listed[0]["id"] == filed["contract_id"] and listed[0]["title"] == "Nordic edited"
+    detail = c.get(f"/api/contracts/{filed['contract_id']}").json()
+    assert detail["terms"]["discount_rules"][0]["tiers"][0]["discount_percent"] == 8
+
+    assert c.post(f"/api/sessions/{sid}/confirm-report", json={"pending_id": "rp_test", "text": "  "}).status_code == 400
+    saved = c.post(f"/api/sessions/{sid}/confirm-report", json={
+        "pending_id": "rp_test", "title": "September review", "text": "# September\n\nEdited.",
+        "charts": [{"id": "chart_001", "title": "Units", "subtitle": "month", "echarts_option": {"series": [{"data": [3]}]}}],
+    }).json()
+    writes = c.get("/api/partnerships/ps-1/narratives").json()
+    assert writes[0]["id"] == saved["id"] and writes[0]["title"] == "September review"
+    assert "Edited." in writes[0]["body"] and writes[0]["charts"][0]["title"] == "Units"
+    again = c.post(f"/api/sessions/{sid}/confirm-report", json={
+        "pending_id": "rp_test", "title": "September review", "text": "Second draft.", "charts": [],
+    }).json()
+    assert again["id"] == saved["id"]
+    assert len(c.get("/api/partnerships/ps-1/narratives").json()) == 1

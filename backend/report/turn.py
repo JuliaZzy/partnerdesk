@@ -1,10 +1,13 @@
 """对话里的销售报告，一次写成草稿。
 
-规划按固定六节给出数据库问题和网页检索。text2sql 执行取数。
-业绩和库存两节画图。下一周期计划和问题与风险才检索公开网页。
-查回的行交给一段 Python 算出洞察，再交给撰写。先写其余五节，再写摘要。
+规划给关键指标、业绩、库存和下一周期计划安排问题和检索。问题与风险先留空。
+text2sql 执行取数，并对返回的行打分。80 分及以上就用这些行；低于 80 分换问题再查，最多 3 次。
+业绩和库存两节画图。下一周期计划检索公开网页。
+查回的行交给一段 Python 算出洞察，再交给撰写。先写这四节。
+然后模型读这四节，决定要不要写问题与风险，以及要不要补查或检索。
+这一节写完再写摘要。
 整份写完后打分。85 分及以上过关。低于 85 分把意见交回撰写修改，最多 3 轮，每轮改完再打分。
-草稿不会写入 sales_reports。
+草稿留在会话里。用户确认后写入 narrative_reports，不写入 sales_reports。
 """
 
 from __future__ import annotations
@@ -16,10 +19,11 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from ..codefix import format_failures, with_reflection
 from ..db import Database, utcnow
 from ..llm import LLM
 from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
-from ..text2sql import QueryResult, answer_question, run_statement
+from ..text2sql import QueryResult, answer_question
 from ..text2sql.table_metadata import catalog_text
 from ..tools.web_search import search
 from .analyze import column_kinds
@@ -29,16 +33,16 @@ from .prompt import (
     REPORT_QUESTIONS_PROMPT,
     REPORT_REVIEW_PROMPT,
     REPORT_REVISE_PROMPT,
+    RISK_PLAN_PROMPT,
     SECTIONS,
     SUMMARY_PROMPT,
     WRITING_PROMPT,
     outline_text,
 )
-from .reflect import format_failures, with_reflection
 from .wizard import execute
 
 MAX_SECTION_QUESTIONS = 3
-MAX_SECTION_SEARCHES = 2
+MAX_SECTION_SEARCHES = 5
 PASS_SCORE = 85
 MAX_REVIEW_ROUNDS = 3
 _CHAPTER_POINTS = 20
@@ -187,8 +191,44 @@ def _clean(items: Any, cap: int, limit: int) -> list[str]:
     return kept
 
 
+@dataclass(frozen=True)
+class RiskPlan:
+    write: bool
+    questions: list[str]
+    searches: list[str]
+
+
+def risk_plan_schema() -> dict[str, Any]:
+    return {
+        "name": "risk_plan", "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "write": {"type": "boolean"},
+                "questions": {"type": "array", "items": {"type": "string"}},
+                "searches": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["write", "questions", "searches"],
+        },
+    }
+
+
+def parse_risk_plan(raw: Any) -> RiskPlan:
+    """A false or unreadable decision writes nothing. Questions on that decision are dropped."""
+    if not isinstance(raw, dict) or raw.get("write") is not True:
+        return RiskPlan(False, [], [])
+    return RiskPlan(
+        True,
+        _clean(raw.get("questions"), MAX_SECTION_QUESTIONS, _QUESTION),
+        _clean(raw.get("searches"), MAX_SECTION_SEARCHES, _SEARCH),
+    )
+
+
 def parse_plan(raw: Any, *, today: date | None = None) -> list[SectionPlan]:
-    """Keep the six sections. Questions are only the ones the model wrote."""
+    """Keep the six sections. Questions are only the ones the model wrote.
+
+    Risks stays empty. That section is planned after the earlier chapters exist.
+    """
     today = today or utcnow().date()
     supplied: dict[str, dict[str, Any]] = {}
     if isinstance(raw, dict):
@@ -204,9 +244,9 @@ def parse_plan(raw: Any, *, today: date | None = None) -> list[SectionPlan]:
         item = supplied.get(str(section["id"]))
         questions: list[str] = []
         searches: list[str] = []
-        if section["sql"]:
+        if section["sql"] and section["id"] != "risks":
             questions = _clean((item or {}).get("questions"), MAX_SECTION_QUESTIONS, _QUESTION) if item else []
-        if section["search"]:
+        if section["search"] and section["id"] != "risks":
             if item is not None and "searches" in item:
                 searches = _clean(item.get("searches"), MAX_SECTION_SEARCHES, _SEARCH)
             if section["require_search"] and not searches:
@@ -250,7 +290,6 @@ def iter_draft(
     )
     yield status("report-query", "查数", f"查完 {len(asked)} 个问题", state="done")
 
-    labels = _attach_product_labels(db, brand_id, asked)
     yield status("report-chart", "图表", "正在给业绩和库存配图", state="running")
     charts: list[dict[str, Any]] = []
     charts_for: dict[str, list[dict[str, Any]]] = {}
@@ -260,8 +299,7 @@ def iter_draft(
         if not section.chart:
             continue
         made, fails = _charts(llm, message, by_section[section.id])
-        made = _assign_chart_ids(made, used_chart_ids)
-        made = relabel_chart_labels(made, labels)
+        made = fit_chart_axes(_assign_chart_ids(made, used_chart_ids))
         charts_for[section.id] = made
         charts.extend(made)
         chart_failures.extend(fails)
@@ -277,7 +315,7 @@ def iter_draft(
     insight_failures: list[str] = []
     insight_errors: list[str] = []
     for section in planned:
-        if section.id == "summary":
+        if section.id in {"summary", "risks"}:
             continue
         got, err, fails = _code_wizard(llm, section, query_results)
         insights_by_section[section.id] = got
@@ -288,9 +326,9 @@ def iter_draft(
     yield status("report-insight", "洞察", f"{insight_count} 条" if insight_count else "没有算出洞察", state="done")
 
     texts: dict[str, str] = {}
-    yield status("report-write", "正文", "正在写除摘要以外的章节", state="running")
+    yield status("report-write", "正文", "正在写关键指标、业绩、库存和下一周期计划", state="running")
     for section in planned:
-        if section.id == "summary":
+        if section.id in {"summary", "risks"}:
             continue
         owned = charts_for.get(section.id, []) if section.chart else []
         content, _points = _write_section(
@@ -298,19 +336,67 @@ def iter_draft(
             _insights_for(section, insights_by_section),
             remembered=remembered, folded_through=folded_through,
         )
-        if section.id == "risks" and not content.strip():
-            continue
-        content = finish_section(content, labels, owned if section.chart else [])
+        content = finish_section(content, owned if section.chart else [])
         texts[section.id] = content or "这一节没有写成。"
-    written = sum(1 for section in planned if section.id != "summary" and texts.get(section.id, "").strip())
+    written = sum(
+        1 for section in planned
+        if section.id not in {"summary", "risks"} and texts.get(section.id, "").strip()
+    )
     yield status("report-write", "正文", f"{written} 节已写完", state="done")
+
+    yield status("report-risks", "问题与风险", "正在看已写章节", state="running")
+    prior = _body_for_summary(planned, texts)
+    decision = _plan_risks(
+        llm, message=message, history=history, chapters=prior,
+        asked=[item.question for item in asked],
+        remembered=remembered, folded_through=folded_through,
+    )
+    if decision.write:
+        if decision.questions or decision.searches:
+            planned = _fill_risks(planned, decision.questions, decision.searches)
+        if decision.questions:
+            yield status(
+                "report-risks", "问题与风险", f"正在补查 {len(decision.questions)} 个问题", state="running",
+            )
+            fresh, notes = _query_extra(
+                db, llm, decision.questions, asked=asked, by_section=by_section, section_id="risks",
+                partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
+                session_id=session_id, history=history, folded_through=folded_through, summary=summary,
+            )
+            failures.extend(notes)
+        if decision.searches:
+            yield status(
+                "report-risks", "问题与风险", f"正在检索 {len(decision.searches)} 条", state="running",
+            )
+            _search_more(decision.searches, found, search_fn or search)
+        risks_section = next(section for section in planned if section.id == "risks")
+        got, err, fails = _code_wizard(llm, risks_section, _query_results(asked))
+        if err:
+            insight_errors.append(f"{risks_section.title}: {err}")
+        insight_failures.extend(fails)
+        if got:
+            insights_by_section["risks"] = got
+        yield status("report-risks", "问题与风险", "正在写这一节", state="running")
+        content, _points = _write_section(
+            llm, message, history, risks_section, _asks_for(risks_section, by_section), found, [],
+            _insights_for(risks_section, insights_by_section),
+            remembered=remembered, folded_through=folded_through, prior=prior,
+        )
+        if content.strip():
+            texts["risks"] = finish_section(content, [])
+            yield status("report-risks", "问题与风险", "已写完", state="done")
+        else:
+            insights_by_section.pop("risks", None)
+            yield status("report-risks", "问题与风险", "看过之后这一节不写", state="done")
+    else:
+        yield status("report-risks", "问题与风险", "已写章节里没有要单写的问题", state="done")
 
     yield status("report-summary", "摘要", "正在根据已写章节写摘要", state="running")
     summary_text, _points = _write_summary(
         llm, message, history, _body_for_summary(planned, texts),
         remembered=remembered, folded_through=folded_through,
     )
-    texts["summary"] = finish_section(strip_chart_refs(summary_text), labels, []) or "摘要没有写成。"
+    texts["summary"] = finish_section(strip_chart_refs(summary_text), []) or "摘要没有写成。"
     yield status("report-summary", "摘要", "摘要已写完", state="done")
 
     report = _assemble(planned, texts) or "The report draft is empty."
@@ -326,7 +412,7 @@ def iter_draft(
     else:
         review_note = f"{score} 分，未过关"
     yield status("report-review", "审核", review_note, state="done")
-    report = finish_report(report, labels, planned, charts_for)
+    report = finish_report(report, planned, charts_for)
 
     warnings = _warnings(asked, found)
     warnings.extend(failures)
@@ -377,11 +463,95 @@ def _plan(
                 outline=outline_text(),
             ), remembered),
             messages=[{"role": "user", "content": user}],
-            schema=plan_schema(), temperature=0, max_tokens=1500,
+            schema=plan_schema(), temperature=0.6, max_tokens=1500,
         )
     except Exception:
         raw = {}
     return parse_plan(raw, today=utcnow().date())
+
+
+def _fill_risks(planned: list[SectionPlan], questions: list[str], searches: list[str]) -> list[SectionPlan]:
+    """Replace the empty risks slot with the questions and searches chosen after the chapters."""
+    filled: list[SectionPlan] = []
+    for section in planned:
+        if section.id != "risks":
+            filled.append(section)
+            continue
+        filled.append(SectionPlan(
+            id=section.id, title=section.title, brief=section.brief,
+            sql=section.sql, chart=section.chart, search=section.search,
+            require_search=section.require_search, questions=questions, searches=searches,
+        ))
+    return filled
+
+
+def _plan_risks(
+    llm: LLM, *, message: str, history: list[dict[str, Any]], chapters: str, asked: list[str],
+    remembered: str = "", folded_through: int = 0,
+) -> RiskPlan:
+    """Decide risks only after the earlier chapters are written. A model failure skips the section."""
+    if not chapters.strip():
+        return RiskPlan(False, [], [])
+    messages = _history(history, folded_through)
+    messages.append({"role": "user", "content": (
+        f"=== 已写章节 ===\n{chapters}\n\n"
+        f"=== 已经问过数据库的问题 ===\n{json.dumps(asked, ensure_ascii=False)}"
+    )})
+    try:
+        raw = llm.complete_json(
+            system=attach(RISK_PLAN_PROMPT.format(
+                message=(message or "").strip()[:4000] or "（无文字）",
+                database_structure=catalog_text(),
+                max_questions=MAX_SECTION_QUESTIONS,
+                max_searches=MAX_SECTION_SEARCHES,
+            ), remembered),
+            messages=messages,
+            schema=risk_plan_schema(), temperature=0, max_tokens=800,
+        )
+    except Exception:
+        return RiskPlan(False, [], [])
+    return parse_risk_plan(raw)
+
+
+def _query_extra(
+    db: Database, llm: LLM, questions: list[str], *,
+    asked: list[_Ask], by_section: dict[str, list[_Ask]], section_id: str,
+    partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
+    history: list[dict[str, Any]], folded_through: int, summary: str,
+) -> tuple[list[_Ask], list[str]]:
+    """Run questions this draft has not asked. A repeat is reused."""
+    seen = {item.question.casefold(): item for item in asked}
+    fresh: list[_Ask] = []
+    notes: list[str] = []
+    bucket = by_section.setdefault(section_id, [])
+    have = {item.id for item in bucket}
+    for question in questions:
+        item = seen.get(question.casefold())
+        if item is None:
+            item, note = _ask(
+                db, llm, question=question, qid=f"q{len(asked) + 1}",
+                partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
+                session_id=session_id, history=history, folded_through=folded_through, summary=summary,
+            )
+            seen[question.casefold()] = item
+            asked.append(item)
+            fresh.append(item)
+            if note:
+                notes.append(note)
+        if item.id not in have:
+            have.add(item.id)
+            bucket.append(item)
+    return fresh, notes
+
+
+def _search_more(queries: list[str], found: list[_Search], search_fn: Any) -> None:
+    seen = {item.query.casefold() for item in found}
+    for query in queries:
+        key = query.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(_lookup(query, search_fn))
 
 
 def _query(
@@ -389,7 +559,7 @@ def _query(
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     history: list[dict[str, Any]], folded_through: int, summary: str,
 ) -> tuple[list[_Ask], dict[str, list[_Ask]], list[str]]:
-    """Run each distinct question once. A failed statement is revised at most twice more."""
+    """Run each distinct planned question once. Repair and the reflection score live in text2sql."""
     seen: dict[str, _Ask] = {}
     asked: list[_Ask] = []
     failures: list[str] = []
@@ -417,26 +587,13 @@ def _ask(
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     history: list[dict[str, Any]], folded_through: int, summary: str,
 ) -> tuple[_Ask, str]:
-    first = answer_question(
+    """One planned question. Statement repair and the reflection score live in text2sql."""
+    result = answer_question(
         db, llm, question=question, partnership_id=partnership_id, brand_id=brand_id,
-        distributor_id=distributor_id, session_id=session_id, reflect=False, history=history,
+        distributor_id=distributor_id, session_id=session_id, history=history,
         folded_through=folded_through, summary=summary,
     )
-
-    def run(sql: str) -> tuple[bool, QueryResult, str | None, str]:
-        if not seen["done"]:
-            seen["done"] = True
-            return first.ok, first, first.error, ""
-        result = run_statement(
-            db, sql, question=question, partnership_id=partnership_id, brand_id=brand_id,
-            distributor_id=distributor_id, session_id=session_id, tables=first.tables,
-        )
-        return result.ok, result, result.error, ""
-
-    seen = {"done": False}
-    value, attempts = with_reflection(llm, kind="sql", first=first.sql or "", run=run)
-    chosen = value if isinstance(value, QueryResult) else first
-    return _Ask(qid, question, chosen), format_failures(attempts)
+    return _Ask(qid, question, result), result.handoff
 
 
 def _asks_for(section: SectionPlan, by_section: dict[str, list[_Ask]]) -> list[_Ask]:
@@ -474,7 +631,7 @@ def _lookup(query: str, search_fn: Any) -> _Search:
         return _Search(query=query, ok=False, results=[], error=str(err).split("\n", 1)[0][:200])
     results: list[dict[str, str]] = []
     if isinstance(rows, list):
-        for row in rows[:3]:
+        for row in rows[:5]:
             if not isinstance(row, dict):
                 continue
             results.append({
@@ -491,7 +648,7 @@ def _echarts_charts(specs: Any) -> list[dict[str, Any]]:
         return []
     kept: list[dict[str, Any]] = []
     for spec in specs:
-        if len(kept) >= 2 or not isinstance(spec, dict):
+        if not isinstance(spec, dict):
             continue
         option = spec.get("echarts_option")
         title = str(spec.get("title") or "").strip()
@@ -531,7 +688,7 @@ def _charts(llm: LLM, message: str, asked: list[_Ask]) -> tuple[list[dict[str, A
                 query_results=json.dumps(query_results, ensure_ascii=False),
             ),
             messages=[{"role": "user", "content": "按查询结果选择图表。"}],
-            schema=chart_schema(), temperature=0, max_tokens=4_000,
+            schema=chart_schema(), temperature=0.2, max_tokens=4_000,
         )
     except Exception as err:
         raw = {"error": str(err).split("\n", 1)[0][:300]}
@@ -598,7 +755,7 @@ def _code_wizard(
                 query_results=json.dumps(query_results, ensure_ascii=False, default=str),
             ),
             messages=[{"role": "user", "content": "只为当前章节写 analyze(datasets)。"}],
-            schema=code_wizard_schema(), temperature=0, max_tokens=1_500,
+            schema=code_wizard_schema(), temperature=0.2, max_tokens=1_500,
         )
     except Exception as err:
         return [], str(err).split("\n", 1)[0][:200], []
@@ -624,7 +781,7 @@ def _history(history: list[dict[str, Any]], folded_through: int) -> list[dict[st
 
 def _section_payload(
     section: SectionPlan, asked: list[_Ask], found: list[_Search], charts: list[dict[str, Any]],
-    insights: list[dict[str, Any]],
+    insights: list[dict[str, Any]], prior: str = "",
 ) -> str:
     wanted = {query.casefold() for query in section.searches}
     rows = [
@@ -648,11 +805,14 @@ def _section_payload(
         }
         for chart in charts
     ] if section.chart else []
-    return (
-        f"=== 查询结果 ===\n{json.dumps(payload, ensure_ascii=False)}\n\n"
-        f"=== 新闻 ===\n{json.dumps(web, ensure_ascii=False) if web else '（本节不用）'}\n\n"
-        f"=== 图表 ===\n{json.dumps(drawn, ensure_ascii=False) if drawn else '（本节不用）'}"
-    )
+    blocks = [
+        f"=== 查询结果 ===\n{json.dumps(payload, ensure_ascii=False)}",
+        f"=== 新闻 ===\n{json.dumps(web, ensure_ascii=False) if web else '（本节不用）'}",
+        f"=== 图表 ===\n{json.dumps(drawn, ensure_ascii=False) if drawn else '（本节不用）'}",
+    ]
+    if prior.strip():
+        blocks.insert(0, f"=== 已写章节 ===\n{prior.strip()}")
+    return "\n\n".join(blocks)
 
 
 def _read_section(raw: Any) -> tuple[str, list[str]]:
@@ -666,10 +826,13 @@ def _read_section(raw: Any) -> tuple[str, list[str]]:
 def _write_section(
     llm: LLM, message: str, history: list[dict[str, Any]], section: SectionPlan,
     asked: list[_Ask], found: list[_Search], charts: list[dict[str, Any]], insights: list[dict[str, Any]],
-    *, remembered: str = "", folded_through: int = 0,
+    *, remembered: str = "", folded_through: int = 0, prior: str = "",
 ) -> tuple[str, list[str]]:
     messages = _history(history, folded_through)
-    messages.append({"role": "user", "content": _section_payload(section, asked, found, charts, insights)})
+    messages.append({
+        "role": "user",
+        "content": _section_payload(section, asked, found, charts, insights, prior),
+    })
     try:
         raw = llm.complete_json(
             system=attach(WRITING_PROMPT.format(
@@ -678,7 +841,7 @@ def _write_section(
                 section_brief=section.brief,
             ), remembered),
             messages=messages,
-            schema=section_schema(), temperature=0.2, max_tokens=1200,
+            schema=section_schema(), temperature=0.8, max_tokens=2000,
         )
     except Exception:
         return "", []
@@ -725,82 +888,12 @@ def _assemble(planned: list[SectionPlan], texts: dict[str, str]) -> str:
     return "\n\n".join(parts)
 
 
-_SKU_KEYS = {"sku", "product_sku"}
-_NAME_KEYS = {"product_name", "product_name_native", "product_name_en", "name"}
 _CHART_REF = re.compile(r"\[([^\]\n]+)\]\((chart_[\w-]+)\)")
 _SENTENCE = re.compile(r"[^。！？]+[。！？]?")
 _TABLE_LINE = re.compile(r"^\s*\|")
 _HEADING_LINE = re.compile(r"^#{1,6}\s+\S")
 _BULLET_LINE = re.compile(r"^(?:[-*]|\d+[.)])\s+\S")
 _LINK_LINE = re.compile(r"^\[[^\]\n]+\]\([^)\s]+\)\s*$")
-
-
-def _row_sku(row: dict[str, Any]) -> str | None:
-    for key, value in row.items():
-        if str(key).strip().lower() in _SKU_KEYS and isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
-def _row_name(row: dict[str, Any]) -> str:
-    folded = {str(key).strip().lower(): value for key, value in row.items()}
-    for key in _NAME_KEYS:
-        value = folded.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
-def stamp_product_labels(rows: list[dict[str, Any]], names: dict[str, str]) -> dict[str, str]:
-    """Attach product_label and return sku -> 「名称（SKU）」 for rows we can name."""
-    labels: dict[str, str] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        sku = _row_sku(row)
-        if not sku:
-            continue
-        name = (names.get(sku) or "").strip() or _row_name(row)
-        if name.endswith(f"（{sku}）"):
-            label = name
-        elif name and name != sku:
-            label = f"{name}（{sku}）"
-        else:
-            continue
-        row["product_label"] = label
-        labels[sku] = label
-    return labels
-
-
-def _attach_product_labels(db: Database, brand_id: str, asked: list[_Ask]) -> dict[str, str]:
-    rows: list[dict[str, Any]] = []
-    skus: list[str] = []
-    seen: set[str] = set()
-    for item in asked:
-        if not item.result.ok:
-            continue
-        for row in item.result.rows:
-            if not isinstance(row, dict):
-                continue
-            rows.append(row)
-            sku = _row_sku(row)
-            if sku and sku not in seen:
-                seen.add(sku)
-                skus.append(sku)
-    names = db.product_names(brand_id, skus) if skus else {}
-    return stamp_product_labels(rows, names)
-
-
-def rewrite_product_mentions(text: str, labels: dict[str, str]) -> str:
-    """Replace a bare SKU with 「名称（SKU）」. A SKU already inside that form is left alone."""
-    rewritten = text or ""
-    for sku in sorted(labels, key=len, reverse=True):
-        label = labels[sku]
-        if not sku or not label or sku == label:
-            continue
-        pattern = re.compile(rf"(?<![A-Za-z0-9（-]){re.escape(sku)}(?![A-Za-z0-9）-])")
-        rewritten = pattern.sub(label, rewritten)
-    return rewritten
 
 
 def strip_chart_refs(text: str) -> str:
@@ -892,10 +985,9 @@ def ensure_chart_cites(text: str, charts: list[dict[str, Any]]) -> str:
     return f"{body}\n\n{extra}" if body else extra
 
 
-def finish_section(text: str, labels: dict[str, str], charts: list[dict[str, Any]]) -> str:
-    """Names, paragraph breaks, then a citation for any chart this section still omitted."""
-    shaped = shape_prose(rewrite_product_mentions(text, labels))
-    return ensure_chart_cites(shaped, charts)
+def finish_section(text: str, charts: list[dict[str, Any]]) -> str:
+    """Paragraph breaks, then a citation for any chart this section still omitted."""
+    return ensure_chart_cites(shape_prose(text), charts)
 
 
 def _assign_chart_ids(charts: list[dict[str, Any]], used: set[str]) -> list[dict[str, Any]]:
@@ -910,16 +1002,6 @@ def _assign_chart_ids(charts: list[dict[str, Any]], used: set[str]) -> list[dict
         used.add(cid)
         assigned.append({**chart, "id": cid})
     return assigned
-
-
-def _relabel_node(node: Any, labels: dict[str, str]) -> Any:
-    if isinstance(node, str):
-        return rewrite_product_mentions(node, labels)
-    if isinstance(node, list):
-        return [_relabel_node(item, labels) for item in node]
-    if isinstance(node, dict):
-        return {key: _relabel_node(value, labels) for key, value in node.items()}
-    return node
 
 
 def _fit_category_axes(option: dict[str, Any]) -> None:
@@ -964,21 +1046,16 @@ def _fit_category_axes(option: dict[str, Any]) -> None:
     option["grid"] = grid
 
 
-def relabel_chart_labels(charts: list[dict[str, Any]], labels: dict[str, str]) -> list[dict[str, Any]]:
-    """Category names follow the catalog. The chart id stays a chart id."""
-    relabeled: list[dict[str, Any]] = []
+def fit_chart_axes(charts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Long category labels need room. The names stay whatever the query and the chart model wrote."""
+    fitted: list[dict[str, Any]] = []
     for chart in charts:
         option = chart.get("echarts_option")
-        copied = _relabel_node(option, labels) if isinstance(option, dict) else option
+        copied = json.loads(json.dumps(option)) if isinstance(option, dict) else option
         if isinstance(copied, dict):
             _fit_category_axes(copied)
-        relabeled.append({
-            **chart,
-            "title": rewrite_product_mentions(str(chart.get("title") or ""), labels),
-            "subtitle": rewrite_product_mentions(str(chart.get("subtitle") or ""), labels),
-            "echarts_option": copied,
-        })
-    return relabeled
+        fitted.append({**chart, "echarts_option": copied})
+    return fitted
 
 
 def _section_heading_id(heading: str, planned: list[SectionPlan]) -> str | None:
@@ -1028,13 +1105,11 @@ def place_charts_in_sections(
 
 
 def finish_report(
-    report: str, labels: dict[str, str], planned: list[SectionPlan],
-    charts_for: dict[str, list[dict[str, Any]]],
+    report: str, planned: list[SectionPlan], charts_for: dict[str, list[dict[str, Any]]],
 ) -> str:
-    """The revise step can undo names, breaks, and chart placement. Put them back on the final text."""
-    named = rewrite_product_mentions(report, labels)
-    placed = place_charts_in_sections(named, planned, charts_for)
-    return shape_prose(placed) or named
+    """The revise step can undo breaks and chart placement. Put them back on the final text."""
+    placed = place_charts_in_sections(report, planned, charts_for)
+    return shape_prose(placed) or report
 
 
 def _report_evidence(
@@ -1050,7 +1125,7 @@ def _report_evidence(
             for item in items
         ],
         "news": [
-            {"query": item.query, "results": item.results[:4] if item.ok else []}
+            {"query": item.query, "results": item.results if item.ok else []}
             for item in found
         ],
         "charts": [

@@ -28,17 +28,10 @@ SQL = """你写一条 PostgreSQL SELECT，用下面这些表回答问题。你�
 - purchase_order_items.quantity 是箱数。
 - 要计数、求和或总额时，返回聚合结果。不要把明细行列出来，指望读者自己加总。
 - report_facts 除非问题问的是草稿或被替换的行，否则使用 status = 'confirmed'。不要把 superseded 的行加进已确认的合计。
-- 问题要产品名称时，连接 products，选出 product_name_native，为空再用 product_name_en，并同时选出 sku。不要只返回 sku。
+- 结果里出现产品时，名称和 SKU 一起选出。连接 products，选出 product_name_native，为空再用 product_name_en，并同时选出 sku。行上已经有 product_name 时直接选出。不要只返回 sku。
 - products 很大。按 sku 或 name 筛选，或者做聚合。不要把整个目录选出来。
 - 不要选择长文本（description_en、body、页面文本、operating_context），除非问题要的就是那段措辞。
 - 金额列已经算好。求和或直接引用；当被问的数字是 line_total 或 total_amount 时，不要再把单价乘一遍数量。
-
-返回 JSON {"sql": "SELECT ..."}。
-"""
-
-REPAIR = """你上一条 SELECT 失败了。为同一个问题另写一条 SELECT。你不估算数字。
-
-守住每一条规则：一条 SELECT，只用列出的表和列，表名不加前缀，函数用裸名称，不要加合作关系条件，总额用聚合，除非问的是草稿否则只用已确认的报告事实。
 
 返回 JSON {"sql": "SELECT ..."}。
 """
@@ -57,7 +50,9 @@ ANSWER = """你回答经销商关于他们自己的订单、销售、合同或�
 
 REFLECT = """你检查数据库结果是否回答了用户的问题。你不编造数字，也不写 SQL。
 
-你看到的是问题、查过的表，以及返回的行。这些行足够回答时 complete=true，包括诚实的答案是「没有匹配」这种情况。需要另一种聚合、筛选或连接的表时 complete=false。那时 retry_question 是一个可以单独成立的后续问题。complete 为 true 时 retry_question 留空。不要重复原来的问题。
+你看到的是问题、查过的表，以及返回的行。score 是 0 到 100 的整数，表示这些行在多大程度上回答了这个问题。诚实的「没有匹配」如果就是答案，给 80 分或更高。需要另一种聚合、筛选或连接时给 80 分以下。
 
-返回 JSON {"complete": boolean, "retry_question": string}。
+score 低于 80 时，retry_question 是一个可以单独成立的后续问题。不要重复原来的问题。score 达到 80 时 retry_question 留空。
+
+返回 JSON {"score": integer, "retry_question": string}。
 """

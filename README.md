@@ -1,21 +1,10 @@
-# partnerdesk
+# KA Account Agent
 
-面向品牌经销商的**对话式运营 agent**。聊天从 Orchestrator 进来，由它分给下面几条。图在
-[`docs/PartnerDesk.drawio`](docs/PartnerDesk.drawio)。
+面向品牌经销商的**对话式运营 agent**。聊天从 Orchestrator 进来，由它分给下面几条。
 
-```
-Orchestrator
-├── PO Agent ──────────────────────────► 合同分析结果
-├── AI Report
-│     ├── 新闻 / 知识检索
-│     └── Data Query
-├── Contract Analysis
-├── 新闻 / 知识检索（不是 agent）
-│     ├── 工具：BOCHA 新闻、汇率、发信、翻译、LinkedIn MCP
-│     ├── Brand Knowledge RAG
-│     └── 合同分析结果
-└── Data Query
-```
+![Agent 调用路径](docs/agent-call-paths.png)
+
+可编辑的原图在 [`docs/agent-call-paths.html`](docs/agent-call-paths.html)。图比较宽，点开可以看清字。
 
 - **PO Agent**（`po/`）：对话建采购单。模型把消息填进固定 slot；产品、价格、MOQ、商业规则由代码计算。下单时读合同分析结果。用户确认后才提交。提交之后，同一条聊天处理收货、付款、破损索赔。
 - **AI Report**（`report/`）：聊天里的报表草稿。它再去要 Data Query 和新闻 / 知识检索，叙述由模型根据这些结果来写。整洁销售表进事实表是另一条路（`spreadsheet.py`）。
@@ -82,7 +71,8 @@ frontend/               桌面（Vite + React + TypeScript）：聊天 / 产品 
 scripts/           fetch_off_products.py 拉 Open Food Facts 快照到 data/off/；build_catalog.py（dev catalog）把它导入产品目录
 data/              大数据集（Open Food Facts 快照），gitignore，不进仓库
 tests/             不联网的测试（FakeLLM；页面行为由 HTTP 测试和 frontend/ 的 Vitest 覆盖）
-docs/PartnerDesk.drawio   上面的架构图
+docs/agent-call-paths.html   上面的调用路径，png 是嵌在这里的那张
+docs/PartnerDesk.drawio   早一版的粗图
 docs/porting/      从第一版带过来了什么、为什么（01–06）
 ```
 

@@ -27,19 +27,19 @@ def test_open_session_does_not_send_history():
     assert "=== 消息 ===" in user
 
 
-def test_make_plan_parses_agents_only():
+def test_make_plan_keeps_agents_and_tools():
     llm = FakeLLM(json_replies=[{
         "tasks": [
             {"id": "1", "kind": "agent", "name": "po", "input": {}, "depends_on": []},
             {"id": "2", "kind": "tool", "name": "web_search", "input": {"query": "x"}, "depends_on": []},
             {"id": "3", "kind": "agent", "name": "data", "input": {}, "depends_on": []},
+            {"id": "4", "kind": "agent", "name": "nope", "input": {}, "depends_on": []},
         ],
     }])
     tasks = make_plan(
         llm, message="order fish oil", attachments=[], history=[], stage=None, tags=["po"],
     )
-    # tools/MCP are not planned — they go through tools= function calling.
-    assert [(t.kind, t.name) for t in tasks] == [("agent", "po"), ("agent", "data")]
+    assert [(t.kind, t.name) for t in tasks] == [("agent", "po"), ("tool", "web_search"), ("agent", "data")]
 
 
 def test_empty_plan_is_allowed():

@@ -13,15 +13,20 @@ import uuid
 from collections.abc import Iterator
 from typing import Any
 
+from .contract.confirm import confirm_contract as _confirm_contract
 from .db import Database
 from .llm import LLM
 from .memory import record_history
 from .orchestrator import MAX_IMAGES
 from .orchestrator.turn import handle_message as run_turn
 from .po.turn import build_ledger, confirm_order, load_bundle
+from .report.confirm import confirm_report as _confirm_report
 from .turn_lock import hold_session
 
-__all__ = ["MAX_IMAGES", "confirm", "delete_session", "handle_message", "new_session", "orders"]
+__all__ = [
+    "MAX_IMAGES", "confirm", "confirm_contract", "confirm_report",
+    "delete_session", "handle_message", "new_session", "orders",
+]
 
 
 def new_session(db: Database, partnership_id: str | None = None) -> dict[str, Any]:
@@ -67,6 +72,20 @@ def _confirm(db: Database, session_id: str, token: str) -> dict[str, Any]:
         result["message"] = "The order moved since you last saw it (a price or rule changed), so I didn't place it. Here's the current draft — please check it again."
         result["steps"] = build_ledger("gathering")
     return result
+
+
+def confirm_contract(db: Database, session_id: str, pending_id: str, filing: dict[str, Any]) -> dict[str, Any]:
+    """File the edited contract draft. Same lock as a chat turn, so two clicks cannot race."""
+    with hold_session(session_id):
+        return _confirm_contract(db, session_id, pending_id, filing)
+
+
+def confirm_report(
+    db: Database, session_id: str, pending_id: str, *, title: str, text: str, charts: list[Any],
+) -> dict[str, Any]:
+    """File the edited report draft. A second click updates the same write-up."""
+    with hold_session(session_id):
+        return _confirm_report(db, session_id, pending_id, title=title, text=text, charts=charts)
 
 
 def orders(db: Database, partnership_id: str | None = None) -> list[dict[str, Any]]:

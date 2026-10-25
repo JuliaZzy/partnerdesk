@@ -17,6 +17,7 @@ import {
   looseModelJson,
   money,
   readActivity,
+  settleActivity,
   trimNum,
   reportCharts,
   resultLink,
@@ -44,8 +45,13 @@ type Turn = {
   charts?: ReportChart[];
   webNotes?: string[];
   reportDraft?: boolean;
+  reportBody?: string;
+  reportPendingId?: string;
+  reportId?: string;
+  reportTitle?: string;
   contract?: ContractFiling;
   order?: boolean;
+  combined?: boolean;
   activity?: Activity[];
   modelJson?: unknown[];
 };
@@ -92,9 +98,14 @@ type SessionRow = {
     model_json?: unknown;
     activity?: unknown;
     report_draft?: boolean;
+    report_pending_id?: string;
+    report_id?: string;
+    report_title?: string;
     contract?: unknown;
     order?: boolean;
     order_draft?: unknown;
+    report_body?: string;
+    combined?: boolean;
   }[];
 };
 
@@ -103,6 +114,21 @@ onForgetChat((id) => snaps.delete(id));
 const IMAGE = new Set(["png", "jpg", "jpeg", "webp"]);
 const DOC = new Set(["pdf", "docx", "txt", "md"]);
 const SKIP = new Set(["(message)", "(confirm)"]);
+
+function reportHeading(text: string): string {
+  for (const line of text.split("\n")) {
+    const found = /^#{1,3}\s+(\S.*?)\s*$/.exec(line.trim());
+    if (found) return found[1].slice(0, 200);
+  }
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.slice(0, 40) || "Report";
+}
+
+function paneIndex(id: string, prefix: string): number | null {
+  if (!id.startsWith(prefix)) return null;
+  const n = Number(id.slice(prefix.length));
+  return Number.isInteger(n) ? n : null;
+}
 const STEP_MARK: Record<string, string> = { done: "✓", working: "…", "needs-you": "!", pending: "·" };
 
 function readDataUrl(file: File): Promise<string> {
@@ -131,8 +157,15 @@ function fromSession(session: SessionRow, hello: string): Snap {
       const charts = message.role === "assistant" ? reportCharts(message.charts) : undefined;
       const notes = message.role === "assistant" ? webNotes(message.web_notes) : undefined;
       const reportDraft = message.role === "assistant" && message.report_draft === true;
+      const reportBody = message.role === "assistant" && message.report_body ? message.report_body : undefined;
+      const reportPendingId = message.role === "assistant" && message.report_pending_id ? message.report_pending_id : undefined;
+      const reportId = message.role === "assistant" && message.report_id ? message.report_id : undefined;
+      const reportTitle = message.role === "assistant"
+        ? (message.report_title || (reportDraft ? reportHeading(reportBody || text) : undefined))
+        : undefined;
       const contract = message.role === "assistant" ? contractFiling(message.contract) : undefined;
       const order = message.role === "assistant" && message.order === true;
+      const combined = message.role === "assistant" && message.combined === true;
       const savedDraft = orderDraft(message.order_draft);
       if (savedDraft) draft = savedDraft;
       const activity = message.role === "assistant" ? readActivity(message.activity) : undefined;
@@ -140,7 +173,7 @@ function fromSession(session: SessionRow, hello: string): Snap {
       const modelJson = looseModelJson(stored, activity);
       turns.push({
         role: message.role, text, sources, dataQuery, charts, webNotes: notes,
-        reportDraft, contract, order, activity, modelJson,
+        reportDraft, reportBody, reportPendingId, reportId, reportTitle, contract, order, combined, activity, modelJson,
       });
     }
   }
@@ -182,17 +215,21 @@ function ChatDesk() {
   const composing = useRef(false);
   const flight = useFlight(sid);
   sidRef.current = sid;
-  const liveKind = flight.task === "report" || flight.task === "contract" || flight.task === "po" ? flight.task : null;
+  const pendingKinds = flight.tasks;
+  const liveKind = pendingKinds.length > 1
+    ? null
+    : flight.task === "report" || flight.task === "contract" || flight.task === "po" ? flight.task : null;
   const liveTask = liveKind ? { kind: liveKind, text: flight.live } : null;
   const panes = resultPanes({
     hasOrder: Boolean(snap?.draft),
     reports: (snap?.turns ?? []).flatMap((turn, index) => (
-      turn.reportDraft ? [{ id: `report-${index}`, text: turn.text, charts: turn.charts }] : []
+      turn.reportDraft ? [{ id: `report-${index}`, text: turn.reportBody || turn.text, charts: turn.charts }] : []
     )),
     contracts: (snap?.turns ?? []).flatMap((turn, index) => (
       turn.contract ? [{ id: `contract-${index}`, filing: turn.contract }] : []
     )),
     live: liveTask,
+    pending: pendingKinds.length > 1 ? pendingKinds : [],
   });
   const paneKey = panes.map((pane) => pane.id).join("|");
   const [picked, setPicked] = useState<string | null>(null);
@@ -321,7 +358,7 @@ function ChatDesk() {
     const chosen = attached ?? flightOf(chatId).files;
     const trimmed = message.trim();
     if (!trimmed && chosen.length === 0) return;
-    patchFlight(chatId, { busy: true, error: null, draft: "", files: [], live: "", activity: [], modelJson: [], task: null });
+    patchFlight(chatId, { busy: true, error: null, draft: "", files: [], live: "", activity: [], modelJson: [], task: null, tasks: [] });
     const images: string[] = [];
     const documents: { name: string; data: string }[] = [];
     for (const file of chosen) {
@@ -344,11 +381,15 @@ function ChatDesk() {
     // then for the chat list, kept "Replying…" up after the answer was already on screen.
     let committed = false;
     function finish() {
-      if (committed) return;
+      if (committed || !chatId) return;
       committed = true;
       const done = finished.event;
-      const artifact = done?.report_draft === true || contractFiling(done?.contract) != null;
-      const order = !artifact && orderDraft(done?.draft) != null;
+      const incoming = orderDraft(done?.draft);
+      const hasReport = done?.report_draft === true;
+      const reportBody = typeof done?.report_body === "string" ? done.report_body : undefined;
+      const poTurn = incoming != null || (
+        Array.isArray(done?.steps) && (done.steps as Step[]).some((step) => step.title === "Confirm draft")
+      );
       const next: Snap = {
         ...base,
         title,
@@ -363,20 +404,24 @@ function ChatDesk() {
           dataQuery: dataQueryMark(done?.data_query),
           charts: reportCharts(done?.charts),
           webNotes: webNotes(done?.web_notes),
-          reportDraft: done?.report_draft === true,
+          reportDraft: hasReport,
+          reportBody,
+          reportPendingId: typeof done?.report_pending_id === "string" ? done.report_pending_id : undefined,
+          reportTitle: hasReport ? reportHeading(reportBody || reply) : undefined,
           contract: contractFiling(done?.contract),
-          order,
-          activity: steps,
+          order: poTurn || done?.order === true,
+          combined: done?.combined === true,
+          activity: settleActivity(steps),
           modelJson: looseModelJson(modelJson, steps),
         }],
-        stage: done ? String(done.stage ?? base.stage) : base.stage,
-        draft: artifact ? base.draft : (done ? ((done.draft as Draft | null) ?? null) : base.draft),
-        gaps: artifact ? base.gaps : (done ? ((done.gaps_detail as Gap[] | undefined) ?? []) : base.gaps),
-        steps: artifact ? base.steps : (done ? ((done.steps as Step[] | undefined) ?? base.steps) : base.steps),
-        confirmToken: artifact ? base.confirmToken : (done ? ((done.confirm_token as string | null) ?? null) : base.confirmToken),
+        stage: poTurn ? String(done?.stage ?? base.stage) : base.stage,
+        draft: poTurn ? incoming : base.draft,
+        gaps: poTurn ? ((done?.gaps_detail as Gap[] | undefined) ?? []) : base.gaps,
+        steps: poTurn && Array.isArray(done?.steps) ? (done.steps as Step[]) : base.steps,
+        confirmToken: poTurn ? ((done?.confirm_token as string | null) ?? null) : base.confirmToken,
       };
       commitSnap(chatId, next);
-      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [], task: null });
+      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [], task: null, tasks: [] });
     }
     try {
       await streamMessage(chatId, {
@@ -408,8 +453,13 @@ function ChatDesk() {
           const tasks = (event.tasks as { name?: string }[]) ?? [];
           const names = tasks.map((task) => String(task.name || "")).filter(Boolean);
           route = `→ ${names.join(" · ") || "answer"}`;
-          const task = names.includes("report") ? "report" : names.includes("contract") ? "contract" : names.includes("po") ? "po" : null;
-          if (task) patchFlight(chatId, { task });
+          const kinds = names.filter((name): name is "po" | "report" | "contract" => (
+            name === "po" || name === "report" || name === "contract"
+          ));
+          patchFlight(chatId, {
+            task: kinds.length === 1 ? kinds[0] : null,
+            tasks: kinds.length > 1 ? kinds : [],
+          });
         } else if (event.type === "warning") {
           warnings.push(String(event.message ?? ""));
         } else if (event.type === "error") {
@@ -423,7 +473,7 @@ function ChatDesk() {
     } catch (err) {
       if (!committed) patchFlight(chatId, { error: err instanceof Error ? err.message : "send failed" });
     } finally {
-      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [], task: null });
+      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [], task: null, tasks: [] });
     }
     void desk.reloadSessions().catch(() => undefined);
   }
@@ -459,6 +509,77 @@ function ChatDesk() {
     }
   }
 
+  function updateTurn(index: number, patch: Partial<Turn>) {
+    const chatId = sidRef.current;
+    const current = chatId ? snaps.get(chatId) : undefined;
+    if (!chatId || !current || !current.turns[index]) return;
+    commitSnap(chatId, {
+      ...current,
+      turns: current.turns.map((turn, i) => (i === index ? { ...turn, ...patch } : turn)),
+    });
+  }
+
+  async function confirmContract(filing: ContractFiling) {
+    const chatId = sidRef.current;
+    const current = chatId ? snaps.get(chatId) : undefined;
+    if (!chatId || !current || !filing.pending_id || isChatBusy(chatId)) return;
+    patchFlight(chatId, { busy: true, error: null });
+    try {
+      const result = await postJson<{ contract_id: string; contract: ContractFiling; message: string }>(
+        `/api/sessions/${chatId}/confirm-contract`,
+        { pending_id: filing.pending_id, filing },
+      );
+      const saved = contractFiling(result.contract) ?? filing;
+      const latest = snaps.get(chatId) ?? current;
+      commitSnap(chatId, {
+        ...latest,
+        turns: [
+          ...latest.turns.map((turn) => (
+            turn.contract?.pending_id === filing.pending_id ? { ...turn, contract: saved } : turn
+          )),
+          { role: "assistant", text: result.message },
+        ],
+      });
+    } catch (err) {
+      patchFlight(chatId, { error: err instanceof Error ? err.message : "confirm failed" });
+    } finally {
+      patchFlight(chatId, { busy: false });
+    }
+  }
+
+  async function confirmReport(index: number) {
+    const chatId = sidRef.current;
+    const current = chatId ? snaps.get(chatId) : undefined;
+    const turn = current?.turns[index];
+    if (!chatId || !current || !turn?.reportPendingId || isChatBusy(chatId)) return;
+    const text = turn.reportBody || turn.text;
+    const title = turn.reportTitle || reportHeading(text);
+    const charts = (turn.charts ?? []).map((chart) => ({
+      id: chart.id, title: chart.title, subtitle: chart.subtitle, echarts_option: chart.option,
+    }));
+    patchFlight(chatId, { busy: true, error: null });
+    try {
+      const result = await postJson<{ id: string; title: string; message: string }>(
+        `/api/sessions/${chatId}/confirm-report`,
+        { pending_id: turn.reportPendingId, title, text, charts },
+      );
+      const latest = snaps.get(chatId) ?? current;
+      commitSnap(chatId, {
+        ...latest,
+        turns: [
+          ...latest.turns.map((item, i) => (
+            i === index ? { ...item, text, reportTitle: result.title, reportId: result.id } : item
+          )),
+          { role: "assistant", text: result.message },
+        ],
+      });
+    } catch (err) {
+      patchFlight(chatId, { error: err instanceof Error ? err.message : "confirm failed" });
+    } finally {
+      patchFlight(chatId, { busy: false });
+    }
+  }
+
   function markFeedback(logId: number, feedback: "good" | "bad") {
     const chatId = sidRef.current;
     const current = chatId ? snaps.get(chatId) : undefined;
@@ -480,12 +601,16 @@ function ChatDesk() {
       : liveKind === "po"
         ? panes.find((pane) => pane.kind === "order")
         : undefined;
-  const reportNotes = activePane?.kind === "report" && activePane.id.startsWith("report-") && activePane.id !== "report-live"
-    ? snap?.turns[Number(activePane.id.slice("report-".length))]?.webNotes
-    : undefined;
+  const artifactIndex = activePane?.kind === "report" || activePane?.kind === "contract"
+    ? paneIndex(activePane.id, activePane.kind === "report" ? "report-" : "contract-")
+    : null;
+  const artifactTurn = artifactIndex != null ? snap?.turns[artifactIndex] : undefined;
+  const reportNotes = activePane?.kind === "report" ? artifactTurn?.webNotes : undefined;
   const panelTitle = activePane?.kind === "contract" && activePane.filing?.title
     ? activePane.filing.title
-    : activePane?.label ?? "结果";
+    : activePane?.kind === "report" && artifactTurn?.reportTitle
+      ? artifactTurn.reportTitle
+      : activePane?.label ?? "结果";
 
   return (
     <div className={`chat-layout${showPanel ? " with-result" : ""}`}>
@@ -497,20 +622,34 @@ function ChatDesk() {
         {(bootError || flight.error) && <div className="error">{bootError || flight.error}</div>}
         <div className="thread" ref={threadRef}>
           {snap?.turns.map((turn, index) => {
-            const paneId = turn.reportDraft ? `report-${index}` : turn.contract ? `contract-${index}` : turn.order ? "order" : null;
-            const pane = paneId ? panes.find((item) => item.id === paneId) ?? panes.find((item) => item.kind === (turn.order ? "order" : turn.reportDraft ? "report" : "contract")) : undefined;
-            const artifact = Boolean(pane);
+            const links = [
+              turn.order ? panes.find((item) => item.kind === "order" && !item.pending) : undefined,
+              turn.reportDraft ? panes.find((item) => item.id === `report-${index}`) : undefined,
+              turn.contract ? panes.find((item) => item.id === `contract-${index}`) : undefined,
+            ].flatMap((item) => (item ? [item] : []));
+            const showAnswer = Boolean(turn.combined || turn.reportBody || links.length > 1);
+            const artifact = links.length > 0 && !showAnswer;
             return (
             <div className={`turn ${turn.role}`} key={index}>
               <div className="bubble">
-                {turn.activity && turn.activity.length > 0 && <ActivityList steps={turn.activity} quiet={artifact} />}
+                {turn.activity && turn.activity.length > 0 && (
+                  <ActivityList steps={settleActivity(turn.activity)} quiet={artifact} />
+                )}
                 {turn.model && <div className="who">{models.find((item) => item.id === turn.model)?.short || turn.model}</div>}
-                {artifact && pane
-                  ? <button type="button" className="result-link" onClick={() => openResult(pane.id)}>{resultLink(pane.label)}</button>
+                {showAnswer && (
+                  turn.role === "assistant"
+                    ? <Markdown text={turn.text} charts={turn.reportBody ? undefined : turn.charts} />
+                    : <p>{turn.text}</p>
+                )}
+                {showAnswer && links.map((pane) => (
+                  <button type="button" className="result-link" key={pane.id} onClick={() => openResult(pane.id)}>{resultLink(pane.label)}</button>
+                ))}
+                {!showAnswer && (artifact
+                  ? <button type="button" className="result-link" onClick={() => openResult(links[0].id)}>{resultLink(links[0].label)}</button>
                   : turn.role === "assistant"
                     ? <Markdown text={turn.text} charts={turn.charts} />
-                    : <p>{turn.text}</p>}
-                {!artifact && turn.webNotes && turn.webNotes.length > 0 && (
+                    : <p>{turn.text}</p>)}
+                {!artifact && !showAnswer && turn.webNotes && turn.webNotes.length > 0 && (
                   <div className="refs">
                     <div className="refs-label">参考资料：</div>
                     {turn.webNotes.map((note, noteIndex) => (
@@ -662,20 +801,32 @@ function ChatDesk() {
               activePane.pending
                 ? <p className="muted">正在写报告…</p>
                 : (
-                  <div className="result-doc">
-                    <Markdown text={activePane.text} charts={activePane.charts} prose />
-                    {reportNotes && reportNotes.length > 0 && (
-                      <div className="refs">
-                        <div className="refs-label">参考资料：</div>
-                        {reportNotes.map((note, noteIndex) => (
-                          <div className="source" key={`${noteIndex}-${note}`}>[{noteIndex + 1}] {note}</div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <ReportEditor
+                    paneId={activePane.id}
+                    text={activePane.text}
+                    title={artifactTurn?.reportTitle || reportHeading(activePane.text)}
+                    charts={activePane.charts}
+                    notes={reportNotes}
+                    saved={Boolean(artifactTurn?.reportId)}
+                    canSave={Boolean(artifactTurn?.reportPendingId)}
+                    busy={flight.busy}
+                    onTitle={(title) => { if (artifactIndex != null) updateTurn(artifactIndex, { reportTitle: title }); }}
+                    onText={(text) => { if (artifactIndex != null) updateTurn(artifactIndex, { text }); }}
+                    onConfirm={() => { if (artifactIndex != null) void confirmReport(artifactIndex); }}
+                  />
                 )
             )}
-            {activePane?.kind === "contract" && <ContractResult filing={activePane.filing} pending={activePane.pending} />}
+            {activePane?.kind === "contract" && activePane.filing?.pending_id && (
+              <ContractEditor
+                filing={activePane.filing}
+                busy={flight.busy}
+                onChange={(filing) => { if (artifactIndex != null) updateTurn(artifactIndex, { contract: filing }); }}
+                onConfirm={() => { if (activePane.filing) void confirmContract(activePane.filing); }}
+              />
+            )}
+            {activePane?.kind === "contract" && !activePane.filing?.pending_id && (
+              <ContractResult filing={activePane.filing} pending={activePane.pending} />
+            )}
           </div>
         </aside>
       )}
@@ -723,7 +874,7 @@ function ActivityList({ steps, quiet }: { steps: Activity[]; quiet?: boolean }) 
         <li key={step.id} className={step.state}>
           <div className="activity-line">
             <span className="title">{index + 1}. {step.title}</span>
-            <span className="detail">{step.detail}</span>
+            {step.detail ? <span className="detail">{step.detail}</span> : null}
             <StepMark state={step.state} />
           </div>
           {!quiet && step.outputs.length > 0 && <ModelJson items={step.outputs} />}
@@ -791,6 +942,272 @@ function DataRating({
       {error && <div className="warn">{error}</div>}
     </div>
   );
+}
+
+function ReportEditor({
+  paneId, text, title, charts, notes, saved, canSave, busy, onTitle, onText, onConfirm,
+}: {
+  paneId: string;
+  text: string;
+  title: string;
+  charts?: ReportChart[];
+  notes?: string[];
+  saved: boolean;
+  canSave: boolean;
+  busy: boolean;
+  onTitle: (title: string) => void;
+  onText: (text: string) => void;
+  onConfirm: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  useEffect(() => { setEditing(false); }, [paneId]);
+  if (!canSave) {
+    return (
+      <div className="result-doc">
+        <Markdown text={text} charts={charts} prose />
+        {notes && notes.length > 0 && (
+          <div className="refs">
+            <div className="refs-label">参考资料：</div>
+            {notes.map((note, noteIndex) => (
+              <div className="source" key={`${noteIndex}-${note}`}>[{noteIndex + 1}] {note}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="result-doc">
+      <label className="field">Title
+        <input value={title} disabled={busy} onChange={(event) => onTitle(event.target.value)} />
+      </label>
+      <div className="actions">
+        <button className="btn" type="button" onClick={() => setEditing((on) => !on)}>{editing ? "Preview" : "Edit"}</button>
+      </div>
+      {editing
+        ? <textarea className="report-edit" value={text} disabled={busy} onChange={(event) => onText(event.target.value)} />
+        : <Markdown text={text} charts={charts} prose />}
+      {notes && notes.length > 0 && (
+        <div className="refs">
+          <div className="refs-label">参考资料：</div>
+          {notes.map((note, noteIndex) => (
+            <div className="source" key={`${noteIndex}-${note}`}>[{noteIndex + 1}] {note}</div>
+          ))}
+        </div>
+      )}
+      <div className="confirm-bar">
+        <span className="muted">{saved ? "On the Reports page" : "Not saved yet"}</span>
+        <button className="btn-primary" type="button" disabled={busy || !text.trim()} onClick={onConfirm}>
+          {saved ? "Confirm — update report" : "Confirm — save report"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+type DiscountRule = NonNullable<ContractFiling["discount_rules"]>[number];
+type DiscountTier = NonNullable<NonNullable<DiscountRule["tiers"]>>[number];
+
+function numOrNull(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : null;
+}
+
+function ContractEditor({
+  filing, busy, onChange, onConfirm,
+}: {
+  filing: ContractFiling;
+  busy: boolean;
+  onChange: (filing: ContractFiling) => void;
+  onConfirm: () => void;
+}) {
+  const rules = filing.discount_rules ?? [];
+  const moqs = filing.moqs ?? [];
+  const prices = filing.price_list ?? [];
+  const territories = filing.territories ?? [];
+  const setRule = (index: number, patch: DiscountRule) => {
+    onChange({ ...filing, discount_rules: rules.map((rule, i) => (i === index ? patch : rule)) });
+  };
+  return (
+    <>
+      <p className="muted">
+        {filing.confirmed
+          ? "Saved on Contracts. Edit the terms and confirm again to update that agreement."
+          : "Nothing is stored until you confirm. PO rules are recalculated from these terms."}
+      </p>
+      <div className="edit-list">
+        <label className="field">Title
+          <input value={filing.title ?? ""} disabled={busy} onChange={(event) => onChange({ ...filing, title: event.target.value })} />
+        </label>
+        <div className="edit-row">
+          <label className="field">Type
+            <input value={filing.contract_type ?? ""} disabled={busy} onChange={(event) => onChange({ ...filing, contract_type: event.target.value })} />
+          </label>
+          <label className="field">Start
+            <input value={filing.term_start_date ?? ""} disabled={busy} placeholder="YYYY-MM-DD" onChange={(event) => onChange({ ...filing, term_start_date: event.target.value })} />
+          </label>
+          <label className="field">End
+            <input value={filing.term_end_date ?? ""} disabled={busy} placeholder="YYYY-MM-DD" onChange={(event) => onChange({ ...filing, term_end_date: event.target.value })} />
+          </label>
+        </div>
+        <div className="edit-row">
+          <label className="field">Auto-renewal
+            <select
+              value={filing.auto_renewal === true ? "yes" : filing.auto_renewal === false ? "no" : ""}
+              disabled={busy}
+              onChange={(event) => onChange({
+                ...filing,
+                auto_renewal: event.target.value === "yes" ? true : event.target.value === "no" ? false : null,
+              })}
+            >
+              <option value="">Unknown</option>
+              <option value="yes">Auto-renews</option>
+              <option value="no">No auto-renewal</option>
+            </select>
+          </label>
+          <label className="field">Exclusivity
+            <input value={filing.exclusivity_type ?? ""} disabled={busy} onChange={(event) => onChange({ ...filing, exclusivity_type: event.target.value })} />
+          </label>
+        </div>
+        <label className="field">Territory
+          <textarea value={filing.territory_text ?? ""} disabled={busy} onChange={(event) => onChange({ ...filing, territory_text: event.target.value })} />
+        </label>
+      </div>
+      {filing.skipped && filing.skipped.length > 0 && <div className="warn">Skipped: {filing.skipped.join("; ")}</div>}
+      <h3>Discount schedules</h3>
+      {rules.length === 0 && <p className="muted">None extracted.</p>}
+      {rules.map((rule, index) => (
+        <div className="card" key={index}>
+          <div className="edit-row">
+            <label className="field">Title
+              <input value={rule.title ?? ""} disabled={busy} onChange={(event) => setRule(index, { ...rule, title: event.target.value })} />
+            </label>
+            <label className="field">Section
+              <input value={rule.section_reference ?? ""} disabled={busy} onChange={(event) => setRule(index, { ...rule, section_reference: event.target.value })} />
+            </label>
+          </div>
+          <div className="edit-row">
+            <label className="field">Applies per
+              <input value={rule.applies_per ?? ""} disabled={busy} onChange={(event) => setRule(index, { ...rule, applies_per: event.target.value })} />
+            </label>
+            <label className="field">Basis
+              <input value={rule.basis ?? ""} disabled={busy} onChange={(event) => setRule(index, { ...rule, basis: event.target.value })} />
+            </label>
+          </div>
+          {(rule.tiers ?? []).map((tier, tierIndex) => (
+            <div className="edit-row" key={tierIndex}>
+              <label className="field">From
+                <input value={tier.from_container ?? ""} disabled={busy} onChange={(event) => setRule(index, { ...rule, tiers: replaceAt(rule.tiers, tierIndex, { ...tier, from_container: numOrNull(event.target.value) }) })} />
+              </label>
+              <label className="field">To
+                <input value={tier.to_container ?? ""} disabled={busy} placeholder="∞" onChange={(event) => setRule(index, { ...rule, tiers: replaceAt(rule.tiers, tierIndex, { ...tier, to_container: numOrNull(event.target.value) }) })} />
+              </label>
+              <label className="field">Discount %
+                <input value={tier.discount_percent ?? ""} disabled={busy} onChange={(event) => setRule(index, { ...rule, tiers: replaceAt(rule.tiers, tierIndex, { ...tier, discount_percent: numOrNull(event.target.value) }) })} />
+              </label>
+              <button className="btn" type="button" disabled={busy} onClick={() => setRule(index, { ...rule, tiers: (rule.tiers ?? []).filter((_, i) => i !== tierIndex) })}>Remove</button>
+            </div>
+          ))}
+          <button
+            className="btn"
+            type="button"
+            disabled={busy}
+            onClick={() => setRule(index, { ...rule, tiers: [...(rule.tiers ?? []), blankTier()] })}
+          >Add tier</button>
+        </div>
+      ))}
+      <button className="btn" type="button" disabled={busy} onClick={() => onChange({ ...filing, discount_rules: [...rules, { title: "", tiers: [blankTier()] }] })}>Add schedule</button>
+      <h3>Minimum order quantities</h3>
+      {moqs.length === 0 && <p className="muted">None extracted.</p>}
+      {moqs.map((row, index) => (
+        <div className="edit-row" key={index}>
+          <label className="field">Quantity
+            <input value={String(row.quantity ?? "")} disabled={busy} onChange={(event) => onChange({ ...filing, moqs: replaceAt(moqs, index, { ...row, quantity: numOrNull(event.target.value) }) })} />
+          </label>
+          <label className="field">Unit
+            <input value={String(row.unit ?? "")} disabled={busy} onChange={(event) => onChange({ ...filing, moqs: replaceAt(moqs, index, { ...row, unit: event.target.value }) })} />
+          </label>
+          <label className="field">Applies per
+            <input value={String(row.applies_per ?? "")} disabled={busy} onChange={(event) => onChange({ ...filing, moqs: replaceAt(moqs, index, { ...row, applies_per: event.target.value }) })} />
+          </label>
+          <label className="field">SKU
+            <input value={String(row.sku ?? "")} disabled={busy} onChange={(event) => onChange({ ...filing, moqs: replaceAt(moqs, index, { ...row, sku: event.target.value }) })} />
+          </label>
+          <button className="btn" type="button" disabled={busy} onClick={() => onChange({ ...filing, moqs: moqs.filter((_, i) => i !== index) })}>Remove</button>
+        </div>
+      ))}
+      <button className="btn" type="button" disabled={busy} onClick={() => onChange({ ...filing, moqs: [...moqs, { quantity: null, unit: "", applies_per: "per_order" }] })}>Add minimum</button>
+      <h3>Price list</h3>
+      {prices.length === 0 && <p className="muted">None extracted.</p>}
+      {prices.map((row, index) => (
+        <div className="edit-row" key={index}>
+          <label className="field">Product
+            <input value={String(row.product_name ?? "")} disabled={busy} onChange={(event) => onChange({ ...filing, price_list: replaceAt(prices, index, { ...row, product_name: event.target.value }) })} />
+          </label>
+          <label className="field">SKU
+            <input value={String(row.product_sku ?? "")} disabled={busy} onChange={(event) => onChange({ ...filing, price_list: replaceAt(prices, index, { ...row, product_sku: event.target.value }) })} />
+          </label>
+          <label className="field">Price
+            <input value={String(row.unit_price ?? "")} disabled={busy} onChange={(event) => onChange({ ...filing, price_list: replaceAt(prices, index, { ...row, unit_price: numOrNull(event.target.value) }) })} />
+          </label>
+          <label className="field">Currency
+            <input value={String(row.currency ?? "")} disabled={busy} onChange={(event) => onChange({ ...filing, price_list: replaceAt(prices, index, { ...row, currency: event.target.value }) })} />
+          </label>
+          <button className="btn" type="button" disabled={busy} onClick={() => onChange({ ...filing, price_list: prices.filter((_, i) => i !== index) })}>Remove</button>
+        </div>
+      ))}
+      <button className="btn" type="button" disabled={busy} onClick={() => onChange({ ...filing, price_list: [...prices, { product_name: "", unit_price: null, currency: "" }] })}>Add price</button>
+      <h3>Territories</h3>
+      {territories.length === 0 && <p className="muted">None extracted.</p>}
+      {territories.map((row, index) => (
+        <div className="edit-row" key={index}>
+          <label className="field">Country
+            <input value={row.country_code ?? ""} disabled={busy} onChange={(event) => onChange({ ...filing, territories: replaceAt(territories, index, { ...row, country_code: event.target.value }) })} />
+          </label>
+          <label className="field">Kind
+            <select
+              value={row.kind === "excluded" ? "excluded" : "allowed"}
+              disabled={busy}
+              onChange={(event) => onChange({ ...filing, territories: replaceAt(territories, index, { ...row, kind: event.target.value }) })}
+            >
+              <option value="allowed">Allowed</option>
+              <option value="excluded">Excluded</option>
+            </select>
+          </label>
+          <button className="btn" type="button" disabled={busy} onClick={() => onChange({ ...filing, territories: territories.filter((_, i) => i !== index) })}>Remove</button>
+        </div>
+      ))}
+      <button className="btn" type="button" disabled={busy} onClick={() => onChange({ ...filing, territories: [...territories, { country_code: "", kind: "allowed" }] })}>Add territory</button>
+      <h3>PO rules</h3>
+      {(filing.derived_rules ?? []).length === 0 ? <p className="muted">No rules derived yet.</p> : (
+        <DataTable
+          rows={filing.derived_rules ?? []}
+          columns={[
+            { key: "name", label: "Rule" },
+            { key: "rule_type", label: "Type" },
+            { key: "severity", label: "Severity" },
+            { key: "rule_config", label: "Config", wrap: true, render: (row) => JSON.stringify(row.rule_config ?? {}) },
+          ]}
+        />
+      )}
+      <div className="confirm-bar">
+        <span className="muted">{filing.confirmed ? "On the Contracts page" : "Not saved yet"}</span>
+        <button className="btn-primary" type="button" disabled={busy} onClick={onConfirm}>
+          {filing.confirmed ? "Confirm — update contract" : "Confirm — file contract"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function blankTier(): DiscountTier {
+  return { from_container: null, to_container: null, discount_percent: null, notes: null };
+}
+
+function replaceAt<T>(rows: T[] | undefined, index: number, next: T): T[] {
+  return (rows ?? []).map((row, i) => (i === index ? next : row));
 }
 
 function ContractResult({ filing, pending }: { filing: ContractFiling | null; pending?: boolean }) {

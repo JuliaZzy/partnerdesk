@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.get("/")
 def index() -> dict[str, str]:
-    return {"service": "partnerdesk", "ui": "http://localhost:5173", "docs": "/docs"}
+    return {"service": "ka-account-agent", "ui": "http://localhost:5173", "docs": "/docs"}
 
 
 @router.get("/api/meta")

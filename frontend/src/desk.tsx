@@ -161,8 +161,8 @@ export function Shell({ children }: { children: ReactNode }) {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <strong>partnerdesk</strong>
-          <span>desk</span>
+          <strong>KA Account</strong>
+          <span>agent</span>
         </div>
         {desk.partnerships.length > 1 && (
           <select

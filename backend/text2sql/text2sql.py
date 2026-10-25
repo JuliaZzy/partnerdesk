@@ -3,8 +3,10 @@
 模型选表，然后写一条 SELECT。代码解析这条语句，在已经排除其他合作关系的视图上执行，并返回行。
 之后的聊天轮次可以引用这些行。它不重算它们。
 
-失败和改对的尝试记在 `text2sql_logs` 上，供 `analyze_badcase` 看。
+失败后的改写走 `codefix`：执行，按报错再改，最多三次。仍失败就把最后一次语句和报错交给人工。
+行回来之后打分，最多三次。80 分及以上就用这些行；低于 80 分可以换一个问题再查。
 审过的改正不会自己喂回提示词——一次改错会让下一个问题学会同一个错误。
+失败和改对的尝试记在 `text2sql_logs` 上，供 `analyze_badcase` 看。
 """
 
 from __future__ import annotations
@@ -17,16 +19,20 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from ..codefix import format_failures, with_reflection
 from ..db import Database, utcnow
 from ..llm import LLM
 from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
-from .prompt import PICK, REFLECT, REPAIR, SQL
+from .prompt import PICK, REFLECT, SQL
 from .sql_validator import validate
 from .table_metadata import TABLES, catalog_text, describe_tables, expand_tables, scope_views
 
 _MAX_QUESTION = 2_000
 _MAX_CELL = 400
 _MAX_ROWS = 50
+# The reflect prompt states this same cutoff.
+REFLECT_PASS = 80
+MAX_REFLECTIONS = 3
 _FENCE = re.compile(r"^```(?:sql)?\s*([\s\S]*?)\s*```$", re.IGNORECASE)
 
 
@@ -40,6 +46,8 @@ class QueryResult:
     error_type: str | None
     tables: list[str]
     log_id: int | None = None
+    handoff: str = ""
+    score: int | None = None
 
 
 def pick_schema() -> dict[str, Any]:
@@ -119,19 +127,14 @@ def _question_text(question: str, history: list[dict[str, Any]] | None, folded_t
 
 
 def _write_sql(
-    llm: LLM, question: str, schema_text: str, *, previous: str | None = None, error: str | None = None,
+    llm: LLM, question: str, schema_text: str, *,
     context: str = "", history: list[dict[str, Any]] | None = None, folded_through: int = 0,
 ) -> str:
     asked = _question_text(question, history, folded_through)
-    if previous:
-        system = attach(f"{REPAIR}\n\n=== 结构 ===\n{schema_text}", context)
-        user = f"问题：\n{asked}\n\n上一条 SQL：\n{previous}\n\n错误：\n{(error or '')[:500]}"
-    else:
-        system = attach(f"{SQL}\n\n=== 结构 ===\n{schema_text}", context)
-        user = asked
+    system = attach(f"{SQL}\n\n=== 结构 ===\n{schema_text}", context)
     raw = llm.complete_json(
-        system=system, messages=[{"role": "user", "content": user}],
-        schema=sql_schema(), temperature=0, max_tokens=700,
+        system=system, messages=[{"role": "user", "content": asked}],
+        schema=sql_schema(), temperature=0.2, max_tokens=700,
     )
     return _strip_fence(str(raw.get("sql") or ""))
 
@@ -154,10 +157,10 @@ def reflect_schema() -> dict[str, Any]:
         "schema": {
             "type": "object", "additionalProperties": False,
             "properties": {
-                "complete": {"type": "boolean"},
+                "score": {"type": "integer"},
                 "retry_question": {"type": "string"},
             },
-            "required": ["complete", "retry_question"],
+            "required": ["score", "retry_question"],
         },
     }
 
@@ -170,8 +173,10 @@ def answer_question(
 ) -> QueryResult:
     """Pick tables, generate one SELECT, run it, and log the attempt.
 
-    A failed statement is repaired once. When the rows come back, one reflection may
-    ask a different question and run again. A reflection error keeps the first result.
+    A failed statement is revised by codefix, up to three runs. When the rows come
+    back, up to three reflections score how well they answer. A score of 80 or more
+    keeps them. Below that, the reflection may ask a different question and run again.
+    A reflection error keeps the latest rows that did run.
     """
     result = _attempt(
         db, llm, question=question, partnership_id=partnership_id, brand_id=brand_id,
@@ -180,18 +185,32 @@ def answer_question(
     )
     if not reflect or not result.ok:
         return result
-    try:
-        complete, retry = _reflect(llm, question, result)
-    except Exception:
-        return result
-    if complete or not retry or _same_question(retry, question):
-        return result
-    second = answer_question(
-        db, llm, question=retry, partnership_id=partnership_id, brand_id=brand_id,
-        distributor_id=distributor_id, session_id=session_id, reflect=False, history=history,
-        folded_through=folded_through, summary=summary,
-    )
-    return second if second.ok else result
+    chosen = result
+    chosen_score = -1
+    asked = question
+    for turn in range(MAX_REFLECTIONS):
+        try:
+            score, retry = _reflect(llm, asked, result)
+        except Exception:
+            return result
+        result.score = score
+        if score >= chosen_score:
+            chosen, chosen_score = result, score
+        if (
+            score >= REFLECT_PASS or turn == MAX_REFLECTIONS - 1
+            or not retry or _same_question(retry, asked)
+        ):
+            return chosen
+        nxt = _attempt(
+            db, llm, question=retry, partnership_id=partnership_id, brand_id=brand_id,
+            distributor_id=distributor_id, session_id=session_id, history=history,
+            folded_through=folded_through, summary=summary,
+        )
+        if not nxt.ok:
+            return chosen
+        result = nxt
+        asked = retry
+    return chosen
 
 
 def _attempt(
@@ -217,18 +236,13 @@ def _attempt(
                 ok, error, error_type = False, "no relevant tables", "generation"
             else:
                 schema_text = describe_tables(tables)
-                params = _scope_params(partnership_id, brand_id, distributor_id)
                 context = prompt_context(standing_block(db, partnership_id), summary_block(summary))
                 sql = _write_sql(
                     llm, question, schema_text, context=context, history=history, folded_through=folded_through,
                 )
-                ok, error, sql, raw_rows = _run(db, sql, params)
-                if not ok:
-                    sql = _write_sql(
-                        llm, question, schema_text, previous=sql, error=error, context=context, history=history,
-                        folded_through=folded_through,
-                    )
-                    ok, error, sql, raw_rows = _run(db, sql, params)
+                ok, error, sql, raw_rows = _run(
+                    db, sql, _scope_params(partnership_id, brand_id, distributor_id),
+                )
                 if ok and raw_rows is not None:
                     rows = _rows_for_prompt(raw_rows)
                     error_type = None
@@ -244,10 +258,31 @@ def _attempt(
         db, partnership_id=partnership_id, session_id=session_id, question=question, tables=tables,
         sql=sql, ok=ok, row_count=len(rows), elapsed=elapsed, error_type=error_type, error=error,
     )
-    return QueryResult(
+    result = QueryResult(
         ok=ok, sql=sql, rows=rows, row_count=len(rows), error=error if not ok else None,
         error_type=error_type if not ok else None, tables=tables, log_id=log_id,
     )
+    if result.ok or not (sql or "").strip():
+        return result
+
+    def run(statement: str) -> tuple[bool, QueryResult, str | None, str]:
+        if not seen["done"]:
+            seen["done"] = True
+            return result.ok, result, result.error, ""
+        nxt = run_statement(
+            db, statement, question=question, partnership_id=partnership_id, brand_id=brand_id,
+            distributor_id=distributor_id, session_id=session_id, tables=tables,
+        )
+        last["result"] = nxt
+        return nxt.ok, nxt, nxt.error, ""
+
+    seen = {"done": False}
+    last = {"result": result}
+    value, attempts = with_reflection(llm, kind="sql", first=sql or "", run=run)
+    chosen = value if isinstance(value, QueryResult) else last["result"]
+    if attempts:
+        chosen.handoff = format_failures(attempts)
+    return chosen
 
 
 def run_statement(
@@ -274,7 +309,7 @@ def run_statement(
     )
 
 
-def _reflect(llm: LLM, question: str, result: QueryResult) -> tuple[bool, str]:
+def _reflect(llm: LLM, question: str, result: QueryResult) -> tuple[int, str]:
     raw = llm.complete_json(
         system=REFLECT,
         messages=[{"role": "user", "content": json.dumps({
@@ -286,7 +321,15 @@ def _reflect(llm: LLM, question: str, result: QueryResult) -> tuple[bool, str]:
         schema=reflect_schema(), temperature=0, max_tokens=300,
     )
     retry = str(raw.get("retry_question") or "").strip()[:_MAX_QUESTION]
-    return bool(raw.get("complete")), retry
+    return _clamp_score(raw.get("score")), retry
+
+
+def _clamp_score(value: Any) -> int:
+    try:
+        score = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, score))
 
 
 def _same_question(left: str, right: str) -> bool:

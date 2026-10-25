@@ -10,8 +10,8 @@ from typing import Any, Literal
 
 from ..llm import LLM
 
-SYSTEM = """你是翻译。把用户给出的文字译成要求的语言。
-只输出译文——不要引号，不要「译文如下」，不要额外说明。
+SYSTEM = """你是一名专业的翻译，请把用户给出的文字译成用户要求的语言。
+如果用户没有提供目标语言，请及时提问，直到用户提供为止。
 不要添加原文里没有的事实。名称、SKU 和数字保持原样，除非目标语言有约定的写法。"""
 
 Source = Literal["message", "last_assistant", "report"]
@@ -95,7 +95,7 @@ def translate(llm: LLM, *, text: str, target_language: str) -> str:
             },
         },
         temperature=0,
-        max_tokens=800,
+        max_tokens=2000,
     )
     out = str(raw.get("translation") or "").strip()
     if not out:
@@ -103,8 +103,17 @@ def translate(llm: LLM, *, text: str, target_language: str) -> str:
     return out
 
 
+def _target(arguments: dict[str, Any]) -> str:
+    """The planner often writes `target` or `language` instead of the schema key."""
+    for key in ("target_language", "target_lang", "target", "language", "lang"):
+        value = str(arguments.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def run(arguments: dict[str, Any], *, llm: LLM, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    target = str(arguments.get("target_language") or arguments.get("target_lang") or "").strip()
+    target = _target(arguments)
     if not target:
         return {"ok": False, "data": None, "error": "target_language required"}
     try:

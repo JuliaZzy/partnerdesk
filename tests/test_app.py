@@ -40,7 +40,7 @@ def test_full_flow(db):
     ], text_reply="All set — press Confirm.")
     c = TestClient(create_app(db=db, llm=llm))
 
-    assert c.get("/").json()["service"] == "partnerdesk"
+    assert c.get("/").json()["service"] == "ka-account-agent"
     sid = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
 
     ev = events(c.post(f"/api/sessions/{sid}/message", json={"message": "10 cases of fish oil, no discount"}))

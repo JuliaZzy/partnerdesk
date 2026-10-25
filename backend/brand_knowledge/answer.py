@@ -114,6 +114,6 @@ def answer_in_chat(
             }
             for h in named
         ]},
+        done_step=("brand-reply", "回答", "回复已写完"),
     )
-    yield status("brand-reply", "回答", "回复已写完", state="done")
     yield done

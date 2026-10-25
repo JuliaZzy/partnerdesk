@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,14 +23,16 @@ class FakeLLM:
     text_reply: str = "Got it."
     calls: list[dict[str, Any]] = field(default_factory=list)
     fail_json: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def complete_json(self, *, system, messages, schema=None, temperature=0.0, max_tokens=900):
-        self.calls.append({"kind": "json", "system": system, "messages": messages, "schema": schema})
-        if self.fail_json:
-            raise RuntimeError("model unavailable")
-        if not self.json_replies:
-            raise RuntimeError("FakeLLM: no scripted JSON reply left")
-        return self.json_replies.pop(0)
+        with self._lock:
+            self.calls.append({"kind": "json", "system": system, "messages": messages, "schema": schema})
+            if self.fail_json:
+                raise RuntimeError("model unavailable")
+            if not self.json_replies:
+                raise RuntimeError("FakeLLM: no scripted JSON reply left")
+            return self.json_replies.pop(0)
 
     def stream_text(self, *, system, messages, temperature=0.7, max_tokens=300):
         self.calls.append({"kind": "text", "system": system, "messages": messages})

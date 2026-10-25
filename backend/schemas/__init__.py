@@ -24,7 +24,7 @@ from .catalog import (
     ProductStatus,
     product_status,
 )
-from .chat import Confirm, DataFeedback, Inbound, InboundFile, NewSession
+from .chat import Confirm, ConfirmContract, ConfirmReport, DataFeedback, Inbound, InboundFile, NewSession
 from .contract import (
     Contract,
     ContractChunk,
@@ -42,7 +42,7 @@ from .memory import Memory, MemoryActive, MemoryIn
 from .order import PurchaseOrder, PurchaseOrderItem
 from .partnership import Partnership
 from .po import Discount, EffectiveTerms, LineItemSlot, PoSlots
-from .report import ReportFact, SalesReport
+from .report import NarrativeReport, ReportFact, SalesReport
 
 __all__ = [
     "INCOTERMS_VALUES",
@@ -55,6 +55,8 @@ __all__ = [
     "BrandDocument",
     "CommercialRule",
     "Confirm",
+    "ConfirmContract",
+    "ConfirmReport",
     "Contract",
     "ContractChunk",
     "ContractDiscountRule",
@@ -75,6 +77,7 @@ __all__ = [
     "Memory",
     "MemoryActive",
     "MemoryIn",
+    "NarrativeReport",
     "NewSession",
     "Partnership",
     "PaymentTerms",

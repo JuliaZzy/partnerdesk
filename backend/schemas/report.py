@@ -58,3 +58,21 @@ class ReportFact(BaseModel):
     def identity(self) -> tuple[Any, ...]:
         """What makes two facts 'the same measurement' — a re-import supersedes on this key."""
         return (self.metric_key, self.fact_type, self.channel, self.sku, self.entity, self.period_start, self.period_end)
+
+
+class NarrativeReport(BaseModel):
+    """A chat write-up the user edited and confirmed. Numbers stay in `report_facts`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    brand_id: str
+    partnership_id: str
+    session_id: str | None = None
+    title: str
+    body: str
+    charts: list[dict[str, Any]] = []
+    status: Literal["confirmed"] = "confirmed"
+    confirmed_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None

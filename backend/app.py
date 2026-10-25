@@ -16,7 +16,7 @@ from .router import include_routers
 
 
 def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
-    app = FastAPI(title="partnerdesk")
+    app = FastAPI(title="KA Account Agent")
     app.state.db = db
     app.state.llm = llm
     include_routers(app)

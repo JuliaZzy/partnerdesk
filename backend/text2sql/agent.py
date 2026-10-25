@@ -43,6 +43,8 @@ def run(
     )
     detail = f"{result.row_count} 行" if result.ok else "没查到"
     yield status("data-query", "查数", detail, state="done")
+    if result.handoff:
+        yield {"type": "warning", "message": result.handoff}
     yield {"type": "data", "ok": result.ok, "row_count": result.row_count, "log_id": result.log_id}
     yield status("data-reply", "回答", "正在引用查询结果", state="running")
     done = yield from answer_directly(
@@ -50,6 +52,6 @@ def run(
         prompt_text=_prompt(text, result),
         system=ANSWER,
         extra={"data_query": _mark(result)},
+        done_step=("data-reply", "回答", "回复已写完"),
     )
-    yield status("data-reply", "回答", "回复已写完", state="done")
     yield done

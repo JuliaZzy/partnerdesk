@@ -97,15 +97,42 @@ def _layer_notes(check: CheckResult) -> list[str]:
     ]
 
 
-def run_po_turn(
+@dataclass
+class PoPrepared:
+    """The draft and the confirm token. The caller writes the session once."""
+
+    slots: PoSlots
+    language: str
+    stage: str
+    check: CheckResult
+    draft: dict[str, Any] | None
+    token: str | None
+    draft_hash: str | None
+    expires: datetime | None
+    applied: str | None
+    context: str | None
+    folded: int
+    history: list[dict[str, str]]
+    events: list[dict[str, Any]]
+
+
+def _gap_detail(check: CheckResult) -> list[dict[str, Any]]:
+    return [g.to_dict() for g in check.gaps] + [
+        {"kind": "rule", "message": r.message, "reference": None, "candidates": []} for r in check.blocking
+    ]
+
+
+def prepare_order(
     db: Database, llm: LLM, bundle: Bundle, session: dict[str, Any], message: str, images: list[str] | None = None,
-) -> Iterator[dict[str, Any]]:
+) -> PoPrepared:
+    """Fill slots and price the draft. Does not speak and does not write the session."""
     images = images or []
     current = PoSlots(**session["slots"]) if session.get("slots") else PoSlots()
     history: list[dict[str, str]] = list(session.get("history") or [])
+    events: list[dict[str, Any]] = []
 
-    # 1. The contract rate is known as soon as this is an order, before any product is named.
-    #    Pre-filled once (source="contract"); whatever the customer says afterwards overrides it.
+    # The contract rate is known as soon as this is an order, before any product is named.
+    # Pre-filled once (source="contract"); whatever the customer says afterwards overrides it.
     applied = None
     if current.discount is None:
         cd = contract_discount_for_next_order(db, bundle.partnership.id)
@@ -116,9 +143,9 @@ def run_po_turn(
             )
             applied = cd.note
 
-    # 2. Extract this turn into the slot template; merge, never replace.
-    #    The rolling summary is this chat's, so it joins the prompt here and not the saved settings.
-    yield status("po-extract", "抽取", "正在把这句话填进订单", state="running")
+    # Extract this turn into the slot template; merge, never replace.
+    # The rolling summary is this chat's, so it joins the prompt here and not the saved settings.
+    events.append(status("po-extract", "抽取", "正在把这句话填进订单", state="running"))
     folded = int(session.get("folded_through") or 0)
     context = prompt_context(bundle.settings.operating_context, summary_block(session.get("summary"))) or None
     try:
@@ -127,27 +154,62 @@ def run_po_turn(
             images=images, operating_context=context, contract_discount=applied, folded_through=folded,
         )
         slots, language = merge_slots(current, ex.slots), ex.reply_language
-        yield status("po-extract", "抽取", "订单字段已填上", state="done")
+        events.append(status("po-extract", "抽取", "订单字段已填上", state="done"))
     except Exception as err:
-        yield {"type": "warning", "message": f"extraction failed: {err}"}
-        yield status("po-extract", "抽取", "没读出来，沿用已有订单", state="done")
+        events.append({"type": "warning", "message": f"extraction failed: {err}"})
+        events.append(status("po-extract", "抽取", "没读出来，沿用已有订单", state="done"))
         slots, language = current, "English"
 
-    # 3. Deterministic gate.
-    yield status("po-check", "核对", "正在算价格、起订量和规则", state="running")
+    events.append(status("po-check", "核对", "正在算价格、起订量和规则", state="running"))
     check = _check(bundle, slots, llm)
     stage = "confirm" if check.ready else "gathering"
-    yield status("po-check", "核对", "可以确认" if stage == "confirm" else "还有缺项", state="done")
+    events.append(status("po-check", "核对", "可以确认" if stage == "confirm" else "还有缺项", state="done"))
     draft = build_draft(slots, check, bundle.partnership.currency, bundle.settings)
 
-    # 4. Mint the confirm token only when the order is complete and compliant; bind it to
-    #    the draft the user is about to see.
+    # Mint the confirm token only when the order is complete and compliant; bind it to
+    # the draft the user is about to see.
     token = draft_hash = expires = None
     if stage == "confirm" and draft:
         token, draft_hash = secrets.token_urlsafe(32), hash_draft(draft)
         expires = datetime.now(UTC) + CONFIRM_TOKEN_TTL
+    return PoPrepared(
+        slots=slots, language=language, stage=stage, check=check, draft=draft,
+        token=token, draft_hash=draft_hash, expires=expires, applied=applied,
+        context=context, folded=folded, history=history, events=events,
+    )
 
-    # 5. Stream the reply — told the gate outcome, so it is accurate.
+
+def order_result(prepared: PoPrepared, bundle: Bundle, *, clear_po: bool = False) -> dict[str, Any]:
+    """JSON-safe draft the parallel turn stores, then writes once."""
+    check = prepared.check
+    expires = prepared.expires.isoformat() if prepared.expires else None
+    return {
+        "slots": prepared.slots.model_dump(),
+        "stage": prepared.stage,
+        "draft": prepared.draft,
+        "summary": build_draft_summary(
+            prepared.slots, check, bundle.settings, bundle.partnership.currency,
+        ),
+        "confirm_token": prepared.token,
+        "confirm_hash": prepared.draft_hash,
+        "confirm_expires_at": expires,
+        "gaps": check.gap_messages,
+        "gaps_detail": _gap_detail(check),
+        "advisories": [rule.message for rule in check.advisory],
+        "steps": build_ledger(prepared.stage),
+        "clear_po": clear_po,
+    }
+
+
+def run_po_turn(
+    db: Database, llm: LLM, bundle: Bundle, session: dict[str, Any], message: str, images: list[str] | None = None,
+) -> Iterator[dict[str, Any]]:
+    prepared = prepare_order(db, llm, bundle, session, message, images)
+    yield from prepared.events
+    slots, check, stage = prepared.slots, prepared.check, prepared.stage
+    draft, language, images = prepared.draft, prepared.language, images or []
+
+    # Stream the reply — told the gate outcome, so it is accurate.
     yield status("po-reply", "回复", "正在写回复", state="running")
     reply_text = ""
     try:
@@ -157,8 +219,8 @@ def run_po_turn(
             resolutions=[(l.reference, l.product_name) for l in check.lines if l.resolved],
             gaps=check.gap_messages, advisories=[r.message for r in check.advisory],
             layer_notes=_layer_notes(check), image_count=len(images),
-            operating_context=context, contract_discount=applied,
-            history=history, folded_through=folded,
+            operating_context=prepared.context, contract_discount=prepared.applied,
+            history=prepared.history, folded_through=prepared.folded,
         )):
             reply_text += tok
             yield {"type": "token", "text": tok}
@@ -173,19 +235,17 @@ def run_po_turn(
     if draft:
         assistant["order_draft"] = draft
     attach_model_json(assistant, llm)
-    history = [*history, {"role": "user", "content": message or "(image)"}, assistant]
+    history = [*prepared.history, {"role": "user", "content": message or "(image)"}, assistant]
     record_history(
         db, session, history, llm=llm,
         slots=slots.model_dump(), stage=stage, specialist="po",
-        confirm_token=token, confirm_hash=draft_hash, confirm_expires_at=expires,
+        confirm_token=prepared.token, confirm_hash=prepared.draft_hash, confirm_expires_at=prepared.expires,
     )
     yield {
         "type": "done", "stage": stage, "slots": slots.model_dump(), "draft": draft,
-        "gaps": check.gap_messages, "gaps_detail": [g.to_dict() for g in check.gaps] + [
-            {"kind": "rule", "message": r.message, "reference": None, "candidates": []} for r in check.blocking
-        ],
+        "gaps": check.gap_messages, "gaps_detail": _gap_detail(check),
         "advisories": [r.message for r in check.advisory], "steps": build_ledger(stage),
-        "confirm_token": token, "submitted": None,
+        "confirm_token": prepared.token, "submitted": None,
     }
 
 

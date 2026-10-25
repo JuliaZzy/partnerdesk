@@ -108,6 +108,12 @@ def delete_report(rid: str, db: Database = Depends(get_db)) -> Response:
     return Response(status_code=204)
 
 
+@router.get("/api/partnerships/{pid}/narratives")
+def narratives(pid: str, db: Database = Depends(get_db)) -> list[dict[str, Any]]:
+    partnership_or_404(db, pid)
+    return [dump(row) for row in db.narrative_reports(pid)]
+
+
 @router.get("/api/partnerships/{pid}/facts")
 def confirmed_facts(pid: str, db: Database = Depends(get_db)) -> list[dict[str, Any]]:
     partnership_or_404(db, pid)

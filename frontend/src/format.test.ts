@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyActivity,
   attachOutput,
+  settleActivity,
   looseModelJson,
   buildLedger,
   chatTitle,
@@ -41,6 +42,19 @@ describe("desk formatters", () => {
       ["po-extract", "running", "正在填订单"],
     ]);
     expect(applyActivity(done, { type: "token", text: "hi" })).toBe(done);
+  });
+
+  it("stops a stored in-progress step once the turn is over", () => {
+    const steps = [{
+      id: "contract-reply", title: "说明", detail: "正在根据入库结果回复", state: "running" as const, outputs: [],
+    }];
+    expect(settleActivity(steps)).toEqual([{
+      id: "contract-reply", title: "说明", detail: "已完成", state: "done", outputs: [],
+    }]);
+    const finished = [{
+      id: "contract-read", title: "读合同", detail: "读取失败", state: "done" as const, outputs: [],
+    }];
+    expect(settleActivity(finished)).toBe(finished);
   });
 
   it("keeps each step's model output when that step updates", () => {
@@ -102,6 +116,9 @@ describe("desk formatters", () => {
     expect(resultPanes({
       hasOrder: false, reports: [], contracts: [], live: { kind: "po", text: "" },
     }).map((pane) => pane.id)).toEqual(["order-live"]);
+    expect(resultPanes({
+      hasOrder: false, reports: [], contracts: [], live: null, pending: ["po", "report", "contract"],
+    }).map((pane) => pane.id)).toEqual(["order-live", "report-live", "contract-live"]);
     expect(resultLink("报告")).toBe("查看生成的报告");
     expect(resultLink("报告 2")).toBe("查看生成的报告 2");
     expect(resultLink("合同")).toBe("查看生成的合同");

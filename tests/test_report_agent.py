@@ -9,6 +9,7 @@ from backend.report.prompt import (
     REPORT_QUESTIONS_PROMPT,
     REPORT_REVIEW_PROMPT,
     REPORT_REVISE_PROMPT,
+    RISK_PLAN_PROMPT,
     SECTIONS,
     SUMMARY_PROMPT,
     WRITING_PROMPT,
@@ -16,12 +17,11 @@ from backend.report.prompt import (
 )
 from backend.report.turn import (
     finish_report,
+    fit_chart_axes,
     parse_plan,
+    parse_risk_plan,
     place_charts_in_sections,
-    relabel_chart_labels,
-    rewrite_product_mentions,
     shape_prose,
-    stamp_product_labels,
 )
 from backend.report.wizard import execute
 
@@ -42,7 +42,7 @@ def test_parse_plan_keeps_six_sections_and_drops_a_search_on_a_data_section():
             {"id": "performance", "questions": [" A ", "a", "b", "c", "d"], "searches": ["should not search"]},
             {"id": "nope", "questions": ["x"]},
             {"id": "next", "questions": ["sql?"], "searches": [" 双十一 ", "black friday", "618"]},
-            {"id": "risks", "questions": ["amount"], "searches": []},
+            {"id": "risks", "questions": ["amount"], "searches": ["市场下行"]},
             {"id": "summary", "questions": ["skip"], "searches": ["skip"]},
         ],
     }, today=date(2026, 10, 19))
@@ -54,8 +54,7 @@ def test_parse_plan_keeps_six_sections_and_drops_a_search_on_a_data_section():
     assert nxt.questions == []
     assert nxt.searches == ["双十一", "black friday"]
     risks = next(section for section in planned if section.id == "risks")
-    assert risks.questions == ["amount"]
-    assert risks.searches == []
+    assert risks.questions == [] and risks.searches == []
     summary = next(section for section in planned if section.id == "summary")
     assert summary.questions == [] and summary.searches == []
 
@@ -76,6 +75,20 @@ def test_parse_plan_does_not_invent_questions_when_the_model_returns_nothing():
     assert risks.questions == [] and risks.searches == []
 
 
+def test_parse_risk_plan_waits_for_a_real_problem():
+    skipped = parse_risk_plan({"write": False, "questions": ["库存"], "searches": ["新闻"]})
+    assert skipped.write is False and skipped.questions == [] and skipped.searches == []
+    assert parse_risk_plan({}).write is False
+    chosen = parse_risk_plan({
+        "write": True,
+        "questions": [" 未完成采购单 ", "未完成采购单", "a", "b", "c"],
+        "searches": [" 档期 ", "档期", "节假日"],
+    })
+    assert chosen.write is True
+    assert chosen.questions == ["未完成采购单", "a", "b"]
+    assert chosen.searches == ["档期", "节假日"]
+
+
 def test_prompts_use_the_sectioned_shape_and_format_cleanly():
     assert [section["id"] for section in SECTIONS] == [
         "metrics", "summary", "performance", "inventory", "next", "risks",
@@ -84,10 +97,11 @@ def test_prompts_use_the_sectioned_shape_and_format_cleanly():
     assert "关键指标" in outline and "问题与风险" in outline and "不要原样照抄" in outline
     for prompt in (
         REPORT_QUESTIONS_PROMPT, CHART_GENERATION_PROMPT, WRITING_PROMPT, SUMMARY_PROMPT,
-        CODE_WIZARD_PROMPT, REPORT_REVIEW_PROMPT, REPORT_REVISE_PROMPT,
+        CODE_WIZARD_PROMPT, REPORT_REVIEW_PROMPT, REPORT_REVISE_PROMPT, RISK_PLAN_PROMPT,
     ):
         assert "## 角色" in prompt and "## 输入定义" in prompt
-    assert "问题与风险由你判断" in REPORT_QUESTIONS_PROMPT
+    assert "问题与风险的 questions 和 searches 都是空数组" in REPORT_QUESTIONS_PROMPT
+    assert "要不要写" in RISK_PLAN_PROMPT
     planned = REPORT_QUESTIONS_PROMPT.format(
         outline=outline_text(), message="写一份报告", database_structure="- contracts: 协议",
         max_questions=3, max_searches=2,
@@ -97,6 +111,9 @@ def test_prompts_use_the_sectioned_shape_and_format_cleanly():
     assert "{c}%" in chart and "860" in chart
     WRITING_PROMPT.format(message="月报", section_title="业绩表现", section_brief="销量")
     SUMMARY_PROMPT.format(message="月报")
+    RISK_PLAN_PROMPT.format(
+        message="月报", database_structure="- contracts: 协议", max_questions=3, max_searches=2,
+    )
     filled = CODE_WIZARD_PROMPT.format(
         section_title="库存情况",
         section_brief="采购与库存剩余",
@@ -181,7 +198,7 @@ def test_review_passes_at_85_and_revises_below_it_for_three_rounds():
 
 def test_reflection_retries_a_failure_and_keeps_three_tries():
     from backend.llm import FakeLLM
-    from backend.report.reflect import with_reflection
+    from backend.codefix import format_failures, with_reflection
 
     def fail_then_ok(artifact: str):
         if artifact == "ok":
@@ -201,6 +218,9 @@ def test_reflection_retries_a_failure_and_keeps_three_tries():
     assert value is None and len(failures) == 3
     assert [item["artifact"] for item in failures] == ["a", "still", "nope"]
     assert all(item["error"] == "boom" for item in failures)
+    handed = format_failures(failures)
+    assert "nope" in handed and "boom" in handed and "需要人工处理" in handed
+    assert "still" not in handed and "第1次" not in handed
 
 
 def test_findings_sum_a_mix_and_a_trend_and_skip_a_single_row():
@@ -232,40 +252,31 @@ def test_findings_range_when_there_is_no_category():
     }]
 
 
-def test_product_names_replace_a_bare_sku_and_charts_stay_in_their_section():
+def test_long_category_labels_rotate_and_charts_stay_in_their_section():
     from backend.report.turn import SectionPlan
 
-    rows = [{"sku": "FO-100", "units": 30}, {"sku": "SR-200", "product_name": "精华", "units": 10}]
-    labels = stamp_product_labels(rows, {"FO-100": "深海鱼油"})
-    assert rows[0]["product_label"] == "深海鱼油（FO-100）"
-    assert rows[1]["product_label"] == "精华（SR-200）"
-    rewritten = rewrite_product_mentions("FO-100 卖了 30。深海鱼油（FO-100）仍是主力。FO-1000 另算。", labels)
-    assert rewritten.startswith("深海鱼油（FO-100） 卖了 30。")
-    assert "深海鱼油（深海鱼油" not in rewritten
-    assert "FO-1000" in rewritten
     assert shape_prose("销售额上升。库存偏紧。需要补货。还要看节假日。") == (
         "销售额上升。库存偏紧。\n\n需要补货。还要看节假日。"
     )
 
     chart = {
-        "id": "chart_001", "title": "FO-100 销量", "subtitle": "",
-        "echarts_option": {"xAxis": {"type": "category", "data": ["FO-100", "SR-200"]}},
+        "id": "chart_001", "title": "深海鱼油（FO-100）销量", "subtitle": "",
+        "echarts_option": {"xAxis": {"type": "category", "data": ["深海鱼油（FO-100）", "精华（SR-200）"]}},
     }
-    relabeled = relabel_chart_labels([chart], labels)
-    assert chart["title"] == "FO-100 销量"
-    assert relabeled[0]["id"] == "chart_001"
-    assert relabeled[0]["title"] == "深海鱼油（FO-100） 销量"
-    assert relabeled[0]["echarts_option"]["xAxis"]["data"] == ["深海鱼油（FO-100）", "精华（SR-200）"]
-    assert relabeled[0]["echarts_option"]["xAxis"]["axisLabel"]["rotate"] == 28
+    fitted = fit_chart_axes([chart])
+    assert chart["title"] == "深海鱼油（FO-100）销量"
+    assert fitted[0]["id"] == "chart_001"
+    assert fitted[0]["echarts_option"]["xAxis"]["data"] == ["深海鱼油（FO-100）", "精华（SR-200）"]
+    assert fitted[0]["echarts_option"]["xAxis"]["axisLabel"]["rotate"] == 28
 
     planned = [
         SectionPlan("summary", "摘要", "", False, False, False, False, [], []),
         SectionPlan("performance", "业绩表现", "", True, True, False, False, [], []),
     ]
     report = "## 2. 摘要\n\n见 [趋势](chart_001)。\n\n## 3. 业绩表现\n\n销量上升。"
-    placed = place_charts_in_sections(report, planned, {"performance": relabeled})
+    placed = place_charts_in_sections(report, planned, {"performance": fitted})
     summary, performance = placed.split("业绩表现", 1)
     assert "chart_001" not in summary
     assert "(chart_001)" in performance
-    finished = finish_report(report, labels, planned, {"performance": relabeled})
+    finished = finish_report(report, planned, {"performance": fitted})
     assert "chart_001" in finished.split("业绩表现", 1)[1]

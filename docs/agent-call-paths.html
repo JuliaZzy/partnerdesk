@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>KA Account Agent · Agent 调用路径</title>
+<style>
+  :root {
+    --paper: #f3f0e8;
+    --ink: #1c1917;
+    --muted: #57534e;
+    --line: #78716c;
+    --card: #fffdf8;
+    --contract: #a20025;
+    --contract-edge: #6f0000;
+    --data: #0c7a32;
+    --data-edge: #005700;
+    --news: #c4006a;
+    --news-edge: #8e0048;
+    --code: #c2410c;
+    --code-edge: #9a3412;
+    --shadow: 0 1px 0 rgba(28, 25, 23, 0.04), 0 8px 20px rgba(28, 25, 23, 0.05);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 1px 1px, rgba(120, 113, 108, 0.28) 1px, transparent 0) 0 0 / 22px 22px,
+      var(--paper);
+    font: 14px/1.45 "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", "Source Han Serif SC", serif;
+  }
+
+  .page {
+    padding: 36px 28px 64px;
+  }
+  .board {
+    width: max-content;
+    margin: 0 auto;
+  }
+
+  header.top {
+    margin-bottom: 26px;
+  }
+  h1 {
+    margin: 0 0 6px;
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+  }
+  .sub {
+    margin: 0;
+    max-width: 640px;
+    color: var(--muted);
+    font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    font-size: 13.5px;
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin-top: 14px;
+    font-family: "Avenir Next", "PingFang SC", sans-serif;
+    font-size: 12px;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .swatch {
+    width: 12px; height: 12px; border-radius: 3px;
+    border: 1.5px solid var(--ink);
+    background: var(--card);
+  }
+  .swatch.contract { background: var(--contract); border-color: var(--contract-edge); }
+  .swatch.data { background: var(--data); border-color: var(--data-edge); }
+  .swatch.news { background: var(--news); border-color: var(--news-edge); }
+  .swatch.code { background: var(--code); border-color: var(--code-edge); }
+
+  .orch {
+    width: 640px;
+    margin: 0 auto;
+    background: var(--card);
+    border: 1.5px solid var(--ink);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    padding: 14px 18px 12px;
+    text-align: center;
+  }
+  .orch h2 { margin: 0; font-size: 20px; font-weight: 600; }
+  .orch p { margin: 6px 0 0; color: var(--muted); font-family: "Avenir Next", "PingFang SC", sans-serif; font-size: 12.5px; }
+  .rule {
+    margin-top: 10px;
+    font-family: "Avenir Next", "PingFang SC", sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.01em;
+  }
+  .rule b { font-weight: 650; }
+
+  .stem {
+    width: 1.5px;
+    height: 22px;
+    margin: 0 auto;
+    background: var(--line);
+  }
+  .cols {
+    display: grid;
+    grid-template-columns: 270px 1060px 320px 500px 260px 280px;
+    gap: 22px;
+    align-items: start;
+  }
+  .col { position: relative; min-width: 0; padding-top: 22px; }
+  .col::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1.5px;
+    background: var(--line);
+  }
+  .col:first-child::before { left: 50%; }
+  .col:last-child::before { right: 50%; }
+  .col::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 1.5px;
+    height: 16px;
+    background: var(--line);
+  }
+  .col .drop {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 4px solid transparent;
+    border-top: 6px solid var(--line);
+    border-bottom: 0;
+  }
+
+  .agent {
+    background: var(--card);
+    border: 1.5px solid var(--ink);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 10px 12px 9px;
+    text-align: center;
+  }
+  .agent h3 { margin: 0; font-size: 16px; font-weight: 650; }
+  .agent .mod, .call header .mod {
+    overflow-wrap: break-word;
+  }
+  .agent .mod {
+    margin-top: 3px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .down {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 18px;
+  }
+  .down i {
+    display: block;
+    width: 1.5px;
+    flex: 1;
+    background: var(--line);
+  }
+  .down::after {
+    content: "";
+    border: 4px solid transparent;
+    border-top: 6px solid var(--line);
+    border-bottom: 0;
+  }
+
+  .node {
+    width: 100%;
+    background: var(--card);
+    border: 1.5px solid #d6d3d1;
+    border-radius: 12px;
+    padding: 8px 10px 9px;
+  }
+  .node h4 {
+    margin: 0;
+    font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    font-size: 13px;
+    font-weight: 650;
+  }
+  .node p, .call p, .leaf {
+    margin: 3px 0 0;
+    color: var(--muted);
+    font-family: "Avenir Next", "PingFang SC", sans-serif;
+    font-size: 12px;
+  }
+  .k {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: #f5f5f4;
+    color: #44403c;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px;
+    letter-spacing: 0.02em;
+    vertical-align: 1px;
+  }
+
+  .call {
+    width: 100%;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    border: 1.5px solid var(--ink);
+  }
+  .call header {
+    padding: 8px 10px 7px;
+    color: white;
+  }
+  .call header h4 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 650;
+    font-family: "Avenir Next", "PingFang SC", sans-serif;
+  }
+  .call header .mod {
+    margin-top: 2px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10.5px;
+    opacity: 0.88;
+  }
+  .call .body {
+    background: var(--card);
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .call.contract { border-color: var(--contract-edge); }
+  .call.contract > header { background: var(--contract); }
+  .call.data { border-color: var(--data-edge); }
+  .call.data > header { background: var(--data); }
+  .call.news { border-color: var(--news-edge); }
+  .call.news > header { background: var(--news); }
+  .call.code { border-color: var(--code-edge); }
+  .call.code > header { background: var(--code); }
+
+  .leaf {
+    margin: 0;
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: #fafaf9;
+    border: 1px solid #e7e5e4;
+    color: var(--ink);
+  }
+  .leaf b {
+    font-weight: 650;
+    font-family: "Avenir Next", "PingFang SC", sans-serif;
+  }
+  .leaf span {
+    display: block;
+    margin-top: 1px;
+    color: var(--muted);
+  }
+
+  .swatch.fixloop {
+    background: #fff7ed;
+    border-color: #c2410c;
+    border-style: dashed;
+  }
+
+  .col.report {
+    --g: 96px;
+    --spine: 18px;
+    --c1: 250px;
+    --c2: 104px;
+    --c3: 220px;
+    --c4: 10px;
+    --c5: 250px;
+    --gap: 16px;
+    --risk-w: 300px;
+  }
+  .col.report .agent,
+  .col.report .tail {
+    width: 280px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .col.report .plan-node { width: 460px; margin: 0 auto; }
+  .rg {
+    display: grid;
+    grid-template-columns: var(--g) var(--c1) var(--c2) var(--c3) var(--c4) var(--c5) var(--g);
+    row-gap: var(--gap);
+    width: calc(var(--g) + var(--c1) + var(--c2) + var(--c3) + var(--c4) + var(--c5) + var(--g));
+    margin: 0 auto;
+  }
+  .rg-fork, .rg-join {
+    grid-column: 2 / 7;
+    display: grid;
+    grid-template-columns: subgrid;
+    position: relative;
+    height: 16px;
+  }
+  .rg-fork::before, .rg-join::before {
+    content: "";
+    position: absolute;
+    left: calc(var(--c1) / 2);
+    right: calc(var(--c5) / 2);
+    height: 1.5px;
+    background: var(--line);
+  }
+  .rg-fork::before { top: 0; }
+  .rg-join::before { bottom: 0; }
+  .rg-fork i, .rg-join i { position: relative; justify-self: center; width: 1.5px; background: var(--line); }
+  .rg-fork i:first-child, .rg-fork i:last-child { height: calc(16px + var(--gap)); }
+  .rg-fork i:first-child::after, .rg-fork i:last-child::after {
+    content: "";
+    position: absolute;
+    bottom: -1px;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 4px solid transparent;
+    border-top: 6px solid var(--line);
+    border-bottom: 0;
+  }
+  .rg-join i:first-child, .rg-join i:last-child {
+    height: calc(16px + var(--gap));
+    margin-top: calc(var(--gap) * -1);
+  }
+  .at-data { grid-column: 2; grid-row: 2; }
+  .at-chart { grid-column: 2; grid-row: 3; }
+  .at-py { grid-column: 2; grid-row: 4; }
+  .at-chart, .at-py, .at-write, .at-risk { position: relative; }
+  .at-chart::before, .at-py::before, .at-write::before, .at-risk::before {
+    content: "";
+    position: absolute;
+    top: calc(var(--gap) * -1);
+    left: 50%;
+    width: 1.5px;
+    height: var(--gap);
+    background: var(--line);
+  }
+  .at-chart::after, .at-py::after, .at-write::after, .at-risk::after {
+    content: "";
+    position: absolute;
+    top: -7px;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 4px solid transparent;
+    border-top: 6px solid var(--line);
+    border-bottom: 0;
+  }
+  .wire {
+    position: relative;
+    align-self: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 16px;
+  }
+  .wire .lane {
+    display: flex;
+    align-items: center;
+    position: relative;
+    height: 10px;
+  }
+  .wire .lane i { flex: 1; border-top: 1.5px dashed #c2410c; }
+  .wire .lane em {
+    position: absolute;
+    left: 50%;
+    top: -13px;
+    transform: translateX(-50%);
+    padding: 0 3px;
+    background: var(--paper);
+    color: #9a3412;
+    font-family: "Avenir Next", "PingFang SC", sans-serif;
+    font-size: 10px;
+    font-style: normal;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .wire .lane.go::after,
+  .wire .lane.ret::before {
+    content: "";
+    flex: none;
+    width: 0;
+    height: 0;
+    border: 5px solid transparent;
+  }
+  .wire .lane.go::after { border-left: 8px solid #c2410c; border-right: 0; }
+  .wire .lane.ret::before { border-right: 8px solid #c2410c; border-left: 0; }
+  .fix-row .wire .lane em { background: var(--card); }
+  .wire-sql { grid-column: 3; grid-row: 2; }
+  .wire-chart { grid-column: 3; grid-row: 3; }
+  .wire-py { grid-column: 3; grid-row: 4; }
+  .fix-slot {
+    grid-column: 4;
+    grid-row: 2 / span 3;
+    display: flex;
+    min-height: 0;
+  }
+  .fixbox { height: 100%; display: flex; flex-direction: column; }
+  .fixbox .body { flex: 1; justify-content: center; }
+  .at-news { grid-column: 6; grid-row: 2; }
+  .news-rail {
+    grid-column: 6;
+    grid-row: 3 / span 2;
+    justify-self: center;
+    width: 1.5px;
+    margin-top: calc(var(--gap) * -1);
+    background: var(--line);
+  }
+  .rg-join { grid-row: 5; }
+  .at-write, .at-risk { grid-column: 2 / 7; grid-row: 6; justify-self: center; width: 300px; }
+  .at-risk { grid-row: 7; }
+  .rail-up {
+    position: relative;
+    display: grid;
+    grid-template-rows: subgrid;
+    grid-template-columns: 1fr;
+  }
+  .rail-up.left,
+  .rail-up.right {
+    grid-row: 2 / span 6;
+    justify-self: stretch;
+    width: auto;
+  }
+  .rail-up.left { grid-column: 1; }
+  .rail-up.right { grid-column: 7; }
+  .rail-up > i {
+    width: 0;
+    border-left: 1.5px dashed #c2410c;
+  }
+  .rail-up.left > i { justify-self: start; margin-left: var(--spine); }
+  .rail-up.right > i { justify-self: end; margin-right: var(--spine); }
+  .rail-up > i,
+  .rail-up b { grid-column: 1; }
+  .rail-up > i.a {
+    grid-row: 1;
+    align-self: start;
+    position: relative;
+    top: 50%;
+    height: calc(50% + var(--gap));
+  }
+  .rail-up > i.b { grid-row: 2 / span 4; align-self: start; height: calc(100% + var(--gap)); }
+  .rail-up > i.c { grid-row: 6; align-self: start; height: 38px; }
+  .rail-up b {
+    align-self: center;
+    position: relative;
+    z-index: 1;
+    height: 0;
+    border-top: 1.5px dashed #c2410c;
+    color: #9a3412;
+    font-weight: 500;
+    font-family: "Avenir Next", "PingFang SC", sans-serif;
+    font-size: 10px;
+    font-style: normal;
+    line-height: 1;
+  }
+  .rail-up.left b { justify-self: stretch; margin-left: var(--spine); }
+  .rail-up.right b { justify-self: stretch; margin-right: var(--spine); }
+  .rail-up b span {
+    position: absolute;
+    top: -14px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 0 3px;
+    background: var(--paper);
+    white-space: nowrap;
+  }
+  .hit-data { grid-row: 1; }
+  .hit-code { grid-row: 3; }
+  .hit-news { grid-row: 1; }
+  .rail-up.left b::after,
+  .rail-up.right b::before {
+    content: "";
+    position: absolute;
+    top: -5px;
+    width: 0;
+    height: 0;
+    border: 5px solid transparent;
+  }
+  .rail-up.left b::after { right: 0; border-left: 8px solid #c2410c; border-right: 0; }
+  .rail-up.right b::before { left: 0; border-right: 8px solid #c2410c; border-left: 0; }
+  .h-back {
+    position: absolute;
+    top: 36px;
+    height: 0;
+    border-top: 1.5px dashed #c2410c;
+    z-index: 1;
+  }
+  .h-back.to-left { right: 100%; width: calc((var(--c1) + var(--c2) + var(--c3) + var(--c4) + var(--c5) - var(--risk-w)) / 2 + var(--g) - var(--spine)); }
+  .h-back.to-right { left: 100%; width: calc((var(--c1) + var(--c2) + var(--c3) + var(--c4) + var(--c5) - var(--risk-w)) / 2 + var(--g) - var(--spine)); }
+  .reentry { position: relative; }
+  .reentry.to-right { padding-right: 84px; }
+  .reentry.to-left { padding-left: 84px; }
+  .reentry-back {
+    position: absolute;
+    top: 18px;
+    bottom: 18px;
+    width: 0;
+    border: 0;
+  }
+  .reentry.to-right > .reentry-back { right: 10px; border-right: 1.5px dashed #c2410c; }
+  .reentry.to-left > .reentry-back { left: 10px; border-left: 1.5px dashed #c2410c; }
+  .reentry-back::before,
+  .reentry-back::after {
+    content: "";
+    position: absolute;
+    height: 0;
+    width: 74px;
+    border-top: 1.5px dashed #c2410c;
+  }
+  .reentry.to-right > .reentry-back::before { top: 0; right: 0; }
+  .reentry.to-right > .reentry-back::after { bottom: 0; right: 0; }
+  .reentry.to-left > .reentry-back::before { top: 0; left: 0; }
+  .reentry.to-left > .reentry-back::after { bottom: 0; left: 0; }
+  .reentry-back b {
+    position: absolute;
+    top: -5px;
+    width: 0;
+    height: 0;
+    border: 5px solid transparent;
+  }
+  .reentry.to-right > .reentry-back b { left: -74px; border-right: 8px solid #c2410c; border-left: 0; }
+  .reentry.to-left > .reentry-back b { right: -74px; border-left: 8px solid #c2410c; border-right: 0; }
+  .reentry-back span {
+    position: absolute;
+    bottom: calc(100% + 3px);
+    top: auto;
+    width: max-content;
+    transform: none;
+    padding: 0 2px;
+    background: var(--paper);
+    color: #9a3412;
+    font-family: "Avenir Next", "PingFang SC", sans-serif;
+    font-size: 10px;
+    line-height: 1.25;
+    white-space: nowrap;
+  }
+  .reentry.to-right > .reentry-back span { right: 0; left: auto; text-align: right; }
+  .reentry.to-left > .reentry-back span { left: 0; right: auto; text-align: left; }
+  .call .reentry-back span { background: var(--card); }
+  .fix-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 92px 124px;
+    gap: 6px;
+    align-items: center;
+  }
+  .fix-row .wire { height: auto; width: calc(100% + 12px); margin-left: -6px; margin-right: -6px; }
+  .fix-row .call header { padding: 6px 8px 5px; }
+  .fix-row .call header h4 { font-size: 13px; }
+  .fix-row .call .body { padding: 6px; }
+  .tail-loop { width: 400px; margin: 0 auto; }
+  .col.report .tail-loop .tail { width: 100%; margin: 0; }
+
+  footer.note {
+    margin-top: 28px;
+    color: var(--muted);
+    font-family: "Avenir Next", "PingFang SC", sans-serif;
+    font-size: 12px;
+  }
+  footer.note code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+<div class="board">
+  <header class="top">
+    <div>
+      <h1>KA Account Agent · Agent 调用路径</h1>
+      <p class="sub">仅包含代码里的 agent, tools, 以及MCP 的调用路径。</p>
+    </div>
+    <div class="legend">
+      <span><i class="swatch"></i>Agent / 模型步骤</span>
+      <span><i class="swatch data"></i>Data 查数</span>
+      <span><i class="swatch code"></i>Code 计算</span>
+      <span><i class="swatch fixloop"></i>回路，箭头回到上一块</span>
+      <span><i class="swatch news"></i>检索</span>
+      <span><i class="swatch contract"></i>合同结果</span>
+    </div>
+  </header>
+
+  <div class="orch">
+    <h2>Orchestrator</h2>
+      <p>PLAN 把这一轮的代理和工具一起写进 tasks。没有依赖的同一波执行。只有下一步要用上一步的结果，才填 depends_on。</p>
+      <div class="rule">只有一个代理时，由它自己回复。两项及以上，或只有工具，跑完后汇总成一次回复。计划为空才进工具循环，仍不用就直接回答。</div>
+  </div>
+  <div class="stem"></div>
+  <div class="cols">
+
+      <!-- PO -->
+      <section class="col">
+        <span class="drop"></span>
+        <div class="agent">
+          <h3>PO Agent</h3>
+          <div class="mod">po/agent.py</div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4>首先判断该PO单的 status 情况</h4>
+          <p>- 若为新订单，直接走下单流程，若用户提出查看旧订单情况，先检查该订单的 status<br>
+            - 单独这一项时自己回复。和其他任务一起跑时，草稿留在这边，回复由编排器写。未完成的单会留在这一轮<br>
+            - PO 单最终需要客户点击 confirm 确认，agent 没有提交 PO 单的权限</p>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="call contract">
+          <header>
+            <h4>Contract Analysis Result</h4>
+            <div class="mod">contract_discount_for_next_order</div>
+          </header>
+          <div class="body">
+            <p class="leaf"><b>只读已入库折扣</b><span>下单前预填进PO单中，不调用 Contract Agent，但对话中必须与用户确认折扣是否正确，用户后续要求修改的折扣可以覆盖原有数字。</span></p>
+          </div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4><span class="k">LLM</span>抽取</h4>
+          <p>把这句话填进固定 slot，和已有字段合并。不算价。</p>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="call code">
+          <header>
+            <h4>Code Check</h4>
+            <div class="mod">po/check.py · rules.py · draft.py</div>
+          </header>
+          <div class="body">
+            <p class="leaf"><b>目录搜索</b><span>对上 SKU。没对上才让模型给候选，幻觉出来的 SKU 丢掉。</span></p>
+            <p class="leaf"><b>定价 / MOQ</b><span>箱价、起订量由代码算。</span></p>
+            <p class="leaf"><b>商业规则</b><span>含合同派生规则。通过才出草稿和 confirm token。</span></p>
+          </div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4><span class="k">LLM</span>回复</h4>
+          <p>只转述核对结果。确认是按钮，token 在建单前烧掉。</p>
+        </div>
+      </section>
+
+      <!-- Report -->
+      <section class="col report">
+        <span class="drop"></span>
+        <div class="agent">
+          <h3>AI Report</h3>
+          <div class="mod">report/agent.py → turn.py</div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node plan-node">
+          <h4>规划</h4>
+          <p>六节固定。这一步只给关键指标、业绩表现、库存情况、下一周期计划写问题和检索词。问题与风险先留空。</p>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="rg">
+          <div class="rg-fork" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="rail-up left" aria-hidden="true"><i class="a"></i><i class="b"></i><i class="c"></i><b class="hit-data"><span>补查</span></b><b class="hit-code"><span>再算</span></b></div>
+          <div class="rail-up right" aria-hidden="true"><i class="a"></i><i class="b"></i><i class="c"></i><b class="hit-news"><span>补检索</span></b></div>
+
+          <div class="call data at-data">
+            <header>
+              <h4>Data Query</h4>
+              <div class="mod">text2sql.answer_question · reflect=True</div>
+            </header>
+            <div class="body">
+              <p class="leaf"><b>每条不重复的问题查一次</b><span>关键指标、业绩、库存必查。问题与风险不在这一步查。</span></p>
+              <p class="leaf"><b>选表 → 写一条 SELECT → 校验并执行</b><span>产品名称和 SKU 一起选出。跑在本合作关系的视图上，身份是 text2sql_reader。</span></p>
+              <p class="leaf"><b>REFLECT</b><span>和直接查数同一步。行回来后打分，80 分及以上停。低于 80 分换问题再查，最多 3 次。</span></p>
+            </div>
+          </div>
+          <div class="wire wire-sql"><div class="lane go"><i></i><em>失败</em></div><div class="lane ret"><i></i><em>再执行</em></div></div>
+
+          <div class="fix-slot">
+            <div class="call code fixbox">
+              <header>
+                <h4>code-fix</h4>
+                <div class="mod">backend/codefix</div>
+              </header>
+              <div class="body">
+                <p class="leaf"><b>代码执行失败重试</b><span>报表和查数的 SQL、图表 JSON、analyze() 都调用这一份。按报错写出 fixed_code，送回刚才那一步再执行。</span></p>
+                <p class="leaf"><b>最多 3 次</b><span>仍失败就输出最后一次内容和报错，交给人工。问题与风险的补查和再算也进这里。</span></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="call news at-news">
+            <header>
+              <h4>新闻检索</h4>
+              <div class="mod">tools/web_search</div>
+            </header>
+            <div class="body">
+              <p class="leaf"><b>下一周期计划必查</b><span>热点、节假日。每条检索留 5 条。问题与风险要等章节写完再决定，不在这一步查。</span></p>
+            </div>
+          </div>
+          <div class="news-rail" aria-hidden="true"></div>
+
+          <div class="node at-chart">
+            <h4><span class="k">LLM</span>图表</h4>
+            <p>只给业绩表现和库存情况写 ECharts JSON。模型给出的图都留下。</p>
+          </div>
+          <div class="wire wire-chart"><div class="lane go"><i></i><em>失败</em></div><div class="lane ret"><i></i><em>再执行</em></div></div>
+
+          <div class="call code at-py">
+            <header>
+              <h4>Code</h4>
+              <div class="mod">report/wizard.py</div>
+            </header>
+            <div class="body">
+              <p class="leaf"><b>模型写 analyze(datasets)</b><span>关键指标、业绩、库存、下一周期计划各一份。问题与风险若决定要写，补查之后再单独算。datasets 是当时已经查成功的行。</span></p>
+              <p class="leaf"><b>沙箱执行</b><span>禁 import 和文件。算出合计、占比、变化、覆盖天数，交给撰写。撰写不再心算。</span></p>
+            </div>
+          </div>
+          <div class="wire wire-py"><div class="lane go"><i></i><em>失败</em></div><div class="lane ret"><i></i><em>再执行</em></div></div>
+
+          <div class="rg-join" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="node at-write">
+            <h4><span class="k">LLM</span>撰写</h4>
+            <p>先写关键指标、业绩表现、库存情况、下一周期计划。各节只看自己的查询、洞察和新闻。</p>
+          </div>
+          <div class="node at-risk">
+            <i class="h-back to-left" aria-hidden="true"></i>
+            <i class="h-back to-right" aria-hidden="true"></i>
+            <h4><span class="k">LLM</span>问题与风险</h4>
+            <p>读完上面四节再判断写不写。要确认才补查数据库、再算或检索，沿虚线回到上面。写在摘要前面。看不出问题就整节不写。</p>
+          </div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node tail">
+          <h4><span class="k">LLM</span>摘要</h4>
+          <p>最后写。只收已经写好的章节，包括写出来的问题与风险。</p>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="reentry to-right tail-loop">
+          <div class="node tail">
+            <h4><span class="k">LLM</span>审核</h4>
+            <p>五章各 20 分。低于 85 且有实质问题就整篇改，再回到这里打分。草稿不入库。</p>
+          </div>
+          <i class="reentry-back"><span>重新打分，最多 3 轮</span><b></b></i>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="call code tail">
+          <header>
+            <h4>定稿</h4>
+            <div class="mod">finish_report</div>
+          </header>
+          <div class="body">
+            <p class="leaf"><b>代码收回排版</b><span>把图放回所属章节，拆开长段落。审核改写不能改掉这些。</span></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Contract -->
+      <section class="col">
+        <span class="drop"></span>
+        <div class="agent">
+          <h3>Contract Analysis</h3>
+          <div class="mod">contract/agent.py</div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4><span class="k">代码</span>切块</h4>
+          <p>读 PDF / Word / 文本，按标题切成条款树。空白 PDF 页才渲染给视觉模型。</p>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="reentry to-right">
+          <div class="node">
+            <h4><span class="k">LLM</span>选段 → 抽取</h4>
+            <p>先选要读的段，再按段抽区域、独家、MOQ、价格表、折扣阶梯，并对照原文丢掉无出处的句子。</p>
+          </div>
+          <div class="down"><i></i></div>
+          <div class="node">
+            <h4><span class="k">LLM</span>补读</h4>
+            <p>还缺字段、置信度不够、还有没读的段，就再选一段回来抽。没有可执行条款就不入库。</p>
+          </div>
+          <i class="reentry-back"><span>重新抽取，最多 3 遍</span><b></b></i>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="call code">
+          <header>
+            <h4>入库</h4>
+            <div class="mod">contract/ingest.py</div>
+          </header>
+          <div class="body">
+            <p class="leaf"><b>条款落表</b><span>折扣阶梯、MOQ、价格、区域、证据各一张表。抽取 JSON 另存一份备查。</span></p>
+            <p class="leaf"><b>派生 PO 规则</b><span>derive_rules 写成 commercial_rules，带 contract_id。模型不直接写规则。</span></p>
+          </div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="call contract">
+          <header>
+            <h4>Contract Analysis Result</h4>
+            <div class="mod">已入库的表</div>
+          </header>
+          <div class="body">
+            <p class="leaf"><b>回复只引用这张表</b><span>PO 以后读的折扣、报表用 SQL 问到的销售目标，都来自这里，不再重抽。</span></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Data -->
+      <section class="col">
+        <span class="drop"></span>
+        <div class="agent">
+          <h3>Data Query</h3>
+          <div class="mod">text2sql/agent.py</div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4>直接被编排器点名</h4>
+          <p>和报表里的那次不是同一次调用。报表 depends_on 里点名的 data 会被拿掉，那个问题只当 hint。不在 depends_on 里的 data 会和报表一起跑。</p>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="call data">
+          <header>
+            <h4>text2sql</h4>
+            <div class="mod">answer_question · reflect=True</div>
+          </header>
+          <div class="body">
+            <div class="reentry to-left">
+              <p class="leaf"><b>选表</b><span>模型从允许的表里挑，代码再补关联表。</span></p>
+              <div class="down"><i></i></div>
+              <p class="leaf"><b>写一条 SELECT</b></p>
+              <div class="down"><i></i></div>
+              <div class="fix-row">
+                <p class="leaf"><b>校验并执行</b><span>sql_validator 只放行单条 SELECT，再在排除其他合作关系的视图上执行。</span></p>
+                <div class="wire"><div class="lane go"><i></i><em>失败</em></div><div class="lane ret"><i></i><em>再执行</em></div></div>
+                <div class="call code">
+                  <header>
+                    <h4>code-fix</h4>
+                    <div class="mod">backend/codefix</div>
+                  </header>
+                  <div class="body">
+                    <p class="leaf"><b>最多 3 次</b><span>和报表里是同一份。改完送回再执行。</span></p>
+                  </div>
+                </div>
+              </div>
+              <div class="down"><i></i></div>
+              <p class="leaf"><b>REFLECT</b><span>行回来之后打 0–100 分。80 分及以上留下这些行。低于 80 分换一个问题，最多打分 3 次。报表查数走同一步。</span></p>
+              <i class="reentry-back"><span>低于 80 分换题再查</span><b></b></i>
+            </div>
+          </div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4><span class="k">LLM</span>回答</h4>
+          <p>引用返回的行。不重算，不编造。</p>
+        </div>
+      </section>
+
+      <!-- Brand -->
+      <section class="col">
+        <span class="drop"></span>
+        <div class="agent">
+          <h3>Brand</h3>
+          <div class="mod">brand_knowledge/answer.py</div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4><span class="k">LLM</span>检索句</h4>
+          <p>第一问按原话查。后面的跟进先改写成可以单独检索的句子，存档仍是原话。</p>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="call news">
+          <header>
+            <h4>Brand Knowledge RAG</h4>
+            <div class="mod">brand_knowledge/rag.py</div>
+          </header>
+          <div class="body">
+            <p class="leaf"><b>混合召回</b><span>Milvus 向量加上同一批段落的 BM25，倒数排名融合。</span></p>
+            <p class="leaf"><b>可选重排</b><span>配了 RERANK 才用 bge-reranker。索引要事先建好，这一问不重建。</span></p>
+          </div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4><span class="k">LLM</span>作答</h4>
+          <p>只根据命中的段落写。引用落到文件名和页码。合同数字不走这里。</p>
+        </div>
+      </section>
+
+      <!-- Tools -->
+      <section class="col">
+        <span class="drop"></span>
+        <div class="agent">
+          <h3>工具 / MCP</h3>
+          <div class="mod">tools/ · mcp/</div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4>写进同一份计划</h4>
+          <p>kind 用 tool，name 用函数名，参数放在 input。和代理没有依赖就同一波并行。</p>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="call news">
+          <header>
+            <h4>四个原生工具</h4>
+            <div class="mod">web_search · translate · exchange_rate · send_email</div>
+          </header>
+          <div class="body">
+            <p class="leaf"><b>web_search</b><span>新闻和公开网页。报表里的热点检索是另一条，不经过这里。</span></p>
+            <p class="leaf"><b>translate / exchange_rate</b><span>翻译和汇率。translate 若等上一步，正文用上一步的结果，不在 input 里编。</span></p>
+            <p class="leaf"><b>send_email</b><span>只有用户明确要发才排。正文用上一步的译文。不编造收件地址。</span></p>
+          </div>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4>MCP</h4>
+          <p>配了才并进同一份工具清单。模型填参数的方式和原生工具一样，看不到 key。</p>
+        </div>
+        <div class="down"><i></i></div>
+        <div class="node">
+          <h4>计划为空</h4>
+          <p>才进工具循环，最多 4 轮。同一轮里点了多个就并行，下一轮再用上一步的结果。一个都没用，就直接回答。</p>
+        </div>
+      </section>
+
+    </div>
+
+  <footer class="note">
+    工具和 MCP 与代理写在同一份计划里。会话标题 <code>session_open</code> 和计划并行，不调度代理。
+    采购单确认提交、表格收成销售事实，都在这条聊天路径之外。
+  </footer>
+</div>
+</div>
+</body>
+</html>

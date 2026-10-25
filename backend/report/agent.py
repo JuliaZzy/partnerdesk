@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -33,7 +34,7 @@ def run(
         yield {"type": "warning", "message": warning}
     reply = draft.text
     yield {"type": "token", "text": reply}
-    extra: dict[str, Any] = {"report_draft": True}
+    extra: dict[str, Any] = {"report_draft": True, "report_pending_id": f"rp_{uuid.uuid4().hex[:12]}"}
     if draft.charts:
         extra["charts"] = draft.charts
     if draft.series:

@@ -361,6 +361,24 @@ tr:last-child td { border-bottom: 0; }
 .step-mark.spin i:nth-child(3) { opacity: 0.55; }
 @keyframes step-spin { to { transform: rotate(360deg); } }
 .ok-note { color: var(--moss); }
+.edit-list { display: flex; flex-direction: column; gap: 8px; }
+.edit-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: 6px 0; }
+.edit-row .field { min-width: 88px; flex: 1; }
+.edit-row .btn { align-self: end; }
+.report-edit { width: 100%; min-height: 280px; resize: vertical; line-height: 1.45; }
+.confirm-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding: 10px 0;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+}
 
 .bars { display: flex; flex-direction: column; gap: 6px; }
 .bar-row { display: grid; grid-template-columns: 110px 1fr auto; gap: 8px; align-items: center; font-size: 13px; }

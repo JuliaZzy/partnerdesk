@@ -13,6 +13,7 @@ from backend.schemas import Partnership, Product, PurchaseOrder
 from backend.text2sql import answer_question
 from backend.text2sql.analyze_badcase import analyze, classify_error
 from backend.text2sql.prompt import ANSWER as DATA_ANSWER
+from backend.text2sql.prompt import REFLECT
 from backend.text2sql.sql_validator import validate
 from backend.text2sql.table_metadata import EXCLUDED_TABLES, HIDDEN_COLUMNS, TABLES, scope_views
 
@@ -114,7 +115,7 @@ def test_a_rejected_statement_is_kept_for_the_repair(db):
         db, FakeLLM(json_replies=[
             {"tables": ["purchase_orders"]},
             {"sql": "SELECT pg_read_file('/etc/passwd')"},
-            {"sql": "SELECT pg_sleep(1)"},
+            {"fixed_code": "SELECT pg_sleep(1)"},
         ]),
         question="read a file", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
@@ -129,7 +130,7 @@ def test_a_schema_qualified_function_is_rejected_then_repaired(db):
         db, FakeLLM(json_replies=[
             {"tables": ["purchase_orders"]},
             {"sql": "SELECT pg_catalog.date_trunc('month', submitted_at) AS month FROM purchase_orders"},
-            {"sql": "SELECT date_trunc('month', submitted_at) AS month FROM purchase_orders"},
+            {"fixed_code": "SELECT date_trunc('month', submitted_at) AS month FROM purchase_orders"},
         ]),
         question="orders by month", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
@@ -201,7 +202,7 @@ def test_a_bad_column_is_repaired_once(db):
         db, FakeLLM(json_replies=[
             {"tables": ["purchase_orders"]},
             {"sql": "SELECT missing_column FROM purchase_orders"},
-            {"sql": "SELECT total_amount FROM purchase_orders"},
+            {"fixed_code": "SELECT total_amount FROM purchase_orders"},
         ]),
         question="order total", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
@@ -240,10 +241,18 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
             {"id": "performance", "questions": ["order total"], "searches": []},
             {"id": "inventory", "questions": ["order total"], "searches": []},
             {"id": "next", "questions": [], "searches": []},
-            {"id": "risks", "questions": [], "searches": []},
+            {"id": "risks", "questions": ["should not run yet"], "searches": ["should not search yet"]},
         ]},
         {"tables": ["purchase_orders"]},
         {"sql": "SELECT total_amount FROM purchase_orders"},
+        {"score": 90, "retry_question": ""},
+        {"charts": [{
+            "id": "chart_001",
+            "title": "Order total",
+            "subtitle": "",
+            "type": "bar",
+            "echarts_option": {"series": [{"type": "bar", "data": [1000]}]},
+        }]},
         {"charts": [{
             "id": "chart_001",
             "title": "Order total",
@@ -255,21 +264,48 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
         {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
         {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
         {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"write": True, "questions": ["open purchase orders"], "searches": []},
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+        {"score": 90, "retry_question": ""},
         {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
-        {"content": "Report: 1000.", "key_points": ["1000"]},
-        {"content": "Report: 1000.", "key_points": ["1000"]},
-        {"content": "Report: 1000.", "key_points": ["1000"]},
-        {"content": "Report: 1000.", "key_points": ["1000"]},
-        {"content": "Report: 1000.", "key_points": ["1000"]},
+        {"content": "未结订单还在。", "key_points": ["未结"]},
         {"content": "Report: 1000.", "key_points": ["1000"]},
         {"score": 90, "ok": True, "issues": []},
     ], text_reply="Report: 1000.")
     events = list(service.handle_message(db, report_llm, sid, "write a short sales note"))
+    reflects = [call for call in report_llm.calls if call["kind"] == "json" and call["system"] == REFLECT]
+    assert len(reflects) == 2
+    assert "order total" in reflects[0]["messages"][0]["content"]
+    assert "open purchase orders" in reflects[1]["messages"][0]["content"]
     write_calls = [call for call in report_llm.calls if call["kind"] == "json" and "营销报告撰写人" in call["system"]]
     wizard_calls = [call for call in report_llm.calls if call["kind"] == "json" and "text2sql 的全部输出" in call["system"]]
     assert len(wizard_calls) == 5
     assert "关键指标" in wizard_calls[0]["system"] and "1000" in wizard_calls[0]["system"]
     assert "order total" in wizard_calls[0]["system"]
+    assert "问题与风险" in wizard_calls[-1]["system"]
+    assert all("问题与风险" not in call["system"] for call in wizard_calls[:-1])
+    risk_at = next(i for i, call in enumerate(report_llm.calls) if "要不要写" in call["system"])
+    assert "Report: 1000." in report_llm.calls[risk_at]["messages"][-1]["content"]
+    assert "should not run yet" not in report_llm.calls[risk_at]["messages"][-1]["content"]
+    later = [
+        i for i, call in enumerate(report_llm.calls)
+        if "open purchase orders" in call["messages"][-1]["content"]
+    ]
+    assert later and min(later) > risk_at
+    assert all(
+        "should not run yet" not in call["messages"][-1]["content"] for call in report_llm.calls
+    )
+    risk_wizard = next(
+        i for i, call in enumerate(report_llm.calls)
+        if "text2sql 的全部输出" in call["system"] and "问题与风险" in call["system"]
+    )
+    summary_at = next(i for i, call in enumerate(report_llm.calls) if "你现在写摘要" in call["system"])
+    assert risk_at < risk_wizard < summary_at
     review_calls = [call for call in report_llm.calls if call["kind"] == "json" and "报告审核人" in call["system"]]
     assert len(review_calls) == 1 and "1000" in review_calls[0]["system"]
     assert write_calls
@@ -277,6 +313,12 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
     assert "1000" in body and "SELECT" not in body
     plan_write = next(call for call in write_calls if "下一周期计划" in call["system"])
     assert "1000" in plan_write["messages"][-1]["content"]
+    risk_write = next(call for call in write_calls if "当前章节：问题与风险" in call["system"])
+    assert "已写章节" in risk_write["messages"][-1]["content"]
+    assert "Report: 1000." in risk_write["messages"][-1]["content"]
+    assert "open purchase orders" in risk_write["messages"][-1]["content"]
+    summary_write = next(call for call in write_calls if "你现在写摘要" in call["system"])
+    assert "未结订单还在" in summary_write["messages"][-1]["content"]
     done = events[-1]
     assert done["report_draft"] is True
     assert done["charts"][0]["title"] == "Order total"
@@ -337,20 +379,55 @@ def test_queries_run_as_the_reader_and_cannot_write_or_read_files(db):
     assert db.po("hacked") is None
 
 
-def test_reflection_asks_again_when_the_rows_do_not_answer(db):
+def test_reflection_stops_at_80_and_retries_a_low_score(db):
+    db.insert_po(_po(), [], [])
+    held = FakeLLM(json_replies=[
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT notes FROM purchase_orders"},
+        {"score": 80, "retry_question": "what is the order total"},
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+    ])
+    kept = answer_question(
+        db, held, question="how much did I order?",
+        partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
+    )
+    assert kept.ok and kept.score == 80 and "total_amount" not in kept.rows[0]
+    assert len(held.json_replies) == 2
+
+    retried = answer_question(
+        db, FakeLLM(json_replies=[
+            {"tables": ["purchase_orders"]},
+            {"sql": "SELECT notes FROM purchase_orders"},
+            {"score": 40, "retry_question": "what is the order total"},
+            {"tables": ["purchase_orders"]},
+            {"sql": "SELECT total_amount FROM purchase_orders"},
+            {"score": 91, "retry_question": ""},
+        ]),
+        question="how much did I order?",
+        partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
+    )
+    assert retried.ok and retried.score == 91 and retried.rows == [{"total_amount": 1000}]
+
+
+def test_reflection_keeps_the_best_of_three_scores(db):
     db.insert_po(_po(), [], [])
     result = answer_question(
         db, FakeLLM(json_replies=[
             {"tables": ["purchase_orders"]},
             {"sql": "SELECT notes FROM purchase_orders"},
-            {"complete": False, "retry_question": "what is the order total"},
+            {"score": 20, "retry_question": "order total"},
             {"tables": ["purchase_orders"]},
             {"sql": "SELECT total_amount FROM purchase_orders"},
+            {"score": 70, "retry_question": "how many orders"},
+            {"tables": ["purchase_orders"]},
+            {"sql": "SELECT count(*) AS n FROM purchase_orders"},
+            {"score": 40, "retry_question": "unused"},
         ]),
         question="how much did I order?",
         partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
-    assert result.ok and result.rows == [{"total_amount": 1000}]
+    assert result.ok and result.score == 70 and result.rows == [{"total_amount": 1000}]
 
 
 def test_data_feedback_endpoint_stamps_the_session_and_rejects_another(db):

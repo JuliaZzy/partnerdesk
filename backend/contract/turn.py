@@ -1,45 +1,68 @@
-"""从聊天里归档一份协议，并把存下的结果作为一张表交回去。
+"""从聊天里读一份协议，整理成待确认的表。
 
-聊天模型不归档，也不编造条款。这个模块运行 `read`（它会切块）和 `ingest`，然后返回写下的行。
+聊天模型不归档，也不编造条款。这个模块运行 `read`（它会切块），用 `record_from_extraction`
+排出将要写入的行，但先不写库。用户在浮窗里改完，`confirm` 才调用 `ingest`。
 `agent` 负责对经销商说话。
 """
 
 from __future__ import annotations
 
+import hashlib
+import uuid
 from typing import Any
 
 from ..db import Database
 from ..documents import SUPPORTED_EXTS
 from ..llm import LLM
-from .read import read_and_ingest
+from ..schemas import ContractChunk
+from .chunks import flatten_chunk_tree
+from .ingest import record_from_extraction
+from .read import read_agreement
 
 
 def file_contract(
     db: Database, llm: LLM, session: dict[str, Any], documents: list[tuple[str, bytes]],
 ) -> dict[str, Any]:
-    """Read and store the first agreement, or report why nothing was written.
+    """Read the first agreement into a draft table. Nothing is written.
 
-    `table` is built from the stored record. A filename without bytes never reaches here:
-    the caller only passes documents that have content.
+    `table` is what the panel shows. `pending` is what confirm needs and is not sent to
+    the model. A filename without bytes never reaches here.
     """
     readable = [(name, data) for name, data in documents if name.lower().endswith(SUPPORTED_EXTS)]
     if not readable:
-        return {"status": "need_file", "contract_id": None, "table": None, "error": None}
+        return {"status": "need_file", "contract_id": None, "table": None, "pending": None, "error": None}
     name, data = readable[0]
     try:
-        rec = read_and_ingest(
-            db, llm,
+        extraction, tree = read_agreement(llm, name, data)
+        model = getattr(getattr(llm, "settings", None), "model", None)
+        digest = hashlib.sha256(data).hexdigest()
+        chunks = [ContractChunk(**row) for row in flatten_chunk_tree(tree)]
+        rec = record_from_extraction(
+            extraction,
             brand_id=_brand_id(db, session["partnership_id"]),
             partnership_id=session["partnership_id"],
-            file_name=name, data=data,
+            title=name, file_name=name, file_sha256=digest, model=model, chunks=chunks,
         )
     except Exception as err:
-        return {"status": "failed", "contract_id": None, "table": None, "error": str(err)}
-    table = _filing_table(rec)
+        return {"status": "failed", "contract_id": None, "table": None, "pending": None, "error": str(err)}
+    pending_id = f"cp_{uuid.uuid4().hex[:12]}"
+    table = filing_table(rec)
+    table.pop("contract_id", None)
+    table["pending_id"] = pending_id
+    table["confirmed"] = False
     unread = [other for other, _ in readable[1:]]
     if unread:
         table["unread_files"] = unread
-    return {"status": "filed", "contract_id": rec.contract.id, "table": table, "error": None}
+    pending = {
+        "id": pending_id,
+        "extraction": extraction,
+        "chunks": [chunk.model_dump() for chunk in rec.chunks],
+        "file_name": name,
+        "file_sha256": digest,
+        "model": model,
+        "title": name,
+    }
+    return {"status": "ready", "contract_id": None, "table": table, "pending": pending, "error": None}
 
 
 def _brand_id(db: Database, partnership_id: str) -> str:
@@ -49,7 +72,7 @@ def _brand_id(db: Database, partnership_id: str) -> str:
     return partnership.brand_id
 
 
-def _filing_table(rec: Any) -> dict[str, Any]:
+def filing_table(rec: Any) -> dict[str, Any]:
     """Rows the chat model may quote. Every figure comes from the stored record."""
     contract, terms = rec.contract, rec.terms
     return {
@@ -68,11 +91,13 @@ def _filing_table(rec: Any) -> dict[str, Any]:
                 "section_reference": rule.section_reference,
                 "applies_per": rule.applies_per,
                 "basis": rule.basis,
+                "source_clause_text": rule.source_clause_text,
                 "tiers": [
                     {
                         "from_container": tier.from_container,
                         "to_container": tier.to_container,
                         "discount_percent": tier.discount_percent,
+                        "notes": tier.notes,
                     }
                     for tier in rule.tiers
                 ],

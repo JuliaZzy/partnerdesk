@@ -8,7 +8,7 @@ parameter.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -32,6 +32,18 @@ class Inbound(BaseModel):
 
 class Confirm(BaseModel):
     token: str
+
+
+class ConfirmContract(BaseModel):
+    pending_id: str
+    filing: dict[str, Any]
+
+
+class ConfirmReport(BaseModel):
+    pending_id: str
+    title: str = ""
+    text: str = ""
+    charts: list[dict[str, Any]] = []
 
 
 class DataFeedback(BaseModel):

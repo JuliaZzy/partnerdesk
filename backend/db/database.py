@@ -38,6 +38,7 @@ from ..schemas import (
     ContractTerms,
     ContractTerritory,
     Memory,
+    NarrativeReport,
     Partnership,
     Product,
     PurchaseOrder,
@@ -652,6 +653,38 @@ class Database:
             row = s.get(orm.SalesReport, id)
             if row is not None:
                 s.delete(row)
+
+    def save_narrative_report(self, report: NarrativeReport) -> str:
+        """Insert a confirmed write-up, or replace the text of one already confirmed."""
+        ts = utcnow()
+        with self.tx() as s:
+            row = s.get(orm.NarrativeReport, report.id)
+            if row is None:
+                s.add(orm.NarrativeReport(
+                    id=report.id, brand_id=report.brand_id, partnership_id=report.partnership_id,
+                    session_id=report.session_id, title=report.title, body=report.body, charts=list(report.charts),
+                    status="confirmed", confirmed_at=ts, created_at=ts, updated_at=ts,
+                ))
+            else:
+                row.title, row.body, row.charts = report.title, report.body, list(report.charts)
+                row.status, row.updated_at = "confirmed", ts
+                if row.confirmed_at is None:
+                    row.confirmed_at = ts
+        return report.id
+
+    def narrative_reports(self, partnership_id: str) -> list[NarrativeReport]:
+        """Confirmed chat write-ups, the one touched last first."""
+        with self.tx() as s:
+            rows = s.scalars(
+                select(orm.NarrativeReport).where(orm.NarrativeReport.partnership_id == partnership_id)
+                .order_by(orm.NarrativeReport.updated_at.desc(), orm.NarrativeReport.created_at.desc())
+            ).all()
+            return [NarrativeReport(**_row_dict(r)) for r in rows]
+
+    def narrative_report(self, id: str) -> NarrativeReport | None:
+        with self.tx() as s:
+            row = s.get(orm.NarrativeReport, id)
+            return NarrativeReport(**_row_dict(row)) if row else None
 
     # --- long-term memory ------------------------------------------------------------
     def add_memory(self, m: Memory) -> int:

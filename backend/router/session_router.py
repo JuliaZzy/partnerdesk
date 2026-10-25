@@ -1,4 +1,4 @@
-"""Chat: open a session, stream one turn, confirm an order, rate a data answer."""
+"""Chat: open a session, stream one turn, confirm an order, a contract, or a report."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from ..db import Database
 from ..deps import get_db, get_llm, llm_for
 from ..llm import LLM, OpenAICompatLLM
 from ..memory import bind_fold_scheduler, reset_fold_scheduler
-from ..schemas import Confirm, DataFeedback, Inbound, InboundFile, NewSession
+from ..schemas import Confirm, ConfirmContract, ConfirmReport, DataFeedback, Inbound, InboundFile, NewSession
 from ..stream_pin import pin_stream
 from ._common import partnership_or_404
 
@@ -68,6 +68,13 @@ def get_session(sid: str, db: Database = Depends(get_db)) -> dict[str, Any]:
     s = db.session(sid)
     if not s:
         raise HTTPException(404, "session not found")
+    # The heading tree and raw extraction are for confirm, not the desk.
+    history = []
+    for message in s.get("history") or []:
+        if isinstance(message, dict) and "contract_pending" in message:
+            message = {key: value for key, value in message.items() if key != "contract_pending"}
+        history.append(message)
+    s["history"] = history
     return s
 
 
@@ -137,6 +144,26 @@ def confirm(sid: str, body: Confirm, db: Database = Depends(get_db)) -> dict[str
         return service.confirm(db, sid, body.token)
     except KeyError as err:
         raise HTTPException(404, str(err)) from err
+
+
+@router.post("/api/sessions/{sid}/confirm-contract")
+def confirm_contract(sid: str, body: ConfirmContract, db: Database = Depends(get_db)) -> dict[str, Any]:
+    try:
+        return service.confirm_contract(db, sid, body.pending_id, body.filing)
+    except KeyError as err:
+        raise HTTPException(404, str(err)) from err
+    except ValueError as err:
+        raise HTTPException(400, str(err)) from err
+
+
+@router.post("/api/sessions/{sid}/confirm-report")
+def confirm_report(sid: str, body: ConfirmReport, db: Database = Depends(get_db)) -> dict[str, Any]:
+    try:
+        return service.confirm_report(db, sid, body.pending_id, title=body.title, text=body.text, charts=body.charts)
+    except KeyError as err:
+        raise HTTPException(404, str(err)) from err
+    except ValueError as err:
+        raise HTTPException(400, str(err)) from err
 
 
 @router.post("/api/sessions/{sid}/data-feedback")

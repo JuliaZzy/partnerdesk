@@ -12,6 +12,7 @@ export type Flight = {
   draft: string;
   files: File[];
   task: "po" | "report" | "contract" | null;
+  tasks: ("po" | "report" | "contract")[];
 };
 
 const EMPTY: Flight = {
@@ -23,6 +24,7 @@ const EMPTY: Flight = {
   draft: "",
   files: [],
   task: null,
+  tasks: [],
 };
 
 const flights = new Map<string, Flight>();

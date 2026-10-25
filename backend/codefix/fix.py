@@ -1,6 +1,6 @@
-"""Execute, then ask reflection to repair. Reflection does not run before the first try.
+"""Run an artifact, and on failure ask for a fix. Three runs at most.
 
-Three tries. Each failed try keeps the artifact, the error, and any output.
+The last failed artifact and its error are what a person sees.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from .prompt import CODE_FIX_PROMPT
 MAX_ATTEMPTS = 3
 
 
-def reflect_schema() -> dict[str, Any]:
+def fix_schema() -> dict[str, Any]:
     return {
         "name": "code_fix", "strict": True,
         "schema": {
@@ -56,17 +56,16 @@ def with_reflection(
 
 
 def format_failures(attempts: list[dict[str, str]]) -> str:
-    """The text a person needs when three tries are still wrong."""
+    """The last failed artifact and its error, for a person to take over."""
     if not attempts:
         return ""
-    kind = attempts[0].get("kind") or "output"
-    lines = [f"{kind} 没有跑通，需要人工处理。"]
-    for index, item in enumerate(attempts, start=1):
-        lines.append(f"第{index}次报错：{item.get('error') or '未知'}")
-        output = (item.get("output") or "").strip()
-        if output:
-            lines.append(f"第{index}次输出：{output[:500]}")
-        lines.append(f"第{index}次内容：{(item.get('artifact') or '')[:800]}")
+    last = attempts[-1]
+    kind = last.get("kind") or "output"
+    lines = [f"{kind} 没有跑通，需要人工处理。", f"报错：{last.get('error') or '未知'}"]
+    output = (last.get("output") or "").strip()
+    if output:
+        lines.append(f"输出：{output[:500]}")
+    lines.append(f"最后一次内容：{(last.get('artifact') or '')[:800]}")
     return "\n".join(lines)
 
 
@@ -80,7 +79,7 @@ def _revise(llm: LLM, *, kind: str, artifact: str, error: str, output: str) -> s
                 stdout=(output or "（无）")[:1500],
             ),
             messages=[{"role": "user", "content": "按错误信息修复这一次失败的内容。"}],
-            schema=reflect_schema(), temperature=0, max_tokens=2_000,
+            schema=fix_schema(), temperature=0.2, max_tokens=2_000,
         )
     except Exception:
         return ""

@@ -45,6 +45,18 @@ export function looseModelJson(items: unknown[] | undefined, steps: Activity[] |
   return loose.length ? loose : undefined;
 }
 
+/** A committed turn is over. A step still marked running was saved before its done status. */
+export function settleActivity(steps: Activity[]): Activity[] {
+  if (steps.every((step) => step.state === "done")) return steps;
+  return steps.map((step) => (
+    step.state === "done" ? step : {
+      ...step,
+      state: "done",
+      detail: step.detail.startsWith("正在") ? "已完成" : step.detail,
+    }
+  ));
+}
+
 export function readActivity(raw: unknown): Activity[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const steps: Activity[] = [];
@@ -138,13 +150,21 @@ export type ContractFiling = {
     section_reference?: string | null;
     applies_per?: string | null;
     basis?: string | null;
-    tiers?: { from_container?: number | null; to_container?: number | null; discount_percent?: number | null }[];
+    source_clause_text?: string | null;
+    tiers?: {
+      from_container?: number | null;
+      to_container?: number | null;
+      discount_percent?: number | null;
+      notes?: string | null;
+    }[];
   }[];
   moqs?: Record<string, unknown>[];
   territories?: { country_code?: string; kind?: string }[];
   price_list?: Record<string, unknown>[];
   derived_rules?: { name?: string; rule_type?: string; severity?: string; rule_config?: Record<string, unknown> }[];
   skipped?: string[];
+  pending_id?: string;
+  confirmed?: boolean;
 };
 
 /** The filing table stored on a contract turn. Empty objects are dropped. */
@@ -172,12 +192,15 @@ export function resultPanes(input: {
   reports: { id: string; text: string; charts?: ReportChart[] }[];
   contracts: { id: string; filing: ContractFiling }[];
   live: { kind: "report" | "contract" | "po"; text: string } | null;
+  pending?: ("po" | "report" | "contract")[];
 }): ResultPane[] {
+  const waiting = new Set(input.pending ?? []);
   const reports = [...input.reports];
   if (input.live?.kind === "report") reports.push({ id: "report-live", text: input.live.text });
+  else if (waiting.has("report")) reports.push({ id: "report-live", text: "" });
   const contracts = [...input.contracts];
-  const pendingContract = input.live?.kind === "contract";
-  const pendingOrder = input.live?.kind === "po" && !input.hasOrder;
+  const pendingContract = input.live?.kind === "contract" || waiting.has("contract");
+  const pendingOrder = (input.live?.kind === "po" || waiting.has("po")) && !input.hasOrder;
   const panes: ResultPane[] = [];
   if (input.hasOrder || pendingOrder) {
     panes.push({ id: pendingOrder ? "order-live" : "order", kind: "order", label: "采购单", pending: pendingOrder });

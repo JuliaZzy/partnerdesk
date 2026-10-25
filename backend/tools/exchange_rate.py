@@ -1,7 +1,9 @@
 """通过 Frankfurter（欧洲央行）查汇率。不需要 API key。
 
-https://api.frankfurter.app/latest?amount=1&from=CNY&to=EUR
+https://api.frankfurter.dev/v1/latest?amount=1&from=CNY&to=EUR
 只读的背景——不是我们已经存着的账本总额的来源。
+旧域名 api.frankfurter.app 会 301 到这里。Cloudflare 拒绝 urllib 的默认
+User-Agent（错误 1010），所以请求必须自己带一个。
 """
 
 from __future__ import annotations
@@ -12,7 +14,9 @@ import urllib.request
 from typing import Any
 from urllib.parse import urlencode
 
-FRANKFURTER_URL = "https://api.frankfurter.app/latest"
+FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"
+# Cloudflare 1010 blocks urllib's default User-Agent. Any explicit one is accepted.
+_USER_AGENT = "KA_Account/1.0"
 
 # Common aliases the model may emit; Frankfurter wants ISO codes.
 _ALIASES = {
@@ -68,8 +72,20 @@ def quote(base: str, target: str, *, amount: float = 1.0) -> dict[str, Any]:
             "base": base_c, "target": target_c, "amount": amount,
             "rate": 1.0, "converted": amount, "date": None, "source": "identity",
         }
+    from ..redis_store import fx_get, fx_put
+
+    cached = fx_get(base_c, target_c)
+    if cached and cached.get("rate") is not None:
+        rate = float(cached["rate"])
+        return {
+            "base": base_c, "target": target_c, "amount": amount,
+            "rate": rate, "converted": amount * rate,
+            "date": cached.get("date"), "source": cached.get("source") or "cache",
+        }
     url = f"{FRANKFURTER_URL}?{urlencode({'amount': amount, 'from': base_c, 'to': target_c})}"
-    req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
+    req = urllib.request.Request(
+        url, method="GET", headers={"Accept": "application/json", "User-Agent": _USER_AGENT},
+    )
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
             payload = json.loads(resp.read().decode())
@@ -83,6 +99,8 @@ def quote(base: str, target: str, *, amount: float = 1.0) -> dict[str, Any]:
     converted = float(rate)
     # Frankfurter returns the converted amount in rates[target] when amount= is set.
     unit = converted / amt if amt else converted
+    source = "European Central Bank (Frankfurter)"
+    fx_put(base_c, target_c, rate=unit, date=payload.get("date"), source=source)
     return {
         "base": base_c,
         "target": target_c,
@@ -90,7 +108,7 @@ def quote(base: str, target: str, *, amount: float = 1.0) -> dict[str, Any]:
         "rate": unit,
         "converted": converted,
         "date": payload.get("date"),
-        "source": "European Central Bank (Frankfurter)",
+        "source": source,
     }
 
 
