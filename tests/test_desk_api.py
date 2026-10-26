@@ -91,6 +91,24 @@ def test_contract_detail_shows_the_next_discount_and_derived_rules(db, partnersh
     assert any(r["rule_type"] == "min_order_value" for r in body["rules"])
 
 
+def test_chats_and_memories_belong_to_one_person(db):
+    db.upsert_user("u-a", "dist-1", "Ada")
+    db.upsert_user("u-b", "dist-1", "Bea")
+    c = client(db)
+    assert {row["name"] for row in c.get("/api/users", params={"distributor_id": "dist-1"}).json()} == {"Ada", "Bea"}
+    ada = c.post("/api/sessions", json={"partnership_id": "ps-1", "user_id": "u-a"}).json()["id"]
+    c.post("/api/sessions", json={"partnership_id": "ps-1", "user_id": "u-b"})
+    assert [row["id"] for row in c.get("/api/sessions", params={"partnership_id": "ps-1", "user_id": "u-a"}).json()] == [ada]
+    assert c.post("/api/sessions", json={"partnership_id": "ps-1", "user_id": "missing"}).status_code == 400
+    c.post("/api/partnerships/ps-1/memories", json={"content": "Ada likes sea freight", "kind": "fact", "user_id": "u-a"})
+    c.post("/api/partnerships/ps-1/memories", json={"content": "Bea likes air freight", "kind": "fact", "user_id": "u-b"})
+    seen = c.get("/api/partnerships/ps-1/memories", params={"user_id": "u-a"}).json()
+    assert [row["content"] for row in seen["active"]] == ["Ada likes sea freight"]
+    assert "Bea" not in seen["block"]
+    # The order list is the partnership's, so both people still see it.
+    assert c.get("/api/orders", params={"partnership_id": "ps-1"}).status_code == 200
+
+
 def test_memory_round_trip(db):
     c = client(db)
     assert c.get("/api/partnerships/ps-1/memories").json()["active"] == []

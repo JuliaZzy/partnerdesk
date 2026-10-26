@@ -13,6 +13,7 @@ class Memory(BaseModel):
 
     id: int | None = None
     partnership_id: str
+    user_id: str | None = None
     kind: Literal["preference", "fact", "instruction", "event"] = "fact"
     content: str
     source: Literal["user", "chat", "system"] = "user"
@@ -26,6 +27,7 @@ class Memory(BaseModel):
 class MemoryIn(BaseModel):
     content: str
     kind: str = "fact"
+    user_id: str | None = None
 
 
 class MemoryActive(BaseModel):

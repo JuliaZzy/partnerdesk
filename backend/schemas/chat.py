@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 class NewSession(BaseModel):
     partnership_id: str | None = None
+    user_id: str | None = None
 
 
 class InboundFile(BaseModel):

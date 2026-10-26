@@ -66,7 +66,7 @@ LLM_CONFIGS: tuple[LLMConfig, ...] = (
     ),
 )
 
-_THINKING_TIMEOUT = 180.0
+_THINKING_TIMEOUT = 300.0
 _DEFAULT_TIMEOUT = 60.0
 
 
@@ -75,7 +75,7 @@ def chat_models() -> tuple[LLMConfig, ...]:
 
 
 def resolve_model_id(raw: str | None) -> str:
-    """Map an alias to a dropdown id. An unknown name is returned unchanged."""
+    """把别名换成下拉框里的 id。空字符串用列表第一项。不认识的名字原样返回。"""
     wanted = (raw or "").strip()
     if not wanted:
         return LLM_CONFIGS[0].id

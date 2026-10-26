@@ -349,7 +349,7 @@ def handle_message(
     if not text and not images and not documents:
         raise ValueError("message required")
     begin_activity()
-    bundle = load_bundle(db, session["partnership_id"])
+    bundle = load_bundle(db, session["partnership_id"], session.get("user_id"))
     names = [*(attachments or []), *[n for n, _ in documents], *[f"image-{i + 1}.jpg" for i in range(len(images))]]
     history = session.get("history") or []
 
@@ -370,7 +370,9 @@ def handle_message(
     def turn() -> Iterator[dict[str, Any]]:
         tags = list(session.get("tags") or [])
         folded = int(session.get("folded_through") or 0)
-        remembered = prompt_context(standing_block(db, bundle.partnership.id), summary_block(session.get("summary")))
+        remembered = prompt_context(
+            standing_block(db, bundle.partnership.id, session.get("user_id")), summary_block(session.get("summary")),
+        )
         partnership_id = bundle.partnership.id
         brand_id = bundle.partnership.brand_id
         distributor_id = bundle.partnership.distributor_id

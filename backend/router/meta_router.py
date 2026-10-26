@@ -41,3 +41,8 @@ def meta() -> dict[str, Any]:
 @router.get("/api/partnerships")
 def partnerships(db: Database = Depends(get_db)) -> list[dict[str, Any]]:
     return [p.model_dump() for p in db.partnerships()]
+
+
+@router.get("/api/users")
+def users(distributor_id: str | None = None, db: Database = Depends(get_db)) -> list[dict[str, Any]]:
+    return [person.model_dump() for person in db.users(distributor_id)]

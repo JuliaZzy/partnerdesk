@@ -25,6 +25,15 @@ def partnership_or_404(db: Database, pid: str) -> Partnership:
     return found
 
 
+def user_on_partnership(db: Database, partnership: Partnership, user_id: str | None) -> None:
+    """A person may only open chats and memories for their own distributor. Omit the id to skip."""
+    if not user_id:
+        return
+    person = db.user(user_id)
+    if person is None or person.distributor_id != partnership.distributor_id:
+        raise HTTPException(400, "user is not on this distributor")
+
+
 async def read_upload(file: UploadFile) -> tuple[str, bytes]:
     name = file.filename or "file"
     data = await file.read()

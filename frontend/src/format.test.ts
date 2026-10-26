@@ -5,10 +5,8 @@ import {
   attachOutput,
   settleActivity,
   looseModelJson,
-  buildLedger,
   chatTitle,
   citationSources,
-  confirmReady,
   dataQueryMark,
   contractFiling,
   reportCharts,
@@ -67,16 +65,6 @@ describe("desk formatters", () => {
     expect(done[1].outputs).toEqual([{ questions: ["orders"], searches: [] }]);
     expect(looseModelJson([{ tasks: [] }, { title: "标题" }], done)).toEqual([{ title: "标题" }]);
     expect(attachOutput([], { sql: "SELECT 1" })).toEqual([]);
-  });
-
-  it("keeps Confirm disabled until both early steps are done", () => {
-    expect(confirmReady([
-      { title: "Understand request", status: "pending" },
-      { title: "Check inputs", status: "pending" },
-      { title: "Confirm draft", status: "needs-you" },
-    ])).toBe(false);
-    expect(confirmReady(buildLedger("confirm"))).toBe(true);
-    expect(confirmReady(buildLedger("gathering"))).toBe(false);
   });
 
   it("keeps report charts that carry an echarts option", () => {

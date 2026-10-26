@@ -11,16 +11,17 @@ from ..db import Database
 from ..deps import get_db
 from ..memory import KIND_LABELS, memory_block, remember
 from ..schemas import MemoryActive, MemoryIn
-from ._common import dump, partnership_or_404
+from ._common import dump, partnership_or_404, user_on_partnership
 
 router = APIRouter()
 
 
 @router.get("/api/partnerships/{pid}/memories")
-def memories(pid: str, db: Database = Depends(get_db)) -> dict[str, Any]:
-    partnership_or_404(db, pid)
-    active = db.memories(pid, active_only=True)
-    inactive = [m for m in db.memories(pid, active_only=False) if not m.is_active]
+def memories(pid: str, user_id: str | None = None, db: Database = Depends(get_db)) -> dict[str, Any]:
+    partnership = partnership_or_404(db, pid)
+    user_on_partnership(db, partnership, user_id)
+    active = db.memories(pid, active_only=True, user_id=user_id)
+    inactive = [m for m in db.memories(pid, active_only=False, user_id=user_id) if not m.is_active]
     return {
         "active": [dump(m) for m in active],
         "inactive": [dump(m) for m in inactive],
@@ -30,11 +31,12 @@ def memories(pid: str, db: Database = Depends(get_db)) -> dict[str, Any]:
 
 @router.post("/api/partnerships/{pid}/memories")
 def add_memory(pid: str, body: MemoryIn, db: Database = Depends(get_db)) -> dict[str, Any]:
-    partnership_or_404(db, pid)
+    partnership = partnership_or_404(db, pid)
+    user_on_partnership(db, partnership, body.user_id)
     if body.kind not in KIND_LABELS:
         raise HTTPException(400, "unknown memory kind")
     try:
-        saved = remember(db, pid, body.content, kind=body.kind, source="user")
+        saved = remember(db, pid, body.content, kind=body.kind, source="user", user_id=body.user_id)
     except ValueError as err:
         raise HTTPException(400, str(err)) from err
     return dump(saved)

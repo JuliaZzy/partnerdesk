@@ -112,20 +112,36 @@ def prompt_turns(history: list[dict[str, Any]] | None, folded_through: int = 0) 
 
 
 def remember(
-    db: Database, partnership_id: str, content: str, *, kind: str = "fact", source: str = "user", session_id: str | None = None,
+    db: Database, partnership_id: str, content: str, *, kind: str = "fact", source: str = "user",
+    session_id: str | None = None, user_id: str | None = None,
 ) -> Memory:
     text = " ".join((content or "").split())
     if not text:
         raise ValueError("a memory needs content")
-    m = Memory(partnership_id=partnership_id, kind=kind, content=text[:1000], source=source, session_id=session_id)  # type: ignore[arg-type]
+    m = Memory(
+        partnership_id=partnership_id, user_id=user_id, kind=kind, content=text[:1000],
+        source=source, session_id=session_id,
+    )  # type: ignore[arg-type]
     return m.model_copy(update={"id": db.add_memory(m)})
 
 
-def recall(db: Database, partnership_id: str, *, limit: int = MAX_RECALLED) -> list[Memory]:
-    """Active memories, newest first, capped — and stamped as recalled."""
-    memories = db.memories(partnership_id, active_only=True)[:limit]
+def recall(db: Database, partnership_id: str, *, limit: int = MAX_RECALLED, user_id: str | None = None) -> list[Memory]:
+    """Active memories, newest first, capped — and stamped as recalled.
+
+    `user_id` limits the list to that person. Omit it and every note on the partnership is recalled.
+    """
+    memories = db.memories(partnership_id, active_only=True, user_id=user_id)[:limit]
     db.mark_memories_recalled([m.id for m in memories if m.id is not None])
     return memories
+
+
+def actor_id(db: Database, session_id: str | None) -> str | None:
+    """The person this chat belongs to, when the session recorded one."""
+    if not session_id:
+        return None
+    row = db.session(session_id)
+    user_id = (row or {}).get("user_id")
+    return user_id if isinstance(user_id, str) and user_id else None
 
 
 def memory_block(memories: list[Memory]) -> str:
@@ -145,9 +161,9 @@ def memory_block(memories: list[Memory]) -> str:
     return "\n".join(lines)
 
 
-def standing_block(db: Database, partnership_id: str) -> str:
-    """The memory text shared by every agent. Empty when this partnership has none."""
-    return memory_block(recall(db, partnership_id))
+def standing_block(db: Database, partnership_id: str, user_id: str | None = None) -> str:
+    """The memory text shared by every agent. Empty when this person has none on the partnership."""
+    return memory_block(recall(db, partnership_id, user_id=user_id))
 
 
 def summary_block(summary: str | None) -> str:

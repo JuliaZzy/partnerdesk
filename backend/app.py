@@ -6,8 +6,6 @@ database and a model for this process (tests pass their own).
 
 from __future__ import annotations
 
-from functools import lru_cache
-
 from fastapi import FastAPI
 
 from .db import Database
@@ -23,12 +21,7 @@ def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
     return app
 
 
-@lru_cache(maxsize=1)
-def default_app() -> FastAPI:
-    return create_app()
-
-
-app = default_app()
+app = create_app()
 
 if __name__ == "__main__":
     import uvicorn

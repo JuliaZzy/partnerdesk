@@ -1,11 +1,8 @@
-"""Redis for the three uses that are not the ledger.
+"""Redis 只放三件不属于账本的事。
 
-The session lock stops a confirm click from writing the same chat row as the
-turn that is still drafting it. Parallel task results land here as they
-finish, because they do not arrive in plan order. Exchange rates are cached
-so a second ask for the same pair does not call Frankfurter again.
-
-Orders, contracts, and filed reports stay in Postgres. Every key here expires.
+1. 会话锁用来避免确认按钮和仍在起草的这一轮同时写同一条会话。
+2. 并行任务的结果按照完成顺序临时储存。
+3. 汇率缓存，统一货币在一段时间内的重复请求直接走缓存回答，不需要多次调用 Frankfurter。
 """
 
 from __future__ import annotations
@@ -22,10 +19,13 @@ from redis import Redis
 
 from .config import redis_url
 
+# 会话锁120秒过期
 LOCK_TTL_MS = 120_000
+# 并行任务结果900秒过期
 TURN_TTL_S = 900
-# Frankfurter publishes one rate per working day, so a pair stays cached for a day.
+# Frankfurter 每天发布一次汇率，所以一个货币对缓存一天
 FX_TTL_S = 86_400
+# 获取会话锁的超时时间
 _ACQUIRE_WAIT_S = 90
 
 _RELEASE = """

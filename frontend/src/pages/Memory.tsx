@@ -22,8 +22,9 @@ export function MemoryPage() {
 }
 
 function MemoryDesk() {
-  const { partnership, meta } = useDesk();
+  const { partnership, meta, user } = useDesk();
   const p = partnership!;
+  const userId = user?.id ?? "";
   const [bundle, setBundle] = useState<Bundle | null>(null);
   const [kind, setKind] = useState("preference");
   const [content, setContent] = useState("");
@@ -31,20 +32,21 @@ function MemoryDesk() {
   const kinds = meta?.memory_kinds ?? { preference: "Preference", fact: "Fact", instruction: "Instruction", event: "Event" };
 
   function load() {
-    return api<Bundle>(`/api/partnerships/${p.id}/memories`).then(setBundle);
+    const params = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
+    return api<Bundle>(`/api/partnerships/${p.id}/memories${params}`).then(setBundle);
   }
 
   useEffect(() => {
     load().catch((err: Error) => setError(err.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.id]);
+  }, [p.id, userId]);
 
   async function add(event: FormEvent) {
     event.preventDefault();
     if (!content.trim()) { setError("Write what to remember first."); return; }
     setError(null);
     try {
-      await postJson(`/api/partnerships/${p.id}/memories`, { kind, content });
+      await postJson(`/api/partnerships/${p.id}/memories`, { kind, content, ...(userId ? { user_id: userId } : {}) });
       setContent("");
       await load();
     } catch (err) {
@@ -56,7 +58,7 @@ function MemoryDesk() {
     <>
       <PageHead
         title="Memory"
-        caption={`${p.brand_name} · ${p.distributor_name} — standing preferences, instructions and facts the agent should carry from one conversation to the next.`}
+        caption={`${user ? `${user.name} · ` : ""}${p.brand_name} · ${p.distributor_name} — this person's notes. Colleagues at the same distributor do not see them. Orders, contracts, and reports stay shared.`}
       />
       {error && <div className="error">{error}</div>}
       <form className="card" onSubmit={(event) => void add(event)}>

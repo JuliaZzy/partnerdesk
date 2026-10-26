@@ -37,7 +37,7 @@ def confirm_report(
         raise KeyError("partnership not found")
     existed = isinstance(message.get("report_id"), str) and bool(message.get("report_id"))
     report_id = message["report_id"] if existed else f"nr_{uuid.uuid4().hex[:12]}"
-    label = _title(title, body)
+    label = _title(title)
     saved_charts = _charts(charts)
     db.save_narrative_report(NarrativeReport(
         id=report_id, brand_id=partnership.brand_id, partnership_id=session["partnership_id"],
@@ -57,15 +57,9 @@ def confirm_report(
     return {"id": report_id, "title": label, "message": note}
 
 
-def _title(given: str, body: str) -> str:
-    title = given.strip()
-    if not title:
-        for line in body.splitlines():
-            line = line.strip()
-            if line.startswith("#"):
-                title = line.lstrip("#").strip()
-                break
-    return (title or "Report")[:200]
+def _title(given: str) -> str:
+    """The title the draft already carries. An empty box does not borrow a section heading."""
+    return (" ".join(given.split()) or "报告")[:200]
 
 
 def _charts(raw: list[Any]) -> list[dict[str, Any]]:

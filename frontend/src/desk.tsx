@@ -1,9 +1,54 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 
 import { api } from "./api";
 import { chatPresence, forgetChat, isForgotten, useChatPresence } from "./chat-live";
 import { chatTitle, tagLabel, type Partnership } from "./format";
+
+export type DeskUser = {
+  id: string;
+  distributor_id: string;
+  name: string;
+};
+
+type Named = { id: string; name: string };
+
+function byName(a: Named, b: Named): number {
+  return a.name.localeCompare(b.name);
+}
+
+function brandsOf(rows: Partnership[]): Named[] {
+  const seen = new Map<string, string>();
+  for (const row of rows) seen.set(row.brand_id, row.brand_name);
+  return [...seen].map(([id, name]) => ({ id, name })).sort(byName);
+}
+
+function distributorsOf(rows: Partnership[], brandId: string): Named[] {
+  const seen = new Map<string, string>();
+  for (const row of rows) {
+    if (row.brand_id === brandId) seen.set(row.distributor_id, row.distributor_name);
+  }
+  return [...seen].map(([id, name]) => ({ id, name })).sort(byName);
+}
+
+function resolvePick(
+  rows: Partnership[],
+  people: DeskUser[],
+  brandId: string | null,
+  distributorId: string | null,
+  userId: string | null,
+) {
+  const brands = brandsOf(rows);
+  const brand = brands.find((item) => item.id === brandId) ?? brands[0] ?? null;
+  const distributors = brand ? distributorsOf(rows, brand.id) : [];
+  const distributor = distributors.find((item) => item.id === distributorId) ?? distributors[0] ?? null;
+  const users = (distributor ? people.filter((item) => item.distributor_id === distributor.id) : []).sort(byName);
+  const user = users.find((item) => item.id === userId) ?? users[0] ?? null;
+  const partnership = brand && distributor
+    ? rows.find((row) => row.brand_id === brand.id && row.distributor_id === distributor.id) ?? null
+    : null;
+  return { brands, brand, distributors, distributor, users, user, partnership };
+}
 
 export type Meta = {
   models: { id: string; label: string; short: string; description: string; vision: boolean; thinking: boolean }[];
@@ -29,10 +74,19 @@ type DeskValue = {
   meta: Meta | null;
   partnerships: Partnership[];
   partnership: Partnership | null;
-  choosePartnership: (id: string) => void;
+  brands: Named[];
+  brand: Named | null;
+  distributors: Named[];
+  distributor: Named | null;
+  users: DeskUser[];
+  user: DeskUser | null;
+  chooseBrand: (id: string) => void;
+  chooseDistributor: (id: string) => void;
+  chooseUser: (id: string) => void;
   sessions: SessionSummary[];
   reloadSessions: () => Promise<void>;
   nameSession: (id: string, title: string | null, tags: string[]) => void;
+  archiveChat: (id: string) => Promise<void>;
   deleteChat: (id: string) => Promise<void>;
   jump: ChatJump;
   openChat: (sid: string | "new") => void;
@@ -55,68 +109,212 @@ const NAV = [
   ["/memory", "Memory"],
 ] as const;
 
+const CHAT_MENU = [
+  { id: "archive", label: "Archive", hint: "Hide this chat. Reports, contracts, and orders stay.", danger: false },
+  { id: "delete", label: "Delete", hint: "Delete this chat and the reports, contracts, and orders it filed.", danger: true },
+] as const;
+
+type ChatAction = (typeof CHAT_MENU)[number]["id"];
+
+function ChatMenu({ title, onAction }: { title: string; onAction: (action: ChatAction) => void }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const close = () => setOpen(false);
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", close);
+    document.addEventListener("scroll", close, true);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", close);
+      document.removeEventListener("scroll", close, true);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    const pop = popRef.current;
+    const button = buttonRef.current;
+    if (!open || !pop || !button) return;
+    const rect = button.getBoundingClientRect();
+    const box = pop.getBoundingClientRect();
+    let top = rect.bottom + 4;
+    if (top + box.height > window.innerHeight - 8) top = Math.max(8, rect.top - 4 - box.height);
+    let left = rect.right - box.width;
+    if (left < 8) left = 8;
+    pop.style.top = `${top}px`;
+    pop.style.left = `${left}px`;
+  }, [open]);
+
+  return (
+    <div className="chat-menu" ref={rootRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={open ? "chat-menu-btn on" : "chat-menu-btn"}
+        aria-label={`Actions for ${title}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="kebab" aria-hidden="true"><i /><i /><i /></span>
+      </button>
+      {open && (
+        <div className="chat-menu-pop" role="menu" ref={popRef}>
+          {CHAT_MENU.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="menuitem"
+              className={item.danger ? "danger" : undefined}
+              title={item.hint}
+              onClick={() => {
+                setOpen(false);
+                onAction(item.id);
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function storedPick(): { brandId: string | null; distributorId: string | null; userId: string | null } {
+  return {
+    brandId: localStorage.getItem("partnerdesk.brand"),
+    distributorId: localStorage.getItem("partnerdesk.distributor"),
+    userId: localStorage.getItem("partnerdesk.user"),
+  };
+}
+
+function rememberPick(brandId: string | null, distributorId: string | null, userId: string | null, partnershipId: string | null) {
+  const write = (key: string, value: string | null) => {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  };
+  write("partnerdesk.brand", brandId);
+  write("partnerdesk.distributor", distributorId);
+  write("partnerdesk.user", userId);
+  write("partnerdesk.partnership", partnershipId);
+}
+
 export function DeskProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [meta, setMeta] = useState<Meta | null>(null);
   const [partnerships, setPartnerships] = useState<Partnership[]>([]);
-  const [pid, setPid] = useState<string | null>(() => localStorage.getItem("partnerdesk.partnership"));
+  const [people, setPeople] = useState<DeskUser[]>([]);
+  const [brandId, setBrandId] = useState<string | null>(null);
+  const [distributorId, setDistributorId] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [jump, setJump] = useState<ChatJump>({ n: 0, sid: "" });
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    Promise.all([api<Meta>("/api/meta"), api<Partnership[]>("/api/partnerships")])
-      .then(([nextMeta, nextPartnerships]) => {
+    Promise.all([api<Meta>("/api/meta"), api<Partnership[]>("/api/partnerships"), api<DeskUser[]>("/api/users")])
+      .then(([nextMeta, nextPartnerships, nextUsers]) => {
+        const saved = storedPick();
+        const previous = nextPartnerships.find((row) => row.id === localStorage.getItem("partnerdesk.partnership"));
+        const pick = resolvePick(
+          nextPartnerships,
+          nextUsers,
+          saved.brandId ?? previous?.brand_id ?? null,
+          saved.distributorId ?? previous?.distributor_id ?? null,
+          saved.userId,
+        );
         setMeta(nextMeta);
         setPartnerships(nextPartnerships);
-        setPid((current) => (
-          current && nextPartnerships.some((p) => p.id === current) ? current : nextPartnerships[0]?.id ?? null
-        ));
+        setPeople(nextUsers);
+        setBrandId(pick.brand?.id ?? null);
+        setDistributorId(pick.distributor?.id ?? null);
+        setUserId(pick.user?.id ?? null);
+        rememberPick(pick.brand?.id ?? null, pick.distributor?.id ?? null, pick.user?.id ?? null, pick.partnership?.id ?? null);
         setError(null);
       })
       .catch((err: Error) => setError(err.message))
       .finally(() => setReady(true));
   }, []);
 
-  const partnership = partnerships.find((p) => p.id === pid) ?? null;
+  const pick = useMemo(
+    () => resolvePick(partnerships, people, brandId, distributorId, userId),
+    [partnerships, people, brandId, distributorId, userId],
+  );
+  const partnership = pick.partnership;
+
+  const applyPick = useCallback((nextBrand: string | null, nextDistributor: string | null, nextUser: string | null) => {
+    const next = resolvePick(partnerships, people, nextBrand, nextDistributor, nextUser);
+    setBrandId(next.brand?.id ?? null);
+    setDistributorId(next.distributor?.id ?? null);
+    setUserId(next.user?.id ?? null);
+    rememberPick(next.brand?.id ?? null, next.distributor?.id ?? null, next.user?.id ?? null, next.partnership?.id ?? null);
+    setJump({ n: 0, sid: "" });
+  }, [partnerships, people]);
 
   // A slow list from an earlier turn must not paint over a chat that was created since.
   const reloadGen = useRef(0);
   const reloadSessions = useCallback(async () => {
+    const pid = partnership?.id;
     if (!pid) {
       setSessions([]);
       return;
     }
     const gen = ++reloadGen.current;
-    const rows = await api<SessionSummary[]>(`/api/sessions?partnership_id=${encodeURIComponent(pid)}`);
+    const params = new URLSearchParams({ partnership_id: pid });
+    if (pick.user) params.set("user_id", pick.user.id);
+    const rows = await api<SessionSummary[]>(`/api/sessions?${params}`);
     if (gen !== reloadGen.current) return;
     setSessions(rows.filter((row) => !isForgotten(row.id)));
-  }, [pid]);
+  }, [partnership?.id, pick.user]);
 
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
-  const deleting = useRef(new Set<string>());
-  const deleteChat = useCallback(async (id: string) => {
-    if (deleting.current.has(id)) return;
-    deleting.current.add(id);
-    try {
-      await api<void>(`/api/sessions/${id}`, { method: "DELETE" });
-      const wasOpen = chatPresence().activeId === id;
-      forgetChat(id);
-      const rest = sessionsRef.current.filter((session) => session.id !== id);
-      sessionsRef.current = rest;
-      setSessions(rest);
-      if (wasOpen) {
-        setJump((current) => ({ n: current.n + 1, sid: rest[0]?.id ?? "new" }));
-        navigate("/");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete the chat");
-    } finally {
-      deleting.current.delete(id);
+  const closing = useRef(new Set<string>());
+  const dropChat = useCallback((id: string) => {
+    const wasOpen = chatPresence().activeId === id;
+    forgetChat(id);
+    const rest = sessionsRef.current.filter((session) => session.id !== id);
+    sessionsRef.current = rest;
+    setSessions(rest);
+    if (wasOpen) {
+      setJump((current) => ({ n: current.n + 1, sid: rest[0]?.id ?? "new" }));
+      navigate("/");
     }
   }, [navigate]);
+  const closeChat = useCallback(async (id: string, path: string, method: string, failure: string) => {
+    if (closing.current.has(id)) return;
+    closing.current.add(id);
+    try {
+      await api<void>(path, { method });
+      dropChat(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : failure);
+    } finally {
+      closing.current.delete(id);
+    }
+  }, [dropChat]);
+  const archiveChat = useCallback(
+    (id: string) => closeChat(id, `/api/sessions/${id}/archive`, "POST", "Could not archive the chat"),
+    [closeChat],
+  );
+  const deleteChat = useCallback(
+    (id: string) => closeChat(id, `/api/sessions/${id}`, "DELETE", "Could not delete the chat"),
+    [closeChat],
+  );
 
   const nameSession = useCallback((id: string, title: string | null, tags: string[]) => {
     setSessions((current) => current.map((session) => (
@@ -134,21 +332,29 @@ export function DeskProvider({ children }: { children: ReactNode }) {
     meta,
     partnerships,
     partnership,
-    choosePartnership: (id: string) => {
-      localStorage.setItem("partnerdesk.partnership", id);
-      setPid(id);
-      setJump({ n: 0, sid: "" });
-    },
+    brands: pick.brands,
+    brand: pick.brand,
+    distributors: pick.distributors,
+    distributor: pick.distributor,
+    users: pick.users,
+    user: pick.user,
+    chooseBrand: (id: string) => applyPick(id, distributorId, userId),
+    chooseDistributor: (id: string) => applyPick(brandId, id, userId),
+    chooseUser: (id: string) => applyPick(brandId, distributorId, id),
     sessions,
     reloadSessions,
     nameSession,
+    archiveChat,
     deleteChat,
     jump,
     openChat: (sid: string | "new") => {
       setJump((current) => ({ n: current.n + 1, sid }));
       navigate("/");
     },
-  }), [ready, error, meta, partnerships, partnership, sessions, reloadSessions, nameSession, deleteChat, jump, navigate]);
+  }), [
+    ready, error, meta, partnerships, partnership, pick, applyPick, brandId, distributorId, userId,
+    sessions, reloadSessions, nameSession, archiveChat, deleteChat, jump, navigate,
+  ]);
 
   return <DeskContext.Provider value={value}>{children}</DeskContext.Provider>;
 }
@@ -156,7 +362,6 @@ export function DeskProvider({ children }: { children: ReactNode }) {
 export function Shell({ children }: { children: ReactNode }) {
   const desk = useDesk();
   const presence = useChatPresence();
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -164,20 +369,27 @@ export function Shell({ children }: { children: ReactNode }) {
           <strong>KA Account</strong>
           <span>agent</span>
         </div>
-        {desk.partnerships.length > 1 && (
-          <select
-            aria-label="Partnership"
-            value={desk.partnership?.id ?? ""}
-            onChange={(event) => desk.choosePartnership(event.target.value)}
-          >
-            {desk.partnerships.map((p) => (
-              <option key={p.id} value={p.id}>{p.brand_name} · {p.distributor_name}</option>
-            ))}
-          </select>
-        )}
-        {desk.partnership && desk.partnerships.length <= 1 && (
-          <div className="side-note" style={{ color: "var(--sidebar-dim)", padding: "0 8px" }}>
-            {desk.partnership.brand_name} · {desk.partnership.distributor_name}
+        {desk.brands.length > 0 && (
+          <div className="side-picks">
+            <label>Brand
+              <select aria-label="Brand" value={desk.brand?.id ?? ""} onChange={(event) => desk.chooseBrand(event.target.value)}>
+                {desk.brands.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </label>
+            <label>Distributor
+              <select
+                aria-label="Distributor"
+                value={desk.distributor?.id ?? ""}
+                onChange={(event) => desk.chooseDistributor(event.target.value)}
+              >
+                {desk.distributors.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </label>
+            <label>User
+              <select aria-label="User" value={desk.user?.id ?? ""} onChange={(event) => desk.chooseUser(event.target.value)}>
+                {desk.users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </label>
           </div>
         )}
         <button className="btn-primary" type="button" onClick={() => desk.openChat("new")}>New chat</button>
@@ -191,36 +403,20 @@ export function Shell({ children }: { children: ReactNode }) {
           {desk.sessions.map((session) => {
             const replying = presence.busyIds.includes(session.id);
             const title = chatTitle(session);
-            const confirming = pendingDelete === session.id;
             return (
               <div key={session.id} className={presence.activeId === session.id ? "chat-row on" : "chat-row"}>
-                <button
-                  type="button"
-                  className="chat-open"
-                  onClick={() => {
-                    setPendingDelete(null);
-                    desk.openChat(session.id);
-                  }}
-                >
-                  {title}
+                <button type="button" className="chat-open" onClick={() => desk.openChat(session.id)}>
+                  <span className="chat-name">{title}</span>
                   {replying && <small className="replying">Replying…</small>}
                   {tagLabel(session.tags) && <small>{tagLabel(session.tags)}</small>}
                 </button>
-                <button
-                  type="button"
-                  className={confirming ? "chat-delete confirm" : "chat-delete"}
-                  aria-label={confirming ? `Confirm delete ${title}` : `Delete ${title}`}
-                  onClick={() => {
-                    if (!confirming) {
-                      setPendingDelete(session.id);
-                      return;
-                    }
-                    setPendingDelete(null);
-                    void desk.deleteChat(session.id);
+                <ChatMenu
+                  title={title}
+                  onAction={(action) => {
+                    if (action === "archive") void desk.archiveChat(session.id);
+                    else void desk.deleteChat(session.id);
                   }}
-                >
-                  {confirming ? "Delete" : "×"}
-                </button>
+                />
               </div>
             );
           })}

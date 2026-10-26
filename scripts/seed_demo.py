@@ -1,10 +1,14 @@
 """One distributor, fifteen brands, orders and sell-out from 2024-01 through 2026-09.
 
+    ./dev py scripts/seed_demo.py
+    ./dev py scripts/seed_demo.py --accounts
+
+`--accounts` only adds 海纳分销 (Activia, Red Bull, and three brands 联采贸易 does not
+sell) and three people on each distributor. It does not rebuild orders.
+
 October 2026 is left empty on purpose: the first purchase order of this test is the one
 placed in the app. Sell-out stops in the same month, so a report for "this month" has
 nothing yet and a report for the previous month does.
-
-    ./dev py scripts/seed_demo.py
 
 The catalog in this database was empty, so when fewer than fifteen brands already have
 four priced products the script loads a small Open Food Facts slice — the same source as
@@ -41,6 +45,13 @@ from backend.schemas import Partnership, Product, PurchaseOrder, ReportFact, Sal
 
 DIST_ID = "dist-liancai"
 DIST_NAME = "联采贸易"
+DIST2_ID = "dist-haina"
+DIST2_NAME = "海纳分销"
+# Activia and Red Bull are shared with 联采贸易. The other three must not be.
+SHARED_TAGS = ("activia", "red-bull")
+EXTRA_TAGS = ("lavazza", "lipton", "quaker")
+LIANCAI_USERS = (("user-liancai-chen", "陈思远"), ("user-liancai-lin", "林晓雯"), ("user-liancai-zhou", "周启明"))
+HAINA_USERS = (("user-haina-zhao", "赵宁"), ("user-haina-wu", "吴倩"), ("user-haina-zheng", "郑浩"))
 CONTRACT_PATH = ROOT / "fixtures" / "demo" / "联采贸易-经销协议.md"
 CACHE_PATH = ROOT / "fixtures" / "demo" / "off-slice.json"
 UA = "PartnerDeskDemo/1.0 (local sales seed; not a crawl)"
@@ -177,6 +188,22 @@ def _products(db: Database, brand_id: str) -> list[Product]:
 
 
 def ensure_catalog(db: Database) -> list[tuple]:
+    current = _existing_partnerships(db)
+    if len(current) >= 15:
+        # Keep the brands this distributor already sells. A later brand (海纳分销's
+        # extra three) must not displace one of them just because it has more products.
+        print(f"distributor already has {len(current)} partnerships; keeping those brands")
+        with db.engine.connect() as conn:
+            return list(conn.execute(text(
+                """
+                SELECT b.id, b.name, b.preferred_currency
+                FROM partnerships p
+                JOIN brands b ON b.id = p.brand_id
+                WHERE p.distributor_id = :d
+                ORDER BY b.name
+                LIMIT 15
+                """
+            ), {"d": DIST_ID}))
     have = _qualified(db)
     if len(have) >= 15:
         print(f"catalog already has {len(have)} brands with priced products; using those")
@@ -382,6 +409,117 @@ def _write_contract(link: dict) -> None:
     CONTRACT_PATH.write_text(body, encoding="utf-8")
 
 
+def _priced(db: Database, brand_id: str) -> int:
+    with db.engine.connect() as conn:
+        return int(conn.execute(text(
+            """
+            SELECT count(*) FROM products
+            WHERE brand_id = :b AND case_price > 0 AND product_status = '正品'
+            """
+        ), {"b": brand_id}).scalar() or 0)
+
+
+def _brand_row(db: Database, brand_id: str) -> tuple[str, str] | None:
+    with db.engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT name, preferred_currency FROM brands WHERE id = :b"
+        ), {"b": brand_id}).one_or_none()
+    if row is None:
+        return None
+    return str(row.name), str(row.preferred_currency or "USD")
+
+
+def _one_brand(tag: str) -> dict | None:
+    """Up to eight regular products for one Open Food Facts brand tag."""
+    url = (
+        "https://world.openfoodfacts.org/api/v2/search?brands_tags="
+        f"{tag}&page_size=24&fields=code,product_name,generic_name,brands,quantity,"
+        "product_quantity,product_quantity_unit,categories_tags,labels_tags,obsolete"
+    )
+    payload = _get(url)
+    products: list[dict] = []
+    spellings: Counter = Counter()
+    dropped: Counter = Counter()
+    for raw in payload.get("products") or []:
+        row = _off_row(raw, tag)
+        derived = build_catalog.product(row, dropped)
+        if not derived or derived["product_status"] != "正品":
+            continue
+        products.append(derived)
+        spellings[row["brand"]] += 1
+        if len(products) >= 8:
+            break
+    if len(products) < 4:
+        print(f"  skip {tag}: only {len(products)} usable products")
+        return None
+    name = spellings.most_common(1)[0][0] if spellings else tag
+    return {"id": build_catalog.brand_id(tag), "name": name[:200], "products": products}
+
+
+def _store_brand(db: Database, brand: dict) -> None:
+    db.upsert_brand(brand["id"], brand["name"], "USD")
+    db.upsert_products(brand["id"], [
+        Product(**{k: p[k] for k in Product.model_fields if k in p}) for p in brand["products"]
+    ])
+
+
+def _ensure_brand(db: Database, tag: str) -> tuple[str, str, str]:
+    brand_id = build_catalog.brand_id(tag)
+    if _priced(db, brand_id) < 4:
+        print(f"loading {tag} from Open Food Facts")
+        loaded = _one_brand(tag)
+        if loaded is None:
+            raise SystemExit(f"could not load four priced products for {tag}")
+        _store_brand(db, loaded)
+        brand_id = loaded["id"]
+    found = _brand_row(db, brand_id)
+    if found is None or _priced(db, brand_id) < 4:
+        raise SystemExit(f"{tag} is still not a usable brand")
+    return brand_id, found[0], found[1]
+
+
+def ensure_accounts(db: Database) -> None:
+    """海纳分销, and three people on each distributor. Existing chats stay with 陈思远."""
+    db.upsert_distributor(DIST_ID, DIST_NAME, "CN")
+    for user_id, name in LIANCAI_USERS:
+        db.upsert_user(user_id, DIST_ID, name)
+    liancai = {row.brand_id for row in _existing_partnerships(db)}
+    db.upsert_distributor(DIST2_ID, DIST2_NAME, "CN")
+    chosen: list[str] = []
+    for tag in (*SHARED_TAGS, *EXTRA_TAGS):
+        brand_id, name, currency = _ensure_brand(db, tag)
+        if tag in EXTRA_TAGS and brand_id in liancai:
+            raise SystemExit(f"{name} is already a 联采贸易 brand")
+        pid = f"ps-haina-{tag}"
+        db.upsert_partnership(Partnership(
+            id=pid, brand_id=brand_id, distributor_id=DIST2_ID,
+            brand_name=name, distributor_name=DIST2_NAME,
+            ship_to_country="CN", currency=currency,
+        ))
+        chosen.append(name)
+        print(f"  {DIST2_NAME} · {name}  {pid}")
+    for user_id, name in HAINA_USERS:
+        db.upsert_user(user_id, DIST2_ID, name)
+    with db.engine.begin() as conn:
+        conn.execute(text(
+            """
+            UPDATE sessions SET user_id = :user
+            WHERE user_id IS NULL
+              AND partnership_id IN (SELECT id FROM partnerships WHERE distributor_id = :dist)
+            """
+        ), {"user": LIANCAI_USERS[0][0], "dist": DIST_ID})
+        conn.execute(text(
+            """
+            UPDATE memories SET user_id = :user
+            WHERE user_id IS NULL
+              AND partnership_id IN (SELECT id FROM partnerships WHERE distributor_id = :dist)
+            """
+        ), {"user": LIANCAI_USERS[0][0], "dist": DIST_ID})
+    print(f"people: {', '.join(name for _, name in LIANCAI_USERS)} ({DIST_NAME})")
+    print(f"people: {', '.join(name for _, name in HAINA_USERS)} ({DIST2_NAME})")
+    print(f"{DIST2_NAME} brands: {', '.join(chosen)}")
+
+
 def main() -> int:
     db = Database()
     brands = ensure_catalog(db)
@@ -399,8 +537,12 @@ def main() -> int:
     print(f"orders {orders} (none in 2026-10), confirmed sell-out facts {facts}")
     print(f"contract for {links[0]['brand_name']} ({links[0]['partnership_id']}): {CONTRACT_PATH.relative_to(ROOT)}")
     print("In the desk, pick that partnership and upload the contract. The October order is container 1 (3%).")
+    ensure_accounts(db)
     return 0
 
 
 if __name__ == "__main__":
+    if "--accounts" in sys.argv:
+        ensure_accounts(Database())
+        raise SystemExit(0)
     raise SystemExit(main())

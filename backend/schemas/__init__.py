@@ -43,6 +43,7 @@ from .order import PurchaseOrder, PurchaseOrderItem
 from .partnership import Partnership
 from .po import Discount, EffectiveTerms, LineItemSlot, PoSlots
 from .report import NarrativeReport, ReportFact, SalesReport
+from .user import User
 
 __all__ = [
     "INCOTERMS_VALUES",
@@ -89,5 +90,6 @@ __all__ = [
     "ReportFact",
     "SalesReport",
     "ShippingMethod",
+    "User",
     "product_status",
 ]

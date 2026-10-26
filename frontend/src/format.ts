@@ -1,7 +1,5 @@
 /** Pure desk formatting. The page renders these; it does not recompute prices or rules. */
 
-export type Step = { title: string; status: string };
-
 export type Activity = {
   id: string;
   title: string;
@@ -313,21 +311,6 @@ export function chatTitle(
     if (m.role === "user" && text && !SKIP_HISTORY.has(text)) return clip(text, 36);
   }
   return "New chat";
-}
-
-export function confirmReady(steps: Step[] | null | undefined): boolean {
-  const by = new Map((steps ?? []).map((s) => [s.title, s.status]));
-  return by.get("Understand request") === "done" && by.get("Check inputs") === "done";
-}
-
-export function buildLedger(stage: string): Step[] {
-  const check = stage === "gathering" ? "working" : "done";
-  return [
-    { title: "Understand request", status: "done" },
-    { title: "Check inputs", status: check },
-    { title: "Confirm draft", status: stage === "confirm" ? "needs-you" : stage === "submitted" ? "done" : "pending" },
-    { title: "Create & submit order", status: stage === "submitted" ? "done" : "pending" },
-  ];
 }
 
 export type DraftLine = {

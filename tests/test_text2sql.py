@@ -235,7 +235,7 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
             {"id": "d", "kind": "agent", "name": "data", "input": {"question": "order total"}, "depends_on": []},
             {"id": "r", "kind": "agent", "name": "report", "input": {}, "depends_on": ["d"]},
         ]},
-        {"sections": [
+        {"title": "订单月报", "sections": [
             {"id": "metrics", "questions": ["order total"], "searches": []},
             {"id": "summary", "questions": [], "searches": []},
             {"id": "performance", "questions": ["order total"], "searches": []},
@@ -321,10 +321,12 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
     assert "未结订单还在" in summary_write["messages"][-1]["content"]
     done = events[-1]
     assert done["report_draft"] is True
+    assert done["report_title"] == "订单月报"
     assert done["charts"][0]["title"] == "Order total"
     assert done["charts"][0]["echarts_option"]["series"][0]["data"] == [1000]
     saved = db.session(sid)["history"][-1]
     assert saved["report_draft"] is True
+    assert saved["report_title"] == "订单月报"
     assert saved["charts"][0]["echarts_option"]["series"][0]["data"] == [1000]
     assert saved["report_series"][0]["question"] == "order total"
     assert saved["report_series"][0]["rows"][0]["total_amount"] == 1000
@@ -364,7 +366,7 @@ def test_feedback_is_stored_on_the_attempt(db):
 
 def test_queries_run_as_the_reader_and_cannot_write_or_read_files(db):
     db.insert_po(_po(), [], [])
-    scope = {"partnership_id": "ps-1", "brand_id": "brand-1", "distributor_id": "dist-1"}
+    scope = {"partnership_id": "ps-1", "brand_id": "brand-1", "distributor_id": "dist-1", "user_id": "all"}
     rows = db.run_scoped_read("SELECT current_user AS role", scope_views(), scope)
     assert rows == [{"role": "text2sql_reader"}]
     with pytest.raises(Exception, match=r"(?i)permission denied"):

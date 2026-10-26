@@ -22,7 +22,7 @@ from typing import Any
 from ..codefix import format_failures, with_reflection
 from ..db import Database, utcnow
 from ..llm import LLM
-from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
+from ..memory import actor_id, attach, prompt_context, prompt_turns, standing_block, summary_block
 from .prompt import PICK, REFLECT, SQL
 from .sql_validator import validate
 from .table_metadata import TABLES, catalog_text, describe_tables, expand_tables, scope_views
@@ -236,12 +236,13 @@ def _attempt(
                 ok, error, error_type = False, "no relevant tables", "generation"
             else:
                 schema_text = describe_tables(tables)
-                context = prompt_context(standing_block(db, partnership_id), summary_block(summary))
+                person = actor_id(db, session_id)
+                context = prompt_context(standing_block(db, partnership_id, person), summary_block(summary))
                 sql = _write_sql(
                     llm, question, schema_text, context=context, history=history, folded_through=folded_through,
                 )
                 ok, error, sql, raw_rows = _run(
-                    db, sql, _scope_params(partnership_id, brand_id, distributor_id),
+                    db, sql, _scope_params(partnership_id, brand_id, distributor_id, person),
                 )
                 if ok and raw_rows is not None:
                     rows = _rows_for_prompt(raw_rows)
@@ -292,7 +293,7 @@ def run_statement(
 ) -> QueryResult:
     """Run one statement the reflection step already wrote. No second model call."""
     started = time.perf_counter()
-    params = _scope_params(partnership_id, brand_id, distributor_id)
+    params = _scope_params(partnership_id, brand_id, distributor_id, actor_id(db, session_id))
     ok, error, clean, raw_rows = _run(db, sql, params)
     rows = _rows_for_prompt(raw_rows) if ok and raw_rows is not None else []
     error_type = None
@@ -352,11 +353,16 @@ def _is_validation_error(error: str | None) -> bool:
     )
 
 
-def _scope_params(partnership_id: str, brand_id: str, distributor_id: str) -> dict[str, str]:
+def _scope_params(
+    partnership_id: str, brand_id: str, distributor_id: str, user_id: str | None = None,
+) -> dict[str, str]:
+    """Scope ids inlined into the views. `all` leaves memories unfiltered — a chat with no person."""
+    person = user_id if user_id and re.fullmatch(r"[A-Za-z0-9_\-]+", user_id) else "all"
     return {
         "partnership_id": partnership_id,
         "brand_id": brand_id,
         "distributor_id": distributor_id,
+        "user_id": person,
     }
 
 

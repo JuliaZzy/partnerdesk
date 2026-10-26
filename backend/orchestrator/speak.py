@@ -37,7 +37,7 @@ def one_shot(
     yield {"type": "token", "text": text}
     yield {
         "type": "done", "stage": session.get("stage"), "slots": session.get("slots"), "draft": None,
-        "gaps": [], "gaps_detail": [], "advisories": [], "steps": [], "confirm_token": None, "submitted": None,
+        "gaps": [], "gaps_detail": [], "advisories": [], "confirm_token": None, "submitted": None,
         **(extra or {}),
     }
 
@@ -95,6 +95,9 @@ def save_reply(
     report_body = extra.get("report_body")
     if isinstance(report_body, str) and report_body.strip():
         assistant["report_body"] = report_body
+    report_title = extra.get("report_title")
+    if isinstance(report_title, str) and report_title.strip():
+        assistant["report_title"] = " ".join(report_title.split())[:80]
     if extra.get("combined"):
         assistant["combined"] = True
     series = extra.get("report_series")
@@ -107,7 +110,7 @@ def save_reply(
     )
     return {
         "type": "done", "stage": session.get("stage"), "slots": session.get("slots"), "draft": None,
-        "gaps": [], "gaps_detail": [], "advisories": [], "steps": [], "confirm_token": None, "submitted": None,
+        "gaps": [], "gaps_detail": [], "advisories": [], "confirm_token": None, "submitted": None,
         **extra,
     }
 
@@ -121,7 +124,7 @@ def answer_directly(
 
     parts: list[str] = []
     system = attach(system or ANSWER, prompt_context(
-        standing_block(db, session["partnership_id"]), summary_block(session.get("summary")),
+        standing_block(db, session["partnership_id"], session.get("user_id")), summary_block(session.get("summary")),
     ))
     for chunk in llm.stream_text(system=system, messages=_chat_messages(session, prompt_text or text)):
         parts.append(chunk)

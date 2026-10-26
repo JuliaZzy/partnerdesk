@@ -18,7 +18,7 @@ from ..llm import LLM, OpenAICompatLLM
 from ..memory import bind_fold_scheduler, reset_fold_scheduler
 from ..schemas import Confirm, ConfirmContract, ConfirmReport, DataFeedback, Inbound, InboundFile, NewSession
 from ..stream_pin import pin_stream
-from ._common import partnership_or_404
+from ._common import partnership_or_404, user_on_partnership
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -38,24 +38,39 @@ def _decode_file(f: InboundFile) -> tuple[str, bytes]:
 
 
 @router.get("/api/sessions")
-def list_sessions(partnership_id: str, db: Database = Depends(get_db)) -> list[dict[str, Any]]:
-    partnership_or_404(db, partnership_id)
-    rows = db.list_sessions(partnership_id)
-    keep = ("id", "partnership_id", "title", "tags", "stage", "updated_at", "created_at")
+def list_sessions(
+    partnership_id: str, user_id: str | None = None, db: Database = Depends(get_db),
+) -> list[dict[str, Any]]:
+    partnership = partnership_or_404(db, partnership_id)
+    user_on_partnership(db, partnership, user_id)
+    rows = db.list_sessions(partnership_id, user_id=user_id)
+    keep = ("id", "partnership_id", "user_id", "title", "tags", "stage", "updated_at", "created_at")
     return [{k: row.get(k) for k in keep} for row in rows]
 
 
 @router.post("/api/sessions")
 def new_session(body: NewSession, db: Database = Depends(get_db)) -> dict[str, Any]:
     try:
-        return service.new_session(db, body.partnership_id)
+        return service.new_session(db, body.partnership_id, body.user_id)
     except KeyError as err:
         raise HTTPException(404, str(err)) from err
+    except ValueError as err:
+        raise HTTPException(400, str(err)) from err
+
+
+@router.post("/api/sessions/{sid}/archive", status_code=204)
+def archive_session(sid: str, db: Database = Depends(get_db)) -> Response:
+    """Drop the chat. Reports, contracts, and orders it filed stay on their pages."""
+    try:
+        service.archive_session(db, sid)
+    except KeyError as err:
+        raise HTTPException(404, "session not found") from err
+    return Response(status_code=204)
 
 
 @router.delete("/api/sessions/{sid}", status_code=204)
 def delete_session(sid: str, db: Database = Depends(get_db)) -> Response:
-    """Drop one chat. An in-flight reply may still finish and then find the row gone."""
+    """Drop the chat and the records it filed. An in-flight reply may still finish and find the row gone."""
     try:
         service.delete_session(db, sid)
     except KeyError as err:

@@ -352,7 +352,7 @@ def _report(
         emit({"type": "warning", "message": warning})
     return {
         "text": draft.text, "charts": draft.charts, "web_notes": draft.web_notes,
-        "series": draft.series, "data_query": draft.data_query,
+        "series": draft.series, "data_query": draft.data_query, "title": draft.title,
         "report_pending_id": f"rp_{uuid.uuid4().hex[:12]}",
     }
 
@@ -379,7 +379,9 @@ def _brand(
     db: Database, llm: LLM, session: dict[str, Any], text: str, brand_id: str, emit: Emit,
 ) -> dict[str, Any]:
     folded = int(session.get("folded_through") or 0)
-    remembered = prompt_context(standing_block(db, session["partnership_id"]), summary_block(session.get("summary")))
+    remembered = prompt_context(
+        standing_block(db, session["partnership_id"], session.get("user_id")), summary_block(session.get("summary")),
+    )
     query = _search_query(llm, text, list(session.get("history") or []), remembered, folded)
     try:
         hits = retrieve(query, brand_id)
@@ -426,7 +428,7 @@ def _assemble(results: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, 
                 "draft": payload.get("draft"), "order_draft": payload.get("draft"), "order": True,
                 "stage": payload.get("stage"), "slots": payload.get("slots"),
                 "gaps": payload.get("gaps") or [], "gaps_detail": payload.get("gaps_detail") or [],
-                "advisories": payload.get("advisories") or [], "steps": payload.get("steps") or [],
+                "advisories": payload.get("advisories") or [],
                 "confirm_token": payload.get("confirm_token"),
             })
         if name == "po" and payload.get("po_event"):
@@ -439,6 +441,8 @@ def _assemble(results: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, 
             extra["report_draft"] = True
             extra["report_pending_id"] = payload.get("report_pending_id")
             extra["report_body"] = payload.get("text") or ""
+            if isinstance(payload.get("title"), str) and payload["title"].strip():
+                extra["report_title"] = payload["title"].strip()
             if payload.get("charts"):
                 extra["charts"] = payload["charts"]
             if payload.get("series"):
@@ -466,7 +470,7 @@ def _assemble(results: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, 
 
 def _public(result: dict[str, Any]) -> dict[str, Any]:
     payload = dict(result.get("payload") or {})
-    for key in ("contract_pending", "slots", "confirm_token", "confirm_hash", "confirm_expires_at", "steps"):
+    for key in ("contract_pending", "slots", "confirm_token", "confirm_hash", "confirm_expires_at"):
         payload.pop(key, None)
     text = payload.get("text")
     if isinstance(text, str) and len(text) > 4000:

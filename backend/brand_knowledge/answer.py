@@ -92,7 +92,9 @@ def answer_in_chat(
     db.update_session(session["id"], specialist="brand")
     yield status("brand-search", "检索", "正在查找品牌资料", state="running")
     folded = int(session.get("folded_through") or 0)
-    remembered = prompt_context(standing_block(db, session["partnership_id"]), summary_block(session.get("summary")))
+    remembered = prompt_context(
+        standing_block(db, session["partnership_id"], session.get("user_id")), summary_block(session.get("summary")),
+    )
     query = _search_query(llm, text, history, remembered, folded)
     try:
         hits = retrieve(query, brand_id)

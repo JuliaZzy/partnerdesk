@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 
 import { api, postJson, streamMessage } from "../api";
 import { flightOf, isChatBusy, isForgotten, onForgetChat, patchFlight, setActiveChat, useFlight } from "../chat-live";
@@ -6,9 +6,7 @@ import { NeedPartnership, useDesk } from "../desk";
 import {
   applyActivity,
   attachOutput,
-  buildLedger,
   citationSources,
-  confirmReady,
   contractFiling,
   dataQueryMark,
   discountText,
@@ -28,7 +26,6 @@ import {
   type DataQueryMark,
   type DraftLine,
   type ReportChart,
-  type Step,
 } from "../format";
 import { Markdown } from "../markdown-view";
 import { DataTable, Tabs } from "../ui";
@@ -74,7 +71,6 @@ type Snap = {
   turns: Turn[];
   draft: Draft | null;
   gaps: Gap[];
-  steps: Step[];
   stage: string;
   confirmToken: string | null;
   route: string;
@@ -115,21 +111,11 @@ const IMAGE = new Set(["png", "jpg", "jpeg", "webp"]);
 const DOC = new Set(["pdf", "docx", "txt", "md"]);
 const SKIP = new Set(["(message)", "(confirm)"]);
 
-function reportHeading(text: string): string {
-  for (const line of text.split("\n")) {
-    const found = /^#{1,3}\s+(\S.*?)\s*$/.exec(line.trim());
-    if (found) return found[1].slice(0, 200);
-  }
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.slice(0, 40) || "Report";
-}
-
 function paneIndex(id: string, prefix: string): number | null {
   if (!id.startsWith(prefix)) return null;
   const n = Number(id.slice(prefix.length));
   return Number.isInteger(n) ? n : null;
 }
-const STEP_MARK: Record<string, string> = { done: "✓", working: "…", "needs-you": "!", pending: "·" };
 
 function readDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -160,8 +146,8 @@ function fromSession(session: SessionRow, hello: string): Snap {
       const reportBody = message.role === "assistant" && message.report_body ? message.report_body : undefined;
       const reportPendingId = message.role === "assistant" && message.report_pending_id ? message.report_pending_id : undefined;
       const reportId = message.role === "assistant" && message.report_id ? message.report_id : undefined;
-      const reportTitle = message.role === "assistant"
-        ? (message.report_title || (reportDraft ? reportHeading(reportBody || text) : undefined))
+      const reportTitle = message.role === "assistant" && message.report_title
+        ? message.report_title.trim() || undefined
         : undefined;
       const contract = message.role === "assistant" ? contractFiling(message.contract) : undefined;
       const order = message.role === "assistant" && message.order === true;
@@ -182,7 +168,6 @@ function fromSession(session: SessionRow, hello: string): Snap {
     turns,
     draft,
     gaps: [],
-    steps: buildLedger(stage),
     stage,
     confirmToken: session.confirm_token ?? null,
     route: "",
@@ -202,6 +187,7 @@ export function Chat() {
 function ChatDesk() {
   const desk = useDesk();
   const partnership = desk.partnership!;
+  const userId = desk.user?.id ?? "";
   const [sid, setSid] = useState<string | null>(null);
   const [snap, setSnap] = useState<Snap | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -234,6 +220,13 @@ function ChatDesk() {
   const paneKey = panes.map((pane) => pane.id).join("|");
   const [picked, setPicked] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  const panelWidthRef = useRef(480);
+  const [panelWidth, setPanelWidth] = useState(() => {
+    const saved = Number(localStorage.getItem("partnerdesk.panelWidth"));
+    const width = Number.isFinite(saved) && saved >= 300 ? Math.round(saved) : 480;
+    panelWidthRef.current = width;
+    return width;
+  });
   const seenPanes = useRef("");
   const seenChat = useRef<string | null>(null);
   useEffect(() => {
@@ -289,11 +282,14 @@ function ChatDesk() {
   }
 
   async function startNew(seq: number) {
-    const session = await postJson<SessionRow>("/api/sessions", { partnership_id: partnership.id });
+    const session = await postJson<SessionRow>("/api/sessions", {
+      partnership_id: partnership.id,
+      ...(userId ? { user_id: userId } : {}),
+    });
     if (seq !== openSeq.current) return;
     const fresh: Snap = {
       turns: [{ role: "assistant", text: greeting(partnership) }],
-      draft: null, gaps: [], steps: [], stage: "gathering", confirmToken: null, route: "", title: null, tags: [],
+      draft: null, gaps: [], stage: "gathering", confirmToken: null, route: "", title: null, tags: [],
     };
     focus(session.id, fresh);
     await desk.reloadSessions();
@@ -308,7 +304,7 @@ function ChatDesk() {
 
   useEffect(() => {
     const jump = desk.jump;
-    const key = `${partnership.id}:${jump.n}:${jump.sid}`;
+    const key = `${partnership.id}:${userId}:${jump.n}:${jump.sid}`;
     if (bootKey.current === key) return;
     bootKey.current = key;
     const seq = ++openSeq.current;
@@ -322,7 +318,7 @@ function ChatDesk() {
         setActiveChat(null);
         setSnap({
           turns: [{ role: "assistant", text: "Opening…" }],
-          draft: null, gaps: [], steps: [], stage: "gathering", confirmToken: null, route: "", title: null, tags: [],
+          draft: null, gaps: [], stage: "gathering", confirmToken: null, route: "", title: null, tags: [],
         });
         await startNew(seq);
         return;
@@ -331,7 +327,9 @@ function ChatDesk() {
         await openExisting(jump.sid, seq);
         return;
       }
-      const rows = await api<{ id: string }[]>(`/api/sessions?partnership_id=${encodeURIComponent(partnership.id)}`);
+      const params = new URLSearchParams({ partnership_id: partnership.id });
+      if (userId) params.set("user_id", userId);
+      const rows = await api<{ id: string }[]>(`/api/sessions?${params}`);
       if (seq !== openSeq.current) return;
       if (rows[0]) await openExisting(rows[0].id, seq);
       else await startNew(seq);
@@ -341,7 +339,7 @@ function ChatDesk() {
     });
     // startNew/openExisting close over the current partnership; jump is the trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [partnership.id, desk.jump]);
+  }, [partnership.id, userId, desk.jump]);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
@@ -387,9 +385,7 @@ function ChatDesk() {
       const incoming = orderDraft(done?.draft);
       const hasReport = done?.report_draft === true;
       const reportBody = typeof done?.report_body === "string" ? done.report_body : undefined;
-      const poTurn = incoming != null || (
-        Array.isArray(done?.steps) && (done.steps as Step[]).some((step) => step.title === "Confirm draft")
-      );
+      const poTurn = incoming != null || done?.order === true;
       const next: Snap = {
         ...base,
         title,
@@ -407,9 +403,9 @@ function ChatDesk() {
           reportDraft: hasReport,
           reportBody,
           reportPendingId: typeof done?.report_pending_id === "string" ? done.report_pending_id : undefined,
-          reportTitle: hasReport ? reportHeading(reportBody || reply) : undefined,
+          reportTitle: typeof done?.report_title === "string" ? done.report_title.trim() || undefined : undefined,
           contract: contractFiling(done?.contract),
-          order: poTurn || done?.order === true,
+          order: poTurn,
           combined: done?.combined === true,
           activity: settleActivity(steps),
           modelJson: looseModelJson(modelJson, steps),
@@ -417,7 +413,6 @@ function ChatDesk() {
         stage: poTurn ? String(done?.stage ?? base.stage) : base.stage,
         draft: poTurn ? incoming : base.draft,
         gaps: poTurn ? ((done?.gaps_detail as Gap[] | undefined) ?? []) : base.gaps,
-        steps: poTurn && Array.isArray(done?.steps) ? (done.steps as Step[]) : base.steps,
         confirmToken: poTurn ? ((done?.confirm_token as string | null) ?? null) : base.confirmToken,
       };
       commitSnap(chatId, next);
@@ -484,7 +479,7 @@ function ChatDesk() {
     if (!chatId || !current?.confirmToken || isChatBusy(chatId)) return;
     patchFlight(chatId, { busy: true, error: null });
     try {
-      const result = await postJson<{ state: string; message?: string; draft?: Draft | null; steps?: Step[] }>(
+      const result = await postJson<{ state: string; message?: string; draft?: Draft | null }>(
         `/api/sessions/${chatId}/confirm`,
         { token: current.confirmToken },
       );
@@ -496,7 +491,6 @@ function ChatDesk() {
         turns: [...current.turns, { role: "assistant", text: textOut }],
         stage: result.state === "submitted" ? "submitted" : result.state === "changed" ? "gathering" : current.stage,
         draft: result.state === "submitted" || result.state === "changed" ? (result.draft ?? null) : current.draft,
-        steps: result.state === "submitted" || result.state === "changed" ? (result.steps ?? []) : current.steps,
         gaps: result.state === "submitted" || result.state === "changed" ? [] : current.gaps,
         confirmToken: null,
       };
@@ -553,7 +547,7 @@ function ChatDesk() {
     const turn = current?.turns[index];
     if (!chatId || !current || !turn?.reportPendingId || isChatBusy(chatId)) return;
     const text = turn.reportBody || turn.text;
-    const title = turn.reportTitle || reportHeading(text);
+    const title = turn.reportTitle || "";
     const charts = (turn.charts ?? []).map((chart) => ({
       id: chart.id, title: chart.title, subtitle: chart.subtitle, echarts_option: chart.option,
     }));
@@ -592,7 +586,6 @@ function ChatDesk() {
     });
   }
 
-  const ready = confirmReady(snap?.steps);
   const showPanel = panelOpen && panes.length > 0;
   const livePane = liveKind === "report"
     ? panes.find((pane) => pane.id === "report-live")
@@ -606,18 +599,42 @@ function ChatDesk() {
     : null;
   const artifactTurn = artifactIndex != null ? snap?.turns[artifactIndex] : undefined;
   const reportNotes = activePane?.kind === "report" ? artifactTurn?.webNotes : undefined;
-  const panelTitle = activePane?.kind === "contract" && activePane.filing?.title
-    ? activePane.filing.title
-    : activePane?.kind === "report" && artifactTurn?.reportTitle
-      ? artifactTurn.reportTitle
-      : activePane?.label ?? "结果";
+  const reportTitle = artifactTurn?.reportTitle || "";
+  const layoutStyle: CSSProperties | undefined = showPanel
+    ? { "--result-width": `${panelWidth}px` } as CSSProperties
+    : undefined;
+
+  function startResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const layout = event.currentTarget.parentElement;
+    if (!layout) return;
+    const startX = event.clientX;
+    const startW = panelWidthRef.current;
+    const max = Math.max(300, Math.round(layout.clientWidth * 0.72));
+    const move = (ev: PointerEvent) => {
+      const next = Math.round(Math.min(max, Math.max(300, startW + startX - ev.clientX)));
+      panelWidthRef.current = next;
+      setPanelWidth(next);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      localStorage.setItem("partnerdesk.panelWidth", String(panelWidthRef.current));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  }
 
   return (
-    <div className={`chat-layout${showPanel ? " with-result" : ""}`}>
+    <div className={`chat-layout${showPanel ? " with-result" : ""}`} style={layoutStyle}>
       <section className="thread-col">
         <header className="page-head">
           <h1>{partnership.brand_name} · {partnership.distributor_name}</h1>
-          <p>ships to {partnership.ship_to_country || "—"} {snap?.route && <span className="route">{snap.route}</span>}</p>
+          <p>
+            {desk.user ? `${desk.user.name} · ` : ""}
+            ships to {partnership.ship_to_country || "—"}
+            {snap?.route && <span className="route">{snap.route}</span>}
+          </p>
         </header>
         {(bootError || flight.error) && <div className="error">{bootError || flight.error}</div>}
         <div className="thread" ref={threadRef}>
@@ -745,18 +762,24 @@ function ChatDesk() {
         </form>
       </section>
       {showPanel && (
+        <div
+          className="result-resize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整侧栏宽度"
+          onPointerDown={startResize}
+        />
+      )}
+      {showPanel && (
         <aside className="result-float">
           <div className="result-bar">
-            <h2>{panelTitle}</h2>
+            <Tabs labels={panes.map((pane) => pane.label)} value={activePane?.label ?? ""} onChange={(label) => {
+              const pane = panes.find((item) => item.label === label);
+              if (pane) setPicked(pane.id);
+            }} />
             <button type="button" className="result-close" aria-label="关闭" onClick={() => setPanelOpen(false)}>×</button>
           </div>
           <div className="panel">
-            {panes.length > 1 && (
-              <Tabs labels={panes.map((pane) => pane.label)} value={activePane?.label ?? ""} onChange={(label) => {
-                const pane = panes.find((item) => item.label === label);
-                if (pane) setPicked(pane.id);
-              }} />
-            )}
             {activePane?.kind === "order" && (
               activePane.pending
                 ? <p className="muted">正在整理采购单…</p>
@@ -775,19 +798,8 @@ function ChatDesk() {
                         </div>
                       </div>
                     ))}
-                    <h2>Progress</h2>
-                    <ul className="steps">
-                      {(snap?.steps?.length ? snap.steps : [
-                        { title: "Understand request", status: "pending" },
-                        { title: "Check inputs", status: "pending" },
-                        { title: "Confirm draft", status: "pending" },
-                        { title: "Create & submit order", status: "pending" },
-                      ]).map((step) => (
-                        <li key={step.title}>{STEP_MARK[step.status] ?? "·"} {step.title}</li>
-                      ))}
-                    </ul>
                     {snap?.stage === "confirm" && snap.confirmToken && (
-                      <button className="btn-primary" type="button" disabled={!ready || flight.busy} onClick={() => void confirm()}>
+                      <button className="btn-primary" type="button" disabled={flight.busy} onClick={() => void confirm()}>
                         Confirm — place the order
                       </button>
                     )}
@@ -804,7 +816,7 @@ function ChatDesk() {
                   <ReportEditor
                     paneId={activePane.id}
                     text={activePane.text}
-                    title={artifactTurn?.reportTitle || reportHeading(activePane.text)}
+                    title={reportTitle}
                     charts={activePane.charts}
                     notes={reportNotes}
                     saved={Boolean(artifactTurn?.reportId)}
@@ -979,7 +991,7 @@ function ReportEditor({
   return (
     <div className="result-doc">
       <label className="field">Title
-        <input value={title} disabled={busy} onChange={(event) => onTitle(event.target.value)} />
+        <input value={title} placeholder="报告标题" disabled={busy} onChange={(event) => onTitle(event.target.value)} />
       </label>
       <div className="actions">
         <button className="btn" type="button" onClick={() => setEditing((on) => !on)}>{editing ? "Preview" : "Edit"}</button>

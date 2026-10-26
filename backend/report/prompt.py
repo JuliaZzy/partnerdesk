@@ -126,11 +126,12 @@ REPORT_QUESTIONS_PROMPT = """## 角色
 9. 采购、销售、合同、金额、数量不要写进 searches。
 
 ## 输出
-返回 JSON。sections 按大纲顺序各出现一次。questions 和 searches 都是字符串数组。
+返回 JSON。title 是这份报告的标题，只根据用户要求来起，例如「8月月报」「2026年三季度报告」。不要用「关键指标」「摘要」这类章节名。不超过 20 个字。sections 按大纲顺序各出现一次。questions 和 searches 都是字符串数组。
 
 ## 示例
 示例只说明形状。问题按任务来写，不要照抄示例里的短句。
 {{
+  "title": "2026年8月 Activia 月报",
   "sections": [
     {{"id": "metrics", "questions": ["正在生效的合同的年度销售目标是多少？"], "searches": []}},
     {{"id": "summary", "questions": [], "searches": []}},
@@ -190,7 +191,8 @@ CODE_WIZARD_PROMPT = """## 角色
 - 当前章节：{section_title}
 - 这一节内容参考：{section_brief}
 - 这一节的问题参考：{questions}
-- text2sql 的全部输出：每一次成功查询的问题、行数和行。不限于这一节自己的问题。
+- text2sql 的全部输出：每一次成功查询的问题、列名、行数和行。不限于这一节自己的问题。
+- 这些查询会作为 datasets 传进 analyze。顺序就是成功顺序。datasets[0] 只是第一次成功查询，不是合并后的总表。各次查询的列名不同，需要的列在 columns 里。
 {query_results}
 
 ## 任务
@@ -252,13 +254,14 @@ df = df.dropna()
 ## 输出格式（严格JSON，code字段用\\n表示换行）
 {{
   "analysis_plan": "简要分析计划",
-  "code": "def analyze(datasets):\\n    rows = datasets[0]['rows']\\n    return [{{'title': '示例', 'detail': '按行算出的一句话', 'evidence': {{'n': len(rows)}}}}]"
+  "code": "def analyze(datasets):\\n    chosen = next((item for item in datasets if 'product_name' in item.get('columns', [])), None)\\n    rows = chosen['rows'] if chosen else []\\n    return [{{'title': '示例', 'detail': '按行算出的一句话', 'evidence': {{'n': len(rows)}}}}]"
 }}
 
 ## 特殊说明
 1. 数字必须是函数算出来的。不要把猜测写进 evidence。
 2. 不要读文件，不要访问网络，不要使用下划线开头的名字或属性。
 3. 行里有产品名称和 sku 时，洞察里写成「产品名称（SKU）」。不要只写 sku。
+4. 按列名选查询。示例里的 product_name 只演示选法：本章需要哪一列，就把那一列放进判断。不要默认只读 datasets[0]。一次查询里没有的列，不要拿另一次查询的别的列改名冒充。
 """
 
 
@@ -356,7 +359,7 @@ CHART_GENERATION_PROMPT = """## 角色
 ## 特殊说明
 1. 查询结果里没有的列和数字不要写进 echarts_option。
 2. 没有能画的对比或趋势时，charts 返回空数组。
-3. 分类轴、饼图扇区和图例使用查询结果里的产品名称和 SKU，写成「产品名称（SKU）」。不要只把 SKU 当作名字。
+3. 这是图表，不是报告正文。分类轴、饼图扇区和图例只写产品名称，不要写 SKU，也不要写成「产品名称（SKU）」。规格和剂量如果已经在产品名称里，照着留在名称上。
 4. 名称较长时，类目轴 axisLabel.rotate 设为 30，axisLabel.interval 设为 0，grid.containLabel 设为 true，并留出底部空间。
 """
 
@@ -395,7 +398,7 @@ WRITING_PROMPT = """## 角色
 1. 引用图表写成 [图表标题](chart_id)，单独占一行，放在讲到这张图的那段后面。不要把图留到别的章节或报告末尾。
 2. 引用网页写成 [链接文本](链接地址)。
 3. 缺数据就写缺了什么。洞察里已经算好的数字直接引用，不要重算，也不要用行业常识补一个数字。
-4. 产品不要只写 SKU。有名称就写成「产品名称（SKU）」。
+4. 正文里的产品写成「产品名称（SKU）」。图表轴上只有产品名称，正文不要为了跟图表一致而拿掉 SKU。
 """
 
 

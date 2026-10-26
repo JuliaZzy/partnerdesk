@@ -44,6 +44,7 @@ from ..schemas import (
     PurchaseOrder,
     ReportFact,
     SalesReport,
+    User,
 )
 from . import orm
 from .engine import make_engine, run_migrations
@@ -64,6 +65,20 @@ def _row_dict(row: Any) -> dict[str, Any]:
     out of every list and detail read that did not ask for it."""
     unloaded = inspect(row).unloaded
     return {c.key: getattr(row, c.key) for c in row.__table__.columns if c.key not in unloaded}
+
+
+def _history_ids(history: Any, key: str) -> list[str]:
+    """Distinct string ids stored on transcript messages, in first-seen order."""
+    found: list[str] = []
+    if not isinstance(history, list):
+        return found
+    for message in history:
+        if not isinstance(message, dict):
+            continue
+        value = message.get(key)
+        if isinstance(value, str) and value and value not in found:
+            found.append(value)
+    return found
 
 
 class Database:
@@ -103,6 +118,10 @@ class Database:
     def upsert_distributor(self, id: str, name: str, country: str | None = None) -> None:
         with self.tx() as s:
             self._upsert(s, orm.Distributor, id, {"id": id, "name": name, "country": country})
+
+    def upsert_user(self, id: str, distributor_id: str, name: str) -> None:
+        with self.tx() as s:
+            self._upsert(s, orm.User, id, {"id": id, "distributor_id": distributor_id, "name": name})
 
     def upsert_partnership(self, p: Partnership) -> None:
         """Creates the brand and distributor rows from the names on the model when they
@@ -179,6 +198,18 @@ class Database:
     def partnerships(self) -> list[Partnership]:
         with self.tx() as s:
             return [self._partnership(r) for r in s.scalars(select(orm.Partnership).order_by(orm.Partnership.id)).all()]
+
+    def user(self, id: str) -> User | None:
+        with self.tx() as s:
+            row = s.get(orm.User, id)
+            return User(id=row.id, distributor_id=row.distributor_id, name=row.name) if row else None
+
+    def users(self, distributor_id: str | None = None) -> list[User]:
+        with self.tx() as s:
+            q = select(orm.User).order_by(orm.User.name, orm.User.id)
+            if distributor_id:
+                q = q.where(orm.User.distributor_id == distributor_id)
+            return [User(id=r.id, distributor_id=r.distributor_id, name=r.name) for r in s.scalars(q).all()]
 
     def settings(self, brand_id: str) -> AgentSettings:
         with self.tx() as s:
@@ -407,11 +438,11 @@ class Database:
             return [_row_dict(r) for r in rows]
 
     # --- sessions ---------------------------------------------------------------------
-    def create_session(self, id: str, partnership_id: str) -> dict[str, Any]:
+    def create_session(self, id: str, partnership_id: str, user_id: str | None = None) -> dict[str, Any]:
         ts = utcnow()
         with self.tx() as s:
             s.add(orm.ChatSession(
-                id=id, partnership_id=partnership_id, title=None, tags=[], slots={}, history=[],
+                id=id, partnership_id=partnership_id, user_id=user_id, title=None, tags=[], slots={}, history=[],
                 created_at=ts, updated_at=ts,
             ))
         return self.session(id)  # type: ignore[return-value]
@@ -421,12 +452,17 @@ class Database:
             row = s.get(orm.ChatSession, id)
             return _row_dict(row) if row else None
 
-    def list_sessions(self, partnership_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        """A partnership's chats, most recently touched first (the sidebar's chat list)."""
+    def list_sessions(self, partnership_id: str, limit: int = 50, user_id: str | None = None) -> list[dict[str, Any]]:
+        """A partnership's chats, most recently touched first (the sidebar's chat list).
+
+        Pass `user_id` to see one person's chats. Omit it and every chat on the partnership comes back.
+        """
         with self.tx() as s:
+            q = select(orm.ChatSession).where(orm.ChatSession.partnership_id == partnership_id)
+            if user_id is not None:
+                q = q.where(orm.ChatSession.user_id == user_id)
             rows = s.scalars(
-                select(orm.ChatSession).where(orm.ChatSession.partnership_id == partnership_id)
-                .order_by(orm.ChatSession.updated_at.desc(), orm.ChatSession.created_at.desc()).limit(limit)
+                q.order_by(orm.ChatSession.updated_at.desc(), orm.ChatSession.created_at.desc()).limit(limit)
             ).all()
             return [_row_dict(r) for r in rows]
 
@@ -440,14 +476,47 @@ class Database:
             row.updated_at = utcnow()
 
     def delete_session(self, id: str) -> None:
-        """Remove the chat. A memory or query log that pointed here keeps its row and loses the link.
+        """Remove the chat. What it filed stays: the order, the agreement, the write-up.
 
-        The order it placed stays too: `po_id` points from the chat at the order, not the other way.
+        A memory or query log that pointed here keeps its row and loses the link.
+        The order stays because `po_id` points from the chat at the order, not the other way.
         """
         with self.tx() as s:
             row = s.get(orm.ChatSession, id)
             if row is None:
                 raise KeyError(f"session {id} not found")
+            s.delete(row)
+
+    def purge_session(self, id: str) -> None:
+        """Remove the chat and the records it filed.
+
+        That is the order on `po_id`, agreements named in the transcript, and write-ups
+        tied to this chat. Rules derived from those agreements go with them. A memory or
+        query log keeps its row and loses the link. Another chat's records stay.
+        """
+        with self.tx() as s:
+            row = s.get(orm.ChatSession, id)
+            if row is None:
+                raise KeyError(f"session {id} not found")
+            po_id = row.po_id
+            contract_ids = _history_ids(row.history, "contract_id")
+            reports = s.scalars(select(orm.NarrativeReport).where(orm.NarrativeReport.session_id == id))
+            for report in reports:
+                s.delete(report)
+            if contract_ids:
+                rules = s.scalars(select(orm.CommercialRule).where(orm.CommercialRule.contract_id.in_(contract_ids)))
+                for rule in rules:
+                    s.delete(rule)
+                contracts = s.scalars(select(orm.Contract).where(orm.Contract.id.in_(contract_ids)))
+                for contract in contracts:
+                    s.delete(contract)
+            # The chat points at the order. Clear that before the order row goes.
+            if po_id:
+                row.po_id = None
+                s.flush()
+                po = s.get(orm.PurchaseOrder, po_id)
+                if po is not None:
+                    s.delete(po)
             s.delete(row)
 
     def burn_confirm_token(self, token: str) -> str | None:
@@ -695,9 +764,12 @@ class Database:
             s.flush()
             return row.id
 
-    def memories(self, partnership_id: str, *, active_only: bool = True) -> list[Memory]:
+    def memories(self, partnership_id: str, *, active_only: bool = True, user_id: str | None = None) -> list[Memory]:
+        """Standing notes for a partnership. `user_id` keeps them to one person."""
         with self.tx() as s:
             q = select(orm.Memory).where(orm.Memory.partnership_id == partnership_id)
+            if user_id is not None:
+                q = q.where(orm.Memory.user_id == user_id)
             if active_only:
                 q = q.where(orm.Memory.is_active.is_(True))
             return [Memory(**_row_dict(r)) for r in s.scalars(q.order_by(orm.Memory.id.desc())).all()]

@@ -34,7 +34,7 @@ safe = {
     "enumerate": enumerate, "round": round, "sorted": sorted, "zip": zip,
     "map": map, "filter": filter, "list": list, "dict": dict, "set": set, "tuple": tuple,
     "str": str, "int": int, "float": float, "bool": bool, "isinstance": isinstance,
-    "any": any, "all": all, "reversed": reversed, "callable": callable,
+    "any": any, "all": all, "reversed": reversed, "callable": callable, "next": next,
 }
 namespace = {"datasets": data.get("datasets") or [], "insights": []}
 try:

@@ -22,7 +22,7 @@ from typing import Any
 from ..codefix import format_failures, with_reflection
 from ..db import Database, utcnow
 from ..llm import LLM
-from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
+from ..memory import actor_id, attach, prompt_context, prompt_turns, standing_block, summary_block
 from ..text2sql import QueryResult, answer_question
 from ..text2sql.table_metadata import catalog_text
 from ..tools.web_search import search
@@ -61,6 +61,7 @@ class ReportDraft:
     warnings: list[str]
     data_query: dict[str, Any] | None
     series: list[dict[str, Any]] = field(default_factory=list)
+    title: str = ""
 
 
 @dataclass
@@ -84,6 +85,7 @@ def plan_schema() -> dict[str, Any]:
         "schema": {
             "type": "object", "additionalProperties": False,
             "properties": {
+                "title": {"type": "string"},
                 "sections": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False,
                     "properties": {
@@ -94,7 +96,7 @@ def plan_schema() -> dict[str, Any]:
                     "required": ["id", "questions", "searches"],
                 }},
             },
-            "required": ["sections"],
+            "required": ["title", "sections"],
         },
     }
 
@@ -224,6 +226,13 @@ def parse_risk_plan(raw: Any) -> RiskPlan:
     )
 
 
+def parse_report_title(raw: Any) -> str:
+    """The document title from the plan. A missing or blank one stays empty."""
+    if not isinstance(raw, dict):
+        return ""
+    return " ".join(str(raw.get("title") or "").split())[:80]
+
+
 def parse_plan(raw: Any, *, today: date | None = None) -> list[SectionPlan]:
     """Keep the six sections. Questions are only the ones the model wrote.
 
@@ -274,9 +283,9 @@ def iter_draft(
     # Importing orchestrator.status at module level loads orchestrator.turn, which imports this module.
     from ..orchestrator.status import status
 
-    remembered = prompt_context(standing_block(db, partnership_id), summary_block(summary))
+    remembered = prompt_context(standing_block(db, partnership_id, actor_id(db, session_id)), summary_block(summary))
     yield status("report-plan", "规划", "正在按大纲安排每一节要查什么", state="running")
-    planned = _plan(
+    planned, report_title = _plan(
         llm, message=message, history=history, hint=hint, remembered=remembered, folded_through=folded_through,
     )
     question_count = len({question.casefold() for section in planned for question in section.questions})
@@ -436,13 +445,14 @@ def iter_draft(
         warnings=warnings,
         data_query=_mark(asked),
         series=series_payload(asked),
+        title=report_title,
     )
 
 
 def _plan(
     llm: LLM, *, message: str, history: list[dict[str, Any]], hint: str | None,
     remembered: str = "", folded_through: int = 0,
-) -> list[SectionPlan]:
+) -> tuple[list[SectionPlan], str]:
     recent = "\n".join(
         f"{turn['role']}: {str(turn.get('content') or '')[:500]}"
         for turn in prompt_turns(history, folded_through)
@@ -467,7 +477,7 @@ def _plan(
         )
     except Exception:
         raw = {}
-    return parse_plan(raw, today=utcnow().date())
+    return parse_plan(raw, today=utcnow().date()), parse_report_title(raw)
 
 
 def _fill_risks(planned: list[SectionPlan], questions: list[str], searches: list[str]) -> list[SectionPlan]:
@@ -716,13 +726,37 @@ def _query_results(asked: list[_Ask]) -> list[dict[str, Any]]:
     for item in asked:
         if not item.result.ok or not item.result.rows:
             continue
+        rows = item.result.rows[:50]
         results.append({
             "id": item.id,
             "question": item.question,
             "row_count": len(item.result.rows),
-            "rows": item.result.rows[:50],
+            "columns": _column_names(rows),
+            "rows": rows,
         })
     return results
+
+
+def _column_names(rows: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in row:
+            text = str(key)
+            if text not in names:
+                names.append(text)
+    return names
+
+
+def _dataset_catalog(query_results: list[dict[str, Any]]) -> str:
+    """Which columns each successful query actually has. The repair step reads this."""
+    lines = ["各次查询的列："]
+    for index, item in enumerate(query_results):
+        columns = item.get("columns") or _column_names(item.get("rows") or [])
+        question = str(item.get("question") or "")
+        lines.append(f"datasets[{index}] question={question} columns={columns}")
+    return "\n".join(lines)
 
 
 def _insights_for(section: SectionPlan, by_section: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -764,7 +798,7 @@ def _code_wizard(
     def run(snippet: str) -> tuple[bool, list[dict[str, Any]], str | None, str]:
         result = execute(str(snippet or ""), query_results)
         if result["error"]:
-            return False, [], result["error"], ""
+            return False, [], result["error"], _dataset_catalog(query_results)
         return True, result["insights"], None, ""
 
     insights, attempts = with_reflection(llm, kind="code", first=str(code or ""), run=run)

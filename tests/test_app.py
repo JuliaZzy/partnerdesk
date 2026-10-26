@@ -153,18 +153,91 @@ def test_empty_message_is_rejected(db):
     assert c.post(f"/api/sessions/{sid}/message", json={"message": "  "}).status_code == 400
 
 
-def test_delete_session_drops_the_chat_and_keeps_what_it_learned(db):
-    from backend.schemas import Memory
+def _po(id: str, number: str):
+    from backend.schemas import PurchaseOrder
+
+    return PurchaseOrder(
+        id=id, po_number=number, brand_id="brand-1", distributor_id="dist-1", partnership_id="ps-1",
+        status="submitted", currency="USD", payment_terms="net_30", incoterms="FOB", shipping_method="sea",
+        eta_date=None, ship_to_country="US", notes=None, discount_amount=None, discount_percentage=None,
+        subtotal_amount=1000, total_amount=1000,
+    )
+
+
+def _file_contract(db, title: str):
+    from backend.contract.ingest import ingest_extraction
+
+    return ingest_extraction(
+        db, {"minimum_order_quantities": [{"scope": "per_order", "quantity": 500, "currency": "USD"}]},
+        brand_id="brand-1", partnership_id="ps-1", title=title,
+    )
+
+
+def test_archive_session_drops_the_chat_and_keeps_its_records(db):
+    from backend.schemas import Memory, NarrativeReport
 
     c = TestClient(create_app(db=db, llm=FakeLLM()))
     sid = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
     keep = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
+    db.insert_po(_po("po-arch", "PO-ARCH"), [], [])
+    filed = _file_contract(db, "From this chat")
+    db.update_session(sid, po_id="po-arch", history=[{"role": "assistant", "contract_id": filed.contract.id}])
+    db.save_narrative_report(NarrativeReport(
+        id="nr-arch", brand_id="brand-1", partnership_id="ps-1", session_id=sid, title="August", body="Sold well.",
+    ))
     db.add_memory(Memory(
         partnership_id="ps-1", kind="fact", content="They ship on Tuesdays", source="chat", session_id=sid,
     ))
+
+    assert c.post(f"/api/sessions/{sid}/archive").status_code == 204
+    assert c.get(f"/api/sessions/{sid}").status_code == 404
+    assert [row["id"] for row in c.get("/api/sessions?partnership_id=ps-1").json()] == [keep]
+    assert db.po("po-arch") is not None
+    assert db.contract(filed.contract.id) is not None
+    assert db.narrative_report("nr-arch") is not None
+    left = db.memories("ps-1")
+    assert [(m.content, m.session_id) for m in left] == [("They ship on Tuesdays", None)]
+    assert c.post(f"/api/sessions/{sid}/archive").status_code == 404
+
+
+def test_delete_session_drops_the_chat_and_the_records_it_filed(db):
+    from backend.schemas import Memory, NarrativeReport
+
+    c = TestClient(create_app(db=db, llm=FakeLLM()))
+    sid = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
+    keep = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
+    db.insert_po(_po("po-gone", "PO-GONE"), [{
+        "product_id": "p-fo", "sku": "FO-100", "product_name": "Fish Oil",
+        "quantity": 10, "case_price": 100, "line_total": 1000, "case_pack": 12,
+    }], [])
+    db.insert_po(_po("po-keep", "PO-KEEP"), [], [])
+    db.add_po_event("po-gone", "submitted", {})
+    filed = _file_contract(db, "From this chat")
+    other = _file_contract(db, "From the other chat")
+    db.update_session(sid, po_id="po-gone", history=[{"role": "assistant", "contract_id": filed.contract.id}])
+    db.update_session(keep, po_id="po-keep", history=[{"role": "assistant", "contract_id": other.contract.id}])
+    db.save_narrative_report(NarrativeReport(
+        id="nr-gone", brand_id="brand-1", partnership_id="ps-1", session_id=sid, title="August", body="Sold well.",
+    ))
+    db.save_narrative_report(NarrativeReport(
+        id="nr-keep", brand_id="brand-1", partnership_id="ps-1", session_id=keep, title="Other", body="Stays.",
+    ))
+    db.add_memory(Memory(
+        partnership_id="ps-1", kind="fact", content="They ship on Tuesdays", source="chat", session_id=sid,
+    ))
+
     assert c.delete(f"/api/sessions/{sid}").status_code == 204
     assert c.get(f"/api/sessions/{sid}").status_code == 404
     assert [row["id"] for row in c.get("/api/sessions?partnership_id=ps-1").json()] == [keep]
+    assert db.po("po-gone") is None and db.po_items("po-gone") == []
+    assert db.po("po-keep") is not None
+    assert db.contract(filed.contract.id) is None
+    assert db.contract(other.contract.id) is not None
+    kept_rules = db.derived_rules(other.contract.id)
+    assert kept_rules and db.derived_rules(filed.contract.id) == []
+    assert len(db.rules("brand-1")) == len(kept_rules)
+    assert db.narrative_report("nr-gone") is None
+    assert db.narrative_report("nr-keep") is not None and db.narrative_report("nr-keep").session_id == keep
     left = db.memories("ps-1")
     assert [(m.content, m.session_id) for m in left] == [("They ship on Tuesdays", None)]
     assert c.delete(f"/api/sessions/{sid}").status_code == 404

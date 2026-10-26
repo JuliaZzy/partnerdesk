@@ -74,6 +74,22 @@ class Distributor(Base):
     updated_at: Mapped[datetime] = mapped_column(TimestampCol)
 
 
+class User(Base):
+    """A person at a distributor. The desk switches among these; there is no password.
+
+    Chats and memories belong to one person. Orders, contracts, and reports stay on the
+    partnership, so colleagues at the same distributor share them.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    distributor_id: Mapped[str] = mapped_column(ForeignKey("distributors.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(TimestampCol)
+    updated_at: Mapped[datetime] = mapped_column(TimestampCol)
+
+
 class Partnership(Base):
     __tablename__ = "partnerships"
     __table_args__ = (UniqueConstraint("brand_id", "distributor_id", name="uq_partnership_pair"),)
@@ -333,6 +349,8 @@ class ChatSession(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     partnership_id: Mapped[str] = mapped_column(ForeignKey("partnerships.id"), index=True)
+    # Null on chats opened before people existed. The desk always sets it.
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     title: Mapped[str | None] = mapped_column(String(120))
     tags: Mapped[list[str]] = mapped_column(JSONCol, default=list)
     specialist: Mapped[str | None] = mapped_column(String(32))
@@ -550,9 +568,9 @@ class NarrativeReport(Base):
 
 
 # --- long-term memory ----------------------------------------------------------------
-# What every agent should keep in mind about a partnership across conversations — a
-# standing preference, an instruction, a fact learned in chat. Read into each agent's
-# prompt; context only, it can never relax a rule or change a price.
+# What one person at a distributor wants the agent to keep in mind — a standing
+# preference, an instruction, a fact learned in chat. Colleagues do not share these.
+# Read into each agent's prompt; context only, it can never relax a rule or change a price.
 
 class Memory(Base):
     __tablename__ = "memories"
@@ -560,6 +578,7 @@ class Memory(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)  # insertion order = recall order
     partnership_id: Mapped[str] = mapped_column(ForeignKey("partnerships.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     kind: Mapped[str] = mapped_column(String(32))  # preference | fact | instruction | event
     content: Mapped[str] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String(16), default="user")  # user | chat | system

@@ -3,6 +3,7 @@
 目录是一行一个表（用来选表）。列的细节只发给这个问题需要的表，再加上不连上就读不了这些表的父表。
 
 不包含 `sessions`：里面有确认令牌、草稿槽位和聊天记录。
+不包含 `users`：谁在用工作台不是业务数据。
 不包含 `text2sql_logs`，这样查询不能读到或改写自己的审计。
 不包含 `narrative_reports`：那是确认后的叙述正文，不是可以相加的数字。动销仍在 `report_facts`。
 不包含 `brand_documents.file_bytes`；页面文本在 `brand_document_pages`。
@@ -15,9 +16,13 @@ from __future__ import annotations
 from typing import Any
 
 # Tables that exist in the database and must never be queried from here.
-EXCLUDED_TABLES = frozenset({"sessions", "text2sql_logs", "narrative_reports"})
+EXCLUDED_TABLES = frozenset({"sessions", "text2sql_logs", "narrative_reports", "users"})
 # Columns that exist on a queryable table but are not in its view.
-HIDDEN_COLUMNS = {"brand_documents": frozenset({"file_bytes"})}
+# `memories.user_id` is applied in the view, so one person's notes never appear for another.
+HIDDEN_COLUMNS = {
+    "brand_documents": frozenset({"file_bytes"}),
+    "memories": frozenset({"user_id"}),
+}
 
 MAX_TABLES = 8
 
@@ -528,8 +533,8 @@ TABLES: dict[str, dict[str, Any]] = {
         alias="t",
     ),
     "memories": _table(
-        "跨对话为这个合作关系留下的备注：偏好、事实、指示、事件。"
-        "只有 is_active 的行仍然有效。",
+        "这个人在这个合作关系下留下的备注：偏好、事实、指示、事件。"
+        "只有 is_active 的行仍然有效。同事的备注不在这里。",
         {
             "id": _col("integer", "主键。更大表示更新。"),
             "partnership_id": _col("text", "对应 partnerships.id。"),
@@ -542,7 +547,7 @@ TABLES: dict[str, dict[str, Any]] = {
             "created_at": _col("timestamptz", "存下的时间，UTC。"),
             "updated_at": _col("timestamptz", "最后一次修改的时间，UTC。"),
         },
-        where=_PARTNER,
+        where=f"{_PARTNER} AND (:user_id = 'all' OR user_id = :user_id)",
     ),
 }
 

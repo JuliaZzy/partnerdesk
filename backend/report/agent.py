@@ -43,4 +43,6 @@ def run(
         extra["web_notes"] = draft.web_notes
     if draft.data_query:
         extra["data_query"] = draft.data_query
+    if draft.title:
+        extra["report_title"] = draft.title
     yield save_reply(db, session, text, reply, extra, llm=llm)

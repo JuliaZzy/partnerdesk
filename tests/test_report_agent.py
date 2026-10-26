@@ -19,6 +19,7 @@ from backend.report.turn import (
     finish_report,
     fit_chart_axes,
     parse_plan,
+    parse_report_title,
     parse_risk_plan,
     place_charts_in_sections,
     shape_prose,
@@ -32,6 +33,13 @@ def test_cover_days_divides_stock_by_period_units():
         [{"sku": "FO-100", "units_sold": 30}, {"sku": "FO-200", "units_sold": 10}],
     ])
     assert notes == [{"sku": "FO-100", "stock": 90.0, "units": 30.0, "cover_days": 90.0}]
+
+
+def test_parse_report_title_keeps_what_the_plan_named():
+    assert parse_report_title({"title": " 8月月报 "}) == "8月月报"
+    assert parse_report_title({}) == ""
+    assert parse_report_title("8月月报") == ""
+    assert len(parse_report_title({"title": "月" * 100})) == 80
 
 
 def test_parse_plan_keeps_six_sections_and_drops_a_search_on_a_data_section():
@@ -101,6 +109,9 @@ def test_prompts_use_the_sectioned_shape_and_format_cleanly():
     ):
         assert "## 角色" in prompt and "## 输入定义" in prompt
     assert "问题与风险的 questions 和 searches 都是空数组" in REPORT_QUESTIONS_PROMPT
+    assert "8月月报" in REPORT_QUESTIONS_PROMPT
+    assert "不要写 SKU" in CHART_GENERATION_PROMPT
+    assert "产品名称（SKU）" in WRITING_PROMPT
     assert "要不要写" in RISK_PLAN_PROMPT
     planned = REPORT_QUESTIONS_PROMPT.format(
         outline=outline_text(), message="写一份报告", database_structure="- contracts: 协议",
@@ -121,6 +132,7 @@ def test_prompts_use_the_sectioned_shape_and_format_cleanly():
         query_results='[{"question": "期末库存", "rows": []}]',
     )
     assert "库存情况" in filled and "期末库存" in filled
+    assert "按列名选查询" in filled and "不要默认只读 datasets[0]" in filled
     assert "{section_title}" not in filled and "{query_results}" not in filled
     reviewed = REPORT_REVIEW_PROMPT.format(
         message="月报", outline="关键指标", report="正文", evidence="{}", previous_issues="（无）",
@@ -130,6 +142,50 @@ def test_prompts_use_the_sectioned_shape_and_format_cleanly():
         message="月报", report="正文", score=70, chapters="[]", issues="[]", evidence="{}",
     )
     assert "正文" in revised and "{issues}" not in revised
+
+
+def test_code_wizard_retries_against_the_query_that_has_the_column():
+    from backend.llm import FakeLLM
+    from backend.report.turn import SectionPlan, _code_wizard
+
+    section = SectionPlan(
+        id="performance", title="业绩表现", brief="畅销产品",
+        sql=True, chart=True, search=False, require_search=False,
+        questions=["各产品销售额"], searches=[],
+    )
+    datasets = [
+        {
+            "id": "q2", "question": "本期销售额", "row_count": 1,
+            "columns": ["reporting_period", "total_sales"],
+            "rows": [{"reporting_period": "2026-08", "total_sales": 2840.75}],
+        },
+        {
+            "id": "q3", "question": "各产品销售额", "row_count": 1,
+            "columns": ["sku", "product_name", "total_revenue"],
+            "rows": [{"sku": "DAI-1", "product_name": "Activia", "total_revenue": 1696.46}],
+        },
+    ]
+    bad = (
+        "def analyze(datasets):\n"
+        "    return [{'title': '畅销', 'detail': datasets[0]['rows'][0]['product_name'], 'evidence': {}}]"
+    )
+    good = (
+        "def analyze(datasets):\n"
+        "    chosen = next(item for item in datasets if 'product_name' in item.get('columns', []))\n"
+        "    row = chosen['rows'][0]\n"
+        "    return [{'title': '畅销', 'detail': row['product_name'] + '（' + row['sku'] + '）',"
+        " 'evidence': {'revenue': row['total_revenue']}}]"
+    )
+    llm = FakeLLM(json_replies=[{"code": bad}, {"fixed_code": good}])
+    insights, err, fails = _code_wizard(llm, section, datasets)
+    assert err is None and fails == []
+    assert insights[0]["detail"] == "Activia（DAI-1）"
+    assert insights[0]["evidence"] == {"revenue": 1696.46}
+    fix = llm.calls[1]["system"]
+    assert "KeyError" in fix
+    assert "datasets[0]" in fix and "total_sales" in fix
+    assert "datasets[1]" in fix and "product_name" in fix
+    assert "不要把别的列改名" in fix
 
 
 def test_insight_code_reads_the_rows_and_rejects_an_import():

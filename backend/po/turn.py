@@ -2,7 +2,7 @@
 
     合同折扣（代码）→ 抽取（模型）→ 合并 → 代码检查（代码，外加模型解析回退）→ 草稿 → 回复（模型，流式）
 
-回复以 `token` 事件流出；草稿表、缺口和流水账在最后的 `done` 事件里——界面根据代码渲染，绝不根据模型。
+回复以 `token` 事件流出；草稿表和缺口在最后的 `done` 事件里——界面根据代码渲染，绝不根据模型。
 
 确认是另一条确定性的路：没有模型，对着当前目录和规则重跑检查，草稿哈希必须等于签发令牌时的那个，
 并且令牌在创建订单之前烧掉。
@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import secrets
-import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -45,36 +44,17 @@ class Bundle:
     rules: list[CommercialRule]
 
 
-def load_bundle(db: Database, partnership_id: str) -> Bundle:
+def load_bundle(db: Database, partnership_id: str, user_id: str | None = None) -> Bundle:
     p = db.partnership(partnership_id)
     if not p:
         raise KeyError(f"partnership {partnership_id} not found")
     settings = db.settings(p.brand_id)
     # Long-term memory rides in the same context slot as the brand's standing context:
-    # awareness for the model, never an input to the code-check.
-    memories = recall(db, partnership_id)
+    # awareness for the model, never an input to the code-check. One person's notes only.
+    memories = recall(db, partnership_id, user_id=user_id)
     if memories:
         settings = settings.model_copy(update={"operating_context": with_memory(settings.operating_context, memories)})
     return Bundle(partnership=p, settings=settings, catalog=Catalog(db.products(p.brand_id)), rules=db.rules(p.brand_id))
-
-
-def build_ledger(stage: str) -> list[dict[str, Any]]:
-    """Big steps (1-2-3-4) with sub-steps, reflecting the resting state after this turn."""
-    sub2 = "current" if stage == "gathering" else "done"
-    return [
-        {"id": str(uuid.uuid4()), "title": "Understand request", "status": "done", "substeps": [
-            {"title": "Determine the values this order needs", "status": "done"},
-            {"title": "Fill in what you've provided", "status": "done"},
-            {"title": "Check what's still missing", "status": "done"},
-        ]},
-        {"id": str(uuid.uuid4()), "title": "Check inputs", "status": "working" if stage == "gathering" else "done", "substeps": [
-            {"title": "Minimum order quantities", "status": sub2},
-            {"title": "Commercial rules", "status": sub2},
-            {"title": "Pricing", "status": sub2},
-        ]},
-        {"id": str(uuid.uuid4()), "title": "Confirm draft", "status": "needs-you" if stage == "confirm" else "done" if stage == "submitted" else "pending"},
-        {"id": str(uuid.uuid4()), "title": "Create & submit order", "status": "done" if stage == "submitted" else "pending"},
-    ]
 
 
 def _check(bundle: Bundle, slots: PoSlots, llm: LLM | None) -> CheckResult:
@@ -196,7 +176,6 @@ def order_result(prepared: PoPrepared, bundle: Bundle, *, clear_po: bool = False
         "gaps": check.gap_messages,
         "gaps_detail": _gap_detail(check),
         "advisories": [rule.message for rule in check.advisory],
-        "steps": build_ledger(prepared.stage),
         "clear_po": clear_po,
     }
 
@@ -242,9 +221,9 @@ def run_po_turn(
         confirm_token=prepared.token, confirm_hash=prepared.draft_hash, confirm_expires_at=prepared.expires,
     )
     yield {
-        "type": "done", "stage": stage, "slots": slots.model_dump(), "draft": draft,
+        "type": "done", "stage": stage, "slots": slots.model_dump(), "draft": draft, "order": True,
         "gaps": check.gap_messages, "gaps_detail": _gap_detail(check),
-        "advisories": [r.message for r in check.advisory], "steps": build_ledger(stage),
+        "advisories": [r.message for r in check.advisory],
         "confirm_token": prepared.token, "submitted": None,
     }
 
@@ -279,5 +258,4 @@ def confirm_order(db: Database, bundle: Bundle, session: dict[str, Any], token: 
     return {
         "state": "submitted", "po_id": result.po_id, "po_number": result.po_number, "total": result.total,
         "currency": result.currency, "advisories": [r.message for r in result.advisory], "draft": draft,
-        "steps": build_ledger("submitted"),
     }
