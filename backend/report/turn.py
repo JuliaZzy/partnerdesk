@@ -21,7 +21,7 @@ from typing import Any
 
 from ..codefix import format_failures, with_reflection
 from ..db import Database, utcnow
-from ..llm import LLM
+from ..llm import calls as model_calls
 from ..memory import actor_id, attach, prompt_context, prompt_turns, standing_block, summary_block
 from ..text2sql import QueryResult, answer_question
 from ..text2sql.table_metadata import catalog_text
@@ -275,7 +275,7 @@ def parse_plan(raw: Any, *, today: date | None = None) -> list[SectionPlan]:
 
 
 def iter_draft(
-    db: Database, llm: LLM, *, message: str, history: list[dict[str, Any]],
+    db: Database, llm: Any, *, message: str, history: list[dict[str, Any]],
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     hint: str | None = None, search_fn: Any = None, folded_through: int = 0, summary: str = "",
 ) -> Iterator[dict[str, Any] | ReportDraft]:
@@ -450,7 +450,7 @@ def iter_draft(
 
 
 def _plan(
-    llm: LLM, *, message: str, history: list[dict[str, Any]], hint: str | None,
+    llm: Any, *, message: str, history: list[dict[str, Any]], hint: str | None,
     remembered: str = "", folded_through: int = 0,
 ) -> tuple[list[SectionPlan], str]:
     recent = "\n".join(
@@ -464,7 +464,8 @@ def _plan(
         f"=== 规划问题 ===\n{(hint or '').strip() or '（无）'}"
     )
     try:
-        raw = llm.complete_json(
+        raw = model_calls.school_json(
+            model_calls.SCHOOL_REASONER,
             system=attach(REPORT_QUESTIONS_PROMPT.format(
                 max_questions=MAX_SECTION_QUESTIONS,
                 max_searches=MAX_SECTION_SEARCHES,
@@ -473,7 +474,7 @@ def _plan(
                 outline=outline_text(),
             ), remembered),
             messages=[{"role": "user", "content": user}],
-            schema=plan_schema(), temperature=0.6, max_tokens=1500,
+            schema=plan_schema(), temperature=0,
         )
     except Exception:
         raw = {}
@@ -496,7 +497,7 @@ def _fill_risks(planned: list[SectionPlan], questions: list[str], searches: list
 
 
 def _plan_risks(
-    llm: LLM, *, message: str, history: list[dict[str, Any]], chapters: str, asked: list[str],
+    llm: Any, *, message: str, history: list[dict[str, Any]], chapters: str, asked: list[str],
     remembered: str = "", folded_through: int = 0,
 ) -> RiskPlan:
     """Decide risks only after the earlier chapters are written. A model failure skips the section."""
@@ -508,7 +509,8 @@ def _plan_risks(
         f"=== 已经问过数据库的问题 ===\n{json.dumps(asked, ensure_ascii=False)}"
     )})
     try:
-        raw = llm.complete_json(
+        raw = model_calls.school_json(
+            model_calls.SCHOOL_REASONER,
             system=attach(RISK_PLAN_PROMPT.format(
                 message=(message or "").strip()[:4000] or "（无文字）",
                 database_structure=catalog_text(),
@@ -516,7 +518,7 @@ def _plan_risks(
                 max_searches=MAX_SECTION_SEARCHES,
             ), remembered),
             messages=messages,
-            schema=risk_plan_schema(), temperature=0, max_tokens=800,
+            schema=risk_plan_schema(), temperature=0,
         )
     except Exception:
         return RiskPlan(False, [], [])
@@ -524,7 +526,7 @@ def _plan_risks(
 
 
 def _query_extra(
-    db: Database, llm: LLM, questions: list[str], *,
+    db: Database, llm: Any, questions: list[str], *,
     asked: list[_Ask], by_section: dict[str, list[_Ask]], section_id: str,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     history: list[dict[str, Any]], folded_through: int, summary: str,
@@ -565,7 +567,7 @@ def _search_more(queries: list[str], found: list[_Search], search_fn: Any) -> No
 
 
 def _query(
-    db: Database, llm: LLM, planned: list[SectionPlan], *,
+    db: Database, llm: Any, planned: list[SectionPlan], *,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     history: list[dict[str, Any]], folded_through: int, summary: str,
 ) -> tuple[list[_Ask], dict[str, list[_Ask]], list[str]]:
@@ -593,13 +595,13 @@ def _query(
 
 
 def _ask(
-    db: Database, llm: LLM, *, question: str, qid: str,
+    db: Database, llm: Any, *, question: str, qid: str,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     history: list[dict[str, Any]], folded_through: int, summary: str,
 ) -> tuple[_Ask, str]:
     """One planned question. Statement repair and the reflection score live in text2sql."""
     result = answer_question(
-        db, llm, question=question, partnership_id=partnership_id, brand_id=brand_id,
+        db, question=question, partnership_id=partnership_id, brand_id=brand_id,
         distributor_id=distributor_id, session_id=session_id, history=history,
         folded_through=folded_through, summary=summary,
     )
@@ -674,7 +676,7 @@ def _echarts_charts(specs: Any) -> list[dict[str, Any]]:
     return kept
 
 
-def _charts(llm: LLM, message: str, asked: list[_Ask]) -> tuple[list[dict[str, Any]], list[str]]:
+def _charts(llm: Any, message: str, asked: list[_Ask]) -> tuple[list[dict[str, Any]], list[str]]:
     query_results = []
     for item in asked:
         if not item.result.ok or not item.result.rows:
@@ -692,13 +694,13 @@ def _charts(llm: LLM, message: str, asked: list[_Ask]) -> tuple[list[dict[str, A
     if not query_results:
         return [], []
     try:
-        raw = llm.complete_json(
+        raw = model_calls.flash_json(
             system=CHART_GENERATION_PROMPT.format(
                 message=(message or "").strip()[:4000] or "（无文字）",
                 query_results=json.dumps(query_results, ensure_ascii=False),
             ),
             messages=[{"role": "user", "content": "按查询结果选择图表。"}],
-            schema=chart_schema(), temperature=0.2, max_tokens=4_000,
+            schema=chart_schema(), temperature=0,
         )
     except Exception as err:
         raw = {"error": str(err).split("\n", 1)[0][:300]}
@@ -775,13 +777,13 @@ def _insights_for(section: SectionPlan, by_section: dict[str, list[dict[str, Any
 
 
 def _code_wizard(
-    llm: LLM, section: SectionPlan, query_results: list[dict[str, Any]],
+    llm: Any, section: SectionPlan, query_results: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], str | None, list[str]]:
     """Ask for analyze(datasets) for one chapter. datasets is every successful query."""
     if not query_results:
         return [], None, []
     try:
-        raw = llm.complete_json(
+        raw = model_calls.flash_json(
             system=CODE_WIZARD_PROMPT.format(
                 section_title=section.title,
                 section_brief=section.brief,
@@ -789,7 +791,7 @@ def _code_wizard(
                 query_results=json.dumps(query_results, ensure_ascii=False, default=str),
             ),
             messages=[{"role": "user", "content": "只为当前章节写 analyze(datasets)。"}],
-            schema=code_wizard_schema(), temperature=0.2, max_tokens=1_500,
+            schema=code_wizard_schema(), temperature=0,
         )
     except Exception as err:
         return [], str(err).split("\n", 1)[0][:200], []
@@ -858,7 +860,7 @@ def _read_section(raw: Any) -> tuple[str, list[str]]:
 
 
 def _write_section(
-    llm: LLM, message: str, history: list[dict[str, Any]], section: SectionPlan,
+    llm: Any, message: str, history: list[dict[str, Any]], section: SectionPlan,
     asked: list[_Ask], found: list[_Search], charts: list[dict[str, Any]], insights: list[dict[str, Any]],
     *, remembered: str = "", folded_through: int = 0, prior: str = "",
 ) -> tuple[str, list[str]]:
@@ -868,14 +870,15 @@ def _write_section(
         "content": _section_payload(section, asked, found, charts, insights, prior),
     })
     try:
-        raw = llm.complete_json(
+        raw = model_calls.school_json(
+            model_calls.SCHOOL_REASONER,
             system=attach(WRITING_PROMPT.format(
                 message=(message or "").strip()[:4000] or _FALLBACK,
                 section_title=section.title,
                 section_brief=section.brief,
             ), remembered),
             messages=messages,
-            schema=section_schema(), temperature=0.8, max_tokens=2000,
+            schema=section_schema(), temperature=0,
         )
     except Exception:
         return "", []
@@ -883,18 +886,19 @@ def _write_section(
 
 
 def _write_summary(
-    llm: LLM, message: str, history: list[dict[str, Any]], body: str,
+    llm: Any, message: str, history: list[dict[str, Any]], body: str,
     *, remembered: str = "", folded_through: int = 0,
 ) -> tuple[str, list[str]]:
     messages = _history(history, folded_through)
     messages.append({"role": "user", "content": f"=== 已写章节 ===\n{body}"})
     try:
-        raw = llm.complete_json(
+        raw = model_calls.school_json(
+            model_calls.SCHOOL_REASONER,
             system=attach(SUMMARY_PROMPT.format(
                 message=(message or "").strip()[:4000] or _FALLBACK,
             ), remembered),
             messages=messages,
-            schema=section_schema(), temperature=0.2, max_tokens=1200,
+            schema=section_schema(), temperature=0,
         )
     except Exception:
         return "", []
@@ -1280,12 +1284,12 @@ def _review_score(raw: Any) -> tuple[int | None, list[dict[str, int | str]]]:
 
 
 def _review_report(
-    llm: LLM, *, message: str, report: str, evidence: str, previous_issues: str = "（无）",
+    llm: Any, *, message: str, report: str, evidence: str, previous_issues: str = "（无）",
     remembered: str = "",
 ) -> tuple[int | None, list[dict[str, str]], list[dict[str, int | str]], str | None]:
     """Score the current draft from five chapter marks. Later rounds check the last issues."""
     try:
-        raw = llm.complete_json(
+        raw = model_calls.flash_json(
             system=attach(REPORT_REVIEW_PROMPT.format(
                 message=(message or "").strip()[:4000] or _FALLBACK,
                 outline=outline_text(),
@@ -1294,7 +1298,7 @@ def _review_report(
                 previous_issues=previous_issues or "（无）",
             ), remembered),
             messages=[{"role": "user", "content": "找出问题并给这整份报告打分。"}],
-            schema=review_schema(), temperature=0, max_tokens=2_000,
+            schema=review_schema(), temperature=0,
         )
     except Exception as err:
         return None, [], [], str(err).split("\n", 1)[0][:200]
@@ -1305,7 +1309,7 @@ def _review_report(
 
 
 def _review_rounds(
-    llm: LLM, *, message: str, report: str, evidence: str, remembered: str = "",
+    llm: Any, *, message: str, report: str, evidence: str, remembered: str = "",
 ) -> tuple[str, int | None, str | None]:
     """Score, revise when below 85, and score the revision. At most three revisions."""
     score: int | None = None
@@ -1340,12 +1344,12 @@ def _review_rounds(
 
 
 def _revise_report(
-    llm: LLM, *, message: str, report: str, score: int, chapters: list[dict[str, int | str]],
+    llm: Any, *, message: str, report: str, score: int, chapters: list[dict[str, int | str]],
     issues: list[dict[str, str]], evidence: str, remembered: str = "",
 ) -> str:
     """One rewrite of the whole draft from the review. Empty means keep the original."""
     try:
-        raw = llm.complete_json(
+        raw = model_calls.flash_json(
             system=attach(REPORT_REVISE_PROMPT.format(
                 message=(message or "").strip()[:4000] or _FALLBACK,
                 report=report[:12000],
@@ -1355,7 +1359,7 @@ def _revise_report(
                 evidence=evidence[:12000],
             ), remembered),
             messages=[{"role": "user", "content": "按审核意见修改整份报告。"}],
-            schema=revise_schema(), temperature=0.2, max_tokens=4000,
+            schema=revise_schema(), temperature=0,
         )
     except Exception:
         return ""

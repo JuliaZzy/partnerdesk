@@ -346,6 +346,19 @@ tr:last-child td { border-bottom: 0; }
 .bubble img { max-width: 160px; border-radius: 8px; display: block; margin-top: 8px; }
 .composer { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .composer textarea { width: 100%; min-height: 72px; resize: vertical; }
+.btn-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--ink);
+  border-radius: 10px;
+  background: var(--ink);
+  color: white;
+}
+.btn-stop:hover { background: #000; border-color: #000; }
 .result-float {
   position: absolute;
   top: 0;

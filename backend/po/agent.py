@@ -9,7 +9,6 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from ..db import Database
-from ..llm import LLM
 from ..orchestrator.speak import one_shot
 from ..orchestrator.status import status
 from .claims import handle_post_submit
@@ -17,7 +16,7 @@ from .turn import Bundle, order_result, prepare_order, run_po_turn
 
 
 def run(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, images: list[str], bundle: Bundle,
+    db: Database, llm: Any, session: dict[str, Any], text: str, images: list[str], bundle: Bundle,
 ) -> Iterator[dict[str, Any]]:
     session_id = session["id"]
     if session.get("stage") == "submitted" and session.get("po_id"):
@@ -43,7 +42,7 @@ def run(
 
 
 def collect_order(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, images: list[str], bundle: Bundle,
+    db: Database, llm: Any, session: dict[str, Any], text: str, images: list[str], bundle: Bundle,
     emit: Callable[[dict[str, Any]], None],
 ) -> dict[str, Any]:
     """Draft the order, or record a receipt, without writing the chat transcript.

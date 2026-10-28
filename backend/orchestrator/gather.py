@@ -21,7 +21,6 @@ from ..brand_knowledge.answer import _search_query, _with_sources
 from ..brand_knowledge.rag import RagUnavailable, retrieve
 from ..contract.turn import file_contract
 from ..db import Database
-from ..llm import LLM
 from ..memory import prompt_context, standing_block, summary_block
 from ..po.agent import collect_order
 from ..po.turn import Bundle
@@ -53,7 +52,7 @@ def scheduled(tasks: list[Any]) -> list[Any]:
 
 
 def fan_out(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, *,
+    db: Database, llm: Any, session: dict[str, Any], text: str, *,
     images: list[str], documents: list[tuple[str, bytes]], bundle: Bundle,
     tasks: list[Any], work: list[Any],
 ) -> Iterator[dict[str, Any]]:
@@ -225,7 +224,7 @@ def _report_hint(task: Any, tasks: list[Any]) -> str | None:
 
 
 def _execute(
-    task: Any, *, db: Database, llm: LLM, session: dict[str, Any], text: str,
+    task: Any, *, db: Database, llm: Any, session: dict[str, Any], text: str,
     images: list[str], documents: list[tuple[str, bytes]], bundle: Bundle,
     tasks: list[Any], emit: Emit, prior: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -235,7 +234,7 @@ def _execute(
     if name == "po":
         return collect_order(db, llm, session, text, images, bundle, emit)
     if name == "contract":
-        filed = file_contract(db, llm, session, documents)
+        filed = file_contract(db, session, documents)
         return {
             "status": filed.get("status"), "table": filed.get("table"),
             "pending": filed.get("pending"), "error": filed.get("error"),
@@ -250,7 +249,7 @@ def _execute(
 
 
 def _tool(
-    task: Any, llm: LLM, session: dict[str, Any], emit: Emit, prior: list[dict[str, Any]],
+    task: Any, llm: Any, session: dict[str, Any], emit: Emit, prior: list[dict[str, Any]],
 ) -> dict[str, Any]:
     del emit
     fn = all_tools().get(task.name)
@@ -329,7 +328,7 @@ def _upstream_text(prior: list[dict[str, Any]]) -> str:
 
 
 def _report(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, bundle: Bundle,
+    db: Database, llm: Any, session: dict[str, Any], text: str, bundle: Bundle,
     hint: str | None, emit: Emit,
 ) -> dict[str, Any]:
     draft: ReportDraft | None = None
@@ -358,11 +357,11 @@ def _report(
 
 
 def _data(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, bundle: Bundle, question: str, emit: Emit,
+    db: Database, llm: Any, session: dict[str, Any], text: str, bundle: Bundle, question: str, emit: Emit,
 ) -> dict[str, Any]:
     partnership = bundle.partnership
     result = answer_question(
-        db, llm, question=question, partnership_id=partnership.id, brand_id=partnership.brand_id,
+        db, question=question, partnership_id=partnership.id, brand_id=partnership.brand_id,
         distributor_id=partnership.distributor_id, session_id=session["id"],
         history=list(session.get("history") or []),
         folded_through=int(session.get("folded_through") or 0), summary=str(session.get("summary") or ""),
@@ -376,7 +375,7 @@ def _data(
 
 
 def _brand(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, brand_id: str, emit: Emit,
+    db: Database, llm: Any, session: dict[str, Any], text: str, brand_id: str, emit: Emit,
 ) -> dict[str, Any]:
     folded = int(session.get("folded_through") or 0)
     remembered = prompt_context(

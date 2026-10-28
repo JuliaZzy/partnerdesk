@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from typing import Any
 
-from ..llm import LLM
+from ..llm import calls as model_calls
 from ..memory import prompt_turns
 from .extract import context_block
 from .prompt import REPLY, fill
@@ -102,7 +103,7 @@ def build_reply_prompt(i: ReplyInput) -> str:
     return "\n".join(line for line in text.splitlines() if line)
 
 
-def stream_reply(llm: LLM, i: ReplyInput) -> Iterator[str]:
+def stream_reply(llm: Any, i: ReplyInput) -> Iterator[str]:
     # The user turn is required, not decorative: with a system-only array a local Llama
     # chat template completes the missing turn itself and emits a literal "assistant\n\n"
     # as the first tokens of the reply (3/3 on llama3.2:3b).
@@ -112,8 +113,6 @@ def stream_reply(llm: LLM, i: ReplyInput) -> Iterator[str]:
         if turn.get("role") in ("user", "assistant") and str(turn.get("content") or "").strip()
     ]
     prior.append({"role": "user", "content": i.user_message.strip() or "（他们发了一张没有说明的图片）"})
-    yield from llm.stream_text(
-        system=build_reply_prompt(i),
-        messages=prior,
-        temperature=0.7, max_tokens=450 if i.stage == "confirm" else 300,
+    yield from model_calls.school_text(
+        model_calls.SCHOOL_CHAT, system=build_reply_prompt(i), messages=prior,
     )

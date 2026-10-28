@@ -1,9 +1,9 @@
 """把一个自然语言问题变成这个合作关系表里的行。
 
-模型选表，然后写一条 SELECT。代码解析这条语句，在已经排除其他合作关系的视图上执行，并返回行。
-之后的聊天轮次可以引用这些行。它不重算它们。
+学校的 deepseek-chat 选表，官方 deepseek-flash（思考关闭）写一条 SELECT。代码解析这条语句，在已经排除其他合作关系的视图上执行，并返回行。
+行回来之后仍由学校的 deepseek-chat 打分。之后的聊天轮次引用这些行，它不重算它们。
 
-失败后的改写走 `codefix`：执行，按报错再改，最多三次。仍失败就把最后一次语句和报错交给人工。
+失败后的改写最多三次：同一套 SQL 规则和列说明，加上失败的语句和报错。仍失败就把最后一次语句和报错交给人工。图表和报表代码仍走 `codefix`。
 行回来之后打分，最多三次。80 分及以上就用这些行；低于 80 分可以换一个问题再查。
 审过的改正不会自己喂回提示词——一次改错会让下一个问题学会同一个错误。
 失败和改对的尝试记在 `text2sql_logs` 上，供 `analyze_badcase` 看。
@@ -19,13 +19,14 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from ..codefix import format_failures, with_reflection
+from ..codefix import format_failures
+from ..config import LLMSettings
 from ..db import Database, utcnow
-from ..llm import LLM
+from ..llm import DeepSeekClient, SJTUClient, parse_json_loose
 from ..memory import actor_id, attach, prompt_context, prompt_turns, standing_block, summary_block
 from .prompt import PICK, REFLECT, SQL
 from .sql_validator import validate
-from .table_metadata import TABLES, catalog_text, describe_tables, expand_tables, scope_views
+from .table_metadata import catalog_text, describe_tables, expand_tables, scope_views
 
 _MAX_QUESTION = 2_000
 _MAX_CELL = 400
@@ -33,6 +34,9 @@ _MAX_ROWS = 50
 # The reflect prompt states this same cutoff.
 REFLECT_PASS = 80
 MAX_REFLECTIONS = 3
+_SQL_ATTEMPTS = 3
+_FLASH = "deepseek-flash"
+_SCHOOL = "deepseek-chat"
 _FENCE = re.compile(r"^```(?:sql)?\s*([\s\S]*?)\s*```$", re.IGNORECASE)
 
 
@@ -50,17 +54,55 @@ class QueryResult:
     score: int | None = None
 
 
-def pick_schema() -> dict[str, Any]:
+def _ds_client() -> DeepSeekClient:
+    return DeepSeekClient(LLMSettings(base_url=None, api_key=""))
+
+
+def _school_client() -> SJTUClient:
+    return SJTUClient(LLMSettings(base_url=None, api_key=""))
+
+
+def _json_format(schema: dict[str, Any]) -> dict[str, Any]:
     return {
-        "name": "select_tables", "strict": True,
-        "schema": {
-            "type": "object", "additionalProperties": False,
-            "properties": {
-                "tables": {"type": "array", "items": {"type": "string", "enum": list(TABLES)}},
-            },
-            "required": ["tables"],
-        },
+        "format": {
+            "type": "json_schema",
+            "name": schema["name"],
+            "schema": schema["schema"],
+        }
     }
+
+
+def _ask_school(*, system: str, user: str) -> dict[str, Any]:
+    """Campus deepseek-chat. The gateway has no JSON schema; the reply text is the object."""
+    resp = _school_client().chat_completion(
+        _SCHOOL,
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0,
+    )
+    try:
+        text = resp["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError) as err:
+        raise ValueError("Campus model did not return a message.") from err
+    raw = parse_json_loose(text)
+    if not isinstance(raw, dict):
+        raise ValueError("Campus model did not return a JSON object.")
+    return raw
+
+
+def _ask_ds(*, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+    """One JSON object from deepseek-flash, thinking off."""
+    resp = _ds_client().response(
+        model=_FLASH,
+        instructions=system,
+        input=user,
+        text=_json_format(schema),
+        reasoning_effort="none",
+        temperature=0,
+    )
+    raw = parse_json_loose(resp.output_text)
+    if not isinstance(raw, dict):
+        raise ValueError("model did not return a JSON object")
+    return raw
 
 
 def sql_schema() -> dict[str, Any]:
@@ -102,13 +144,12 @@ def _rows_for_prompt(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: _jsonable(value) for key, value in row.items()} for row in rows[:_MAX_ROWS]]
 
 
-def _pick_tables(llm: LLM, question: str) -> list[str]:
-    raw = llm.complete_json(
+def _pick_tables(question: str) -> list[str]:
+    raw = _ask_school(
         system=f"{PICK}\n\n=== 表 ===\n{catalog_text()}",
-        messages=[{"role": "user", "content": question}],
-        schema=pick_schema(), temperature=0.2, max_tokens=1000,
+        user=question,
     )
-    names = raw.get("tables") if isinstance(raw, dict) else None
+    names = raw.get("tables")
     if not isinstance(names, list):
         return []
     return expand_tables([str(name) for name in names])
@@ -127,16 +168,54 @@ def _question_text(question: str, history: list[dict[str, Any]] | None, folded_t
 
 
 def _write_sql(
-    llm: LLM, question: str, schema_text: str, *,
+    question: str, schema_text: str, *,
     context: str = "", history: list[dict[str, Any]] | None = None, folded_through: int = 0,
 ) -> str:
     asked = _question_text(question, history, folded_through)
     system = attach(f"{SQL}\n\n=== 结构 ===\n{schema_text}", context)
-    raw = llm.complete_json(
-        system=system, messages=[{"role": "user", "content": asked}],
-        schema=sql_schema(), temperature=0.2, max_tokens=700,
-    )
+    raw = _ask_ds(system=system, user=asked, schema=sql_schema())
     return _strip_fence(str(raw.get("sql") or ""))
+
+
+def _revise_sql(*, schema_text: str, statement: str, error: str) -> str:
+    """Rewrite one failed SELECT against the same column schema and SQL rules."""
+    system = (
+        f"{SQL}\n\n=== 结构 ===\n{schema_text}\n\n"
+        "上一版 SELECT 没有跑通。按报错改这一条，不要改成另一个问题，也不要退回已经失败的那一版。"
+        "报错里没指出的数字不要新编。"
+    )
+    user = json.dumps({"failed_sql": statement, "error": error or "（无）"}, ensure_ascii=False)
+    try:
+        raw = _ask_ds(system=system, user=user, schema=sql_schema())
+    except Exception:
+        return ""
+    return _strip_fence(str(raw.get("sql") or ""))
+
+
+def _retry_sql(
+    *, schema_text: str, first: str,
+    run: Any,
+) -> tuple[Any, list[dict[str, str]]]:
+    """Run the statement. On failure, rewrite and run again, at most three runs."""
+    current = first
+    attempts: list[dict[str, str]] = []
+    for index in range(_SQL_ATTEMPTS):
+        ok, value, error, output = run(current)
+        attempts.append({
+            "kind": "sql",
+            "artifact": current,
+            "error": error or "",
+            "output": output or "",
+        })
+        if ok:
+            return value, []
+        if index == _SQL_ATTEMPTS - 1:
+            break
+        revised = _revise_sql(schema_text=schema_text, statement=current, error=error or "")
+        if not revised:
+            break
+        current = revised
+    return None, attempts
 
 
 def _run(db: Database, sql: str, params: dict[str, str]) -> tuple[bool, str | None, str, list[dict[str, Any]] | None]:
@@ -151,35 +230,21 @@ def _run(db: Database, sql: str, params: dict[str, str]) -> tuple[bool, str | No
     return True, None, clean, rows
 
 
-def reflect_schema() -> dict[str, Any]:
-    return {
-        "name": "data_reflect", "strict": True,
-        "schema": {
-            "type": "object", "additionalProperties": False,
-            "properties": {
-                "score": {"type": "integer"},
-                "retry_question": {"type": "string"},
-            },
-            "required": ["score", "retry_question"],
-        },
-    }
-
-
 def answer_question(
-    db: Database, llm: LLM, *, question: str,
+    db: Database, *, question: str,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str | None = None,
     reflect: bool = True, history: list[dict[str, Any]] | None = None,
     folded_through: int = 0, summary: str = "",
 ) -> QueryResult:
     """Pick tables, generate one SELECT, run it, and log the attempt.
 
-    A failed statement is revised by codefix, up to three runs. When the rows come
-    back, up to three reflections score how well they answer. A score of 80 or more
-    keeps them. Below that, the reflection may ask a different question and run again.
-    A reflection error keeps the latest rows that did run.
+    A failed statement is rewritten against the same schema, up to three runs. When the
+    rows come back, up to three reflections score how well they answer. A score of 80
+    or more keeps them. Below that, the reflection may ask a different question and run
+    again. A reflection error keeps the latest rows that did run.
     """
     result = _attempt(
-        db, llm, question=question, partnership_id=partnership_id, brand_id=brand_id,
+        db, question=question, partnership_id=partnership_id, brand_id=brand_id,
         distributor_id=distributor_id, session_id=session_id, history=history,
         folded_through=folded_through, summary=summary,
     )
@@ -190,7 +255,7 @@ def answer_question(
     asked = question
     for turn in range(MAX_REFLECTIONS):
         try:
-            score, retry = _reflect(llm, asked, result)
+            score, retry = _reflect(asked, result)
         except Exception:
             return result
         result.score = score
@@ -202,7 +267,7 @@ def answer_question(
         ):
             return chosen
         nxt = _attempt(
-            db, llm, question=retry, partnership_id=partnership_id, brand_id=brand_id,
+            db, question=retry, partnership_id=partnership_id, brand_id=brand_id,
             distributor_id=distributor_id, session_id=session_id, history=history,
             folded_through=folded_through, summary=summary,
         )
@@ -214,13 +279,14 @@ def answer_question(
 
 
 def _attempt(
-    db: Database, llm: LLM, *, question: str,
+    db: Database, *, question: str,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str | None,
     history: list[dict[str, Any]] | None = None, folded_through: int = 0, summary: str = "",
 ) -> QueryResult:
     started = time.perf_counter()
     question = (question or "").strip()[:_MAX_QUESTION]
     tables: list[str] = []
+    schema_text = ""
     sql: str | None = None
     ok = False
     error: str | None = None
@@ -231,7 +297,7 @@ def _attempt(
         if not question:
             ok, error, error_type = False, "empty question", "generation"
         else:
-            tables = _pick_tables(llm, question)
+            tables = _pick_tables(question)
             if not tables:
                 ok, error, error_type = False, "no relevant tables", "generation"
             else:
@@ -239,7 +305,7 @@ def _attempt(
                 person = actor_id(db, session_id)
                 context = prompt_context(standing_block(db, partnership_id, person), summary_block(summary))
                 sql = _write_sql(
-                    llm, question, schema_text, context=context, history=history, folded_through=folded_through,
+                    question, schema_text, context=context, history=history, folded_through=folded_through,
                 )
                 ok, error, sql, raw_rows = _run(
                     db, sql, _scope_params(partnership_id, brand_id, distributor_id, person),
@@ -279,7 +345,7 @@ def _attempt(
 
     seen = {"done": False}
     last = {"result": result}
-    value, attempts = with_reflection(llm, kind="sql", first=sql or "", run=run)
+    value, attempts = _retry_sql(schema_text=schema_text, first=sql or "", run=run)
     chosen = value if isinstance(value, QueryResult) else last["result"]
     if attempts:
         chosen.handoff = format_failures(attempts)
@@ -310,16 +376,15 @@ def run_statement(
     )
 
 
-def _reflect(llm: LLM, question: str, result: QueryResult) -> tuple[int, str]:
-    raw = llm.complete_json(
+def _reflect(question: str, result: QueryResult) -> tuple[int, str]:
+    raw = _ask_school(
         system=REFLECT,
-        messages=[{"role": "user", "content": json.dumps({
+        user=json.dumps({
             "question": question,
             "tables": result.tables,
             "row_count": result.row_count,
             "rows": result.rows[:20],
-        }, ensure_ascii=False)}],
-        schema=reflect_schema(), temperature=0, max_tokens=300,
+        }, ensure_ascii=False),
     )
     retry = str(raw.get("retry_question") or "").strip()[:_MAX_QUESTION]
     return _clamp_score(raw.get("score")), retry

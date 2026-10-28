@@ -22,7 +22,7 @@
 ## 目录结构
 
 ```
-compose.yaml / Dockerfile / frontend/Dockerfile   Docker Compose：Postgres + Redis + Milvus + API + Vite
+compose.yaml / Dockerfile / frontend/Dockerfile   Docker Compose：Postgres + Redis + Milvus + API + Celery worker + Vite
 dev / dev.bat      所有命令的入口（容器里跑，不在宿主机起服务）
 backend/
   orchestrator/    Orchestrator：开场、要一份计划、按名字调用；registry.json 在这里
@@ -67,6 +67,8 @@ backend/
   router/          HTTP 路由：会话、目录、合同、报表、记忆、订单
   service.py       业务操作，不依赖传输层：handle_message（转发 orchestrator）/ confirm / orders
   app.py           组装入口：create_app 注入数据库和模型，挂上 router
+  worker.py        Celery 应用。broker 是 Redis 1 号库，结果在 2 号库；0 号库仍是会话锁、并行结果、汇率
+  tasks.py         交给 worker 的任务。`partnerdesk.ping` 用来确认 worker 在听
 frontend/               桌面（Vite + React + TypeScript）：聊天 / 产品 / 订单 / 合同 / 报表 / 记忆，只调上面的 HTTP
 scripts/           fetch_off_products.py 拉 Open Food Facts 快照到 data/off/；build_catalog.py（dev catalog）把它导入产品目录
 data/              大数据集（Open Food Facts 快照），gitignore，不进仓库
@@ -150,6 +152,8 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 
 Postgres、Redis、Milvus 只在 Compose 网络里，不往本机暴露端口。镜像已经 build 过的话，`./dev` 只是起容器。Milvus 第一次要拉一个比较大的镜像，起来也比 Postgres 慢。
 
+Celery worker 和 API 用同一份镜像，`./dev` 和 `./dev api` 都会把它拉起来。broker 是 Redis 的 1 号库，任务结果在 2 号库；0 号库仍是会话锁、并行结果和汇率缓存。任务在进程启动时导入，改了 `backend/tasks.py` 之后 `docker compose restart worker`（源码是挂载进去的，不用重新 build）。依赖变了才要 `./dev build`。
+
 产品目录可选（约半小时拉数据 + 几分钟入库）：
 
 ```
@@ -160,7 +164,7 @@ Postgres、Redis、Milvus 只在 Compose 网络里，不往本机暴露端口。
 其它命令（Windows 用 `dev.bat`）：
 
 ```
-./dev api        只起 API + Postgres + Redis + Milvus     http://127.0.0.1:8000/docs
+./dev api        只起 API + Celery worker + Postgres + Redis + Milvus     http://127.0.0.1:8000/docs
 ./dev db         只起 Postgres
 ./dev catalog    导入产品目录（data/off/ 快照；--dry-run 只统计不写库）
 ./dev test       pytest（假模型，真 Postgres）

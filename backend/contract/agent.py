@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from ..db import Database
-from ..llm import LLM
+from ..llm import GLMOCRClient
 from ..orchestrator.speak import answer_directly
 from ..orchestrator.status import status
 from .turn import file_contract
@@ -32,11 +32,11 @@ def _prompt(text: str, filed: dict[str, Any]) -> str:
 
 
 def run(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, documents: list[tuple[str, bytes]],
+    db: Database, llm: GLMOCRClient, session: dict[str, Any], text: str, documents: list[tuple[str, bytes]],
 ) -> Iterator[dict[str, Any]]:
     db.update_session(session["id"], specialist="contract")
     yield status("contract-read", "读合同", "正在抽取条款", state="running")
-    filed = file_contract(db, llm, session, documents)
+    filed = file_contract(db, session, documents)
     yield status("contract-read", "读合同", _FILED.get(filed["status"], filed["status"]), state="done")
     yield {
         "type": "contract",

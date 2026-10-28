@@ -11,8 +11,9 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
-from ..llm import LLM
+from ..llm import calls as model_calls
 
 
 def build_resolver_prompt(references: list[str], products: list[dict[str, str]]) -> str:
@@ -40,15 +41,16 @@ def build_resolver_prompt(references: list[str], products: list[dict[str, str]])
 {{ {shape} }}"""
 
 
-def resolve_references(llm: LLM, references: list[str], products: list[dict[str, str]]) -> dict[str, list[str]]:
+def resolve_references(llm: Any, references: list[str], products: list[dict[str, str]]) -> dict[str, list[str]]:
     """reference (verbatim) → ordered candidate SKUs (may be empty). Raises on model
     failure — the caller leaves the reference unresolved."""
     if not references or not products:
         return {}
-    raw = llm.complete_json(
+    raw = model_calls.school_json(
+        model_calls.SCHOOL_CHAT,
         system=build_resolver_prompt(references, products),
         messages=[{"role": "user", "content": "请解析上面的说法。"}],
-        temperature=0, max_tokens=400,
+        temperature=0,
     )
     out: dict[str, list[str]] = {}
     for ref in references:

@@ -1,4 +1,4 @@
-"""Live ping against the campus catalog. Needs LLM_API_KEY and campus net / VPN.
+"""Live ping of the campus catalog. Needs the school key and campus net or VPN.
 
     ./dev py tests/ping_llm.py
     ./dev py tests/ping_llm.py --model qwen
@@ -9,37 +9,30 @@ from __future__ import annotations
 import argparse
 import sys
 
-from backend.config import chat_models
-from backend.llm import OpenAICompatLLM
-
-
-def ping(llm: OpenAICompatLLM) -> str:
-    return "".join(
-        llm.stream_text(
-            system="You are a helpful assistant.",
-            messages=[{"role": "user", "content": "Only reply with 'pong'."}],
-            temperature=0,
-            max_tokens=128,
-        )
-    )
+from backend.config import LLMSettings
+from backend.llm.client import SJTUClient
+from backend.llm_config import LLM_CONFIGS
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", help="one call name, or omit to ping every catalog model")
+    ap.add_argument("--model", help="one campus model id, or omit to ping every catalog row")
     args = ap.parse_args()
-
-    base = OpenAICompatLLM()
-    print("base_url:", base.settings.base_url)
-    print("key_set:", bool(base.settings.api_key) and base.settings.api_key != "ollama")
-
-    ids = [args.model] if args.model else [m.id for m in chat_models()]
+    client = SJTUClient(LLMSettings(base_url=None, api_key=""))
+    ids = [args.model] if args.model else [row.model for row in LLM_CONFIGS]
     failed = 0
     for model_id in ids:
-        llm = base.with_model(model_id)
-        print(f"\n=== {llm.settings.model} ===")
+        print(f"\n=== {model_id} ===")
         try:
-            text = ping(llm)
+            resp = client.chat_completion(
+                model_id,
+                [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Only reply with 'pong'."},
+                ],
+                temperature=0,
+            )
+            text = str(resp["choices"][0]["message"]["content"] or "")
             print("reply:", repr(text))
         except Exception as e:
             failed += 1

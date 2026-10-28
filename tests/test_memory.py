@@ -206,15 +206,22 @@ def test_the_next_prompt_keeps_the_summary_with_the_raw_tail(db):
     assert "keep-assistant" in contents and contents[-1] == "question 9"
 
 
-def test_sql_prompt_includes_standing_memory():
+def test_sql_prompt_includes_standing_memory(monkeypatch):
     from backend.text2sql.text2sql import _write_sql
 
-    llm = FakeLLM(json_replies=[{"sql": "SELECT 1"}])
-    _write_sql(llm, "how many orders", "purchase_orders(id)", context="[fact] fiscal year starts in April")
-    assert "fiscal year" in llm.calls[0]["system"]
-    bare = FakeLLM(json_replies=[{"sql": "SELECT 1"}])
-    _write_sql(bare, "how many orders", "purchase_orders(id)")
-    assert "fiscal year" not in bare.calls[0]["system"]
+    calls: list[dict] = []
+
+    class _DeepSeek:
+        def response(self, **kwargs):
+            calls.append(kwargs)
+            return type("Reply", (), {"output_text": '{"sql": "SELECT 1"}'})()
+
+    monkeypatch.setattr("backend.text2sql.text2sql.DeepSeekClient", lambda settings: _DeepSeek())
+    _write_sql("how many orders", "purchase_orders(id)", context="[fact] fiscal year starts in April")
+    assert "fiscal year" in calls[0]["instructions"]
+    calls.clear()
+    _write_sql("how many orders", "purchase_orders(id)")
+    assert "fiscal year" not in calls[0]["instructions"]
 
 
 def test_an_unsummarised_prefix_is_still_in_the_plan(db):

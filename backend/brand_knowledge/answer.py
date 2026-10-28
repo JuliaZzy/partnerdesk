@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from ..db import Database
-from ..llm import LLM
+from ..llm import calls as model_calls
 from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
 from ..orchestrator.prompt import FOLLOWUP
 from ..orchestrator.speak import answer_directly, one_shot
@@ -42,7 +42,7 @@ def _prior_turns(history: list[dict[str, Any]], folded_through: int = 0) -> list
 
 
 def _search_query(
-    llm: LLM, text: str, history: list[dict[str, Any]], remembered: str = "", folded_through: int = 0,
+    llm: Any, text: str, history: list[dict[str, Any]], remembered: str = "", folded_through: int = 0,
 ) -> str:
     """Standalone query for retrieval. The first turn is searched as typed.
 
@@ -54,14 +54,14 @@ def _search_query(
         return text
     recent = "\n".join(f"{turn['role']}: {turn['content']}" for turn in prior)
     try:
-        raw = llm.complete_json(
+        raw = model_calls.school_json(
+            model_calls.SCHOOL_CHAT,
             system=attach(FOLLOWUP, remembered),
             messages=[{"role": "user", "content": (
                 f"=== 最近对话 ===\n{recent}\n\n=== 最新消息 ===\n{text[:4000]}"
             )}],
             schema=_followup_schema(),
             temperature=0,
-            max_tokens=200,
         )
     except Exception:
         return text
@@ -87,7 +87,7 @@ def _with_sources(db: Database, hits: list[dict[str, Any]]) -> list[dict[str, An
 
 
 def answer_in_chat(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, history: list[dict[str, Any]], brand_id: str,
+    db: Database, llm: Any, session: dict[str, Any], text: str, history: list[dict[str, Any]], brand_id: str,
 ) -> Iterator[dict[str, Any]]:
     db.update_session(session["id"], specialist="brand")
     yield status("brand-search", "检索", "正在查找品牌资料", state="running")

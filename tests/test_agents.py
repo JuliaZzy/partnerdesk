@@ -39,6 +39,6 @@ def test_build_extract_prompt_uses_the_po_constants(catalog):
     assert "附件图片" in prompt and "Ship on Friday" in prompt and "FO-100" in prompt
     assert PLAN.startswith("你是品牌经销商工作台的编排器")
     assert OPEN.startswith("你在为一场品牌与已入驻经销商的新对话做开场标记")
-    assert "PLACEHOLDER" not in data_query.REFLECT and '"complete"' in data_query.REFLECT
+    assert "PLACEHOLDER" not in data_query.REFLECT and '"retry_question"' in data_query.REFLECT
     assert "PLACEHOLDER" not in report.REPORT_QUESTIONS_PROMPT and '"questions"' in report.REPORT_QUESTIONS_PROMPT
     assert '"charts"' in report.CHART_GENERATION_PROMPT and not hasattr(report, "REFLECT")

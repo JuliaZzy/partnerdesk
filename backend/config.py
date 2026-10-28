@@ -9,39 +9,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
-from .llm_config import LLM_CONFIGS as CHAT_MODELS
-from .llm_config import (
-    chat_models,
-    default_model_id,
-    model_timeout,
-    resolve_model_id,
-)
-from .llm_config import get_llm_config as get_chat_model
-
-__all__ = [
-    "CHAT_MODELS",
-    "chat_models",
-    "default_model_id",
-    "get_chat_model",
-    "model_timeout",
-    "resolve_model_id",
-]
+from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-def _load_dotenv() -> None:
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    env = REPO_ROOT / ".env"
-    if env.is_file():
-        load_dotenv(env, override=False)
-
-
-_load_dotenv()
+load_dotenv(REPO_ROOT / ".env", override=False)
 
 
 def env(name: str, default: str = "") -> str:
@@ -52,34 +25,8 @@ def env(name: str, default: str = "") -> str:
 class LLMSettings:
     base_url: str | None
     api_key: str
-    model: str
-    # "schema" → strict json_schema response_format (OpenAI); "object" → json_object + shape
-    # spelled out in the prompt (Ollama / GLM ignore json_schema).
-    json_mode: str
-    timeout: float = 60.0
-
-
-def llm_settings(task: str | None = None) -> LLMSettings:
-    """Key from the environment. Url and call name from `llm_config` for the chosen model."""
-    model_id = default_model_id()
-    if task:
-        override = env(f"{task.upper()}_MODEL")
-        if override:
-            model_id = resolve_model_id(override)
-    spec = get_chat_model(model_id)
-    if spec is None:
-        spec = CHAT_MODELS[0]
-        call_name = model_id
-    else:
-        call_name = spec.model
-    base_url = spec.base_url
-    api_key = env("LLM_API_KEY") or env("OPENAI_API_KEY") or "ollama"
-    json_mode = env("LLM_JSON_MODE")
-    if not json_mode:
-        json_mode = "object" if "openai.com" not in base_url else "schema"
-    return LLMSettings(
-        base_url=base_url, api_key=api_key, model=call_name, json_mode=json_mode, timeout=model_timeout(spec.id),
-    )
+    timeout: int = 7200
+    max_retries: int = 3
 
 
 @dataclass(frozen=True)
@@ -139,6 +86,28 @@ def redis_url() -> str:
             "Inside the stack it is redis://redis:6379/0"
         )
     return url
+
+
+def _redis_with_db(index: int) -> str:
+    """Same host as `redis_url()`, different Redis database number."""
+    parts = urlsplit(redis_url())
+    return urlunsplit(parts._replace(path=f"/{index}"))
+
+
+def celery_broker_url() -> str:
+    """Celery broker: Redis database 1.
+
+    Database 0 is the app's own keys (session locks, turn results, FX cache).
+    A separate database keeps Celery's key layout off those keys, and keeps a
+    flush of the queue from wiping them. Derived from `PARTNERDESK_REDIS_URL`,
+    so there is no broker URL to point at `127.0.0.1`.
+    """
+    return _redis_with_db(1)
+
+
+def celery_result_url() -> str:
+    """Celery result backend: Redis database 2, beside the broker on database 1."""
+    return _redis_with_db(2)
 
 
 def milvus_uri() -> str:

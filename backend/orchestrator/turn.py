@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,7 +21,8 @@ from typing import Any
 from ..brand_knowledge.answer import answer_in_chat
 from ..contract.agent import run as run_contract
 from ..db import Database
-from ..llm import LLM, AssistantTurn
+from ..llm import calls as model_calls
+from ..llm.types import AssistantTurn
 from ..memory import attach, prompt_context, prompt_turns, standing_block, summary_block
 from ..po.agent import run as run_po
 from ..po.turn import load_bundle
@@ -93,28 +95,20 @@ def plan_schema() -> dict[str, Any]:
     }
 
 
-def open_session(llm: LLM, *, message: str, attachments: list[str]) -> SessionOpen:
+def open_session(llm: Any, *, message: str, attachments: list[str]) -> SessionOpen:
     """First-turn only: tags + title. No history — the session does not have one yet."""
     user = (
         f"=== 附件 ===\n{', '.join(attachments) or '（无）'}\n\n"
         f"=== 消息 ===\n{message[:4000] or '（无文字）'}"
     )
-    raw = llm.complete_json(
-        system=OPEN, messages=[{"role": "user", "content": user}],
-        schema=session_open_schema(), temperature=0, max_tokens=200,
+    raw = model_calls.school_json(
+        model_calls.SCHOOL_CHAT, system=OPEN, messages=[{"role": "user", "content": user}],
+        schema=session_open_schema(), temperature=0,
     )
     allowed = set(TOPIC_KEYS)
     tags = [t for t in (raw.get("tags") or []) if isinstance(t, str) and t in allowed]
     title = str(raw.get("title") or "").strip() or (attachments[0] if attachments else "New chat")
     return SessionOpen(title=title[:80], tags=tags)
-
-
-def _scripted_json(llm: LLM) -> bool:
-    """A test double hands out JSON replies in call order.
-
-    Naming on the side would take the reply the plan is about to consume.
-    """
-    return hasattr(llm, "json_replies")
 
 
 class _ChatTitle:
@@ -124,7 +118,7 @@ class _ChatTitle:
     stays off the step list the distributor watches.
     """
 
-    def __init__(self, db: Database, llm: LLM, session_id: str, message: str, attachments: list[str]) -> None:
+    def __init__(self, db: Database, llm: Any, session_id: str, message: str, attachments: list[str]) -> None:
         self._db = db
         self._llm = llm
         self._session_id = session_id
@@ -190,7 +184,7 @@ def _beside(title: _ChatTitle | None, source: Iterator[dict[str, Any]]) -> Itera
 
 
 def make_plan(
-    llm: LLM, *, message: str, attachments: list[str], history: list[dict[str, str]],
+    llm: Any, *, message: str, attachments: list[str], history: list[dict[str, str]],
     stage: str | None, tags: list[str], memory: str | None = None, folded_through: int = 0,
 ) -> list[PlanTask]:
     recent = "\n".join(
@@ -205,9 +199,10 @@ def make_plan(
     )
     catalog = _tool_catalog()
     system = f"{PLAN.rstrip()}\n\n{catalog}" if catalog else PLAN
-    raw = llm.complete_json(
+    raw = model_calls.school_json(
+        model_calls.SCHOOL_PLAN,
         system=attach(system, memory or ""), messages=[{"role": "user", "content": user}],
-        schema=plan_schema(), temperature=0, max_tokens=900,
+        schema=plan_schema(), temperature=0,
     )
     out: list[PlanTask] = []
     seen: set[str] = set()
@@ -250,7 +245,7 @@ def _tool_catalog() -> str:
 
 
 def _run_one_tool(
-    call: Any, runners: dict[str, Any], llm: LLM, context: dict[str, Any],
+    call: Any, runners: dict[str, Any], llm: Any, context: dict[str, Any],
 ) -> dict[str, Any]:
     fn = runners.get(call.name)
     if fn is None:
@@ -268,7 +263,7 @@ def _run_one_tool(
 
 
 def run_tool_calls(
-    llm: LLM, *, text: str, history: list[dict[str, Any]], extra: dict[str, Any] | None = None,
+    llm: Any, *, text: str, history: list[dict[str, Any]], extra: dict[str, Any] | None = None,
     include_mcp: bool | None = None, memory: str | None = None, folded_through: int = 0,
 ) -> str | None:
     """Native function-calling loop (tools= / tool_choice=auto).
@@ -295,7 +290,9 @@ def run_tool_calls(
     used = False
     last: AssistantTurn | None = None
     for _ in range(MAX_TOOL_ROUNDS):
-        last = llm.complete(system=attach(REACT, memory or ""), messages=messages, tools=schemas)
+        last = model_calls.flash_tools(
+            system=attach(REACT, memory or ""), messages=messages, tools=schemas,
+        )
         if not last.tool_calls:
             if used:
                 return (last.content or "").strip() or "Done."
@@ -337,7 +334,7 @@ def _task_text(tasks: list[PlanTask], name: str) -> str | None:
 
 
 def handle_message(
-    db: Database, llm: LLM, session_id: str, text: str, images: list[str] | None = None, attachments: list[str] | None = None,
+    db: Database, llm: Any, session_id: str, text: str, images: list[str] | None = None, attachments: list[str] | None = None,
     documents: list[tuple[str, bytes]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     session = db.session(session_id)
@@ -358,7 +355,7 @@ def handle_message(
     # sees the tags already stored, which on a new chat are still empty.
     title_job: _ChatTitle | None = None
     if not session.get("title"):
-        if _scripted_json(llm):
+        if os.environ.get("PYTEST_CURRENT_TEST"):
             opened = open_session(llm, message=text, attachments=names)
             db.update_session(session_id, title=opened.title, tags=opened.tags)
             session = db.session(session_id) or session

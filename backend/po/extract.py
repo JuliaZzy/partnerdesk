@@ -12,7 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ..llm import LLM, Message
+from ..llm import calls as model_calls
+from ..llm.types import Message
 from ..memory import prompt_turns
 from ..schemas import INCOTERMS_VALUES, PAYMENT_TERMS_VALUES, SHIPPING_METHOD_VALUES
 from .prompt import EXTRACT, EXTRACT_IMAGES, fill
@@ -140,7 +141,7 @@ class Extraction:
 
 
 def extract_turn(
-    llm: LLM,
+    llm: Any,
     *,
     manifest: str,
     current: PoSlots,
@@ -165,7 +166,13 @@ def extract_turn(
         {"role": m["role"], "content": str(m["content"])[:MAX_HISTORY_CONTENT_CHARS]}
         for m in prompt_turns(history, folded_through)
     ] + [{"role": "user", "content": user_content}]
-    raw = llm.complete_json(system=system, messages=msgs, schema=EXTRACT_SCHEMA, temperature=0, max_tokens=900)
+    ask = model_calls.school_json if images else model_calls.flash_json
+    if images:
+        raw = ask(
+            model_calls.SCHOOL_VISION, system=system, messages=msgs, schema=EXTRACT_SCHEMA, temperature=0,
+        )
+    else:
+        raw = ask(system=system, messages=msgs, schema=EXTRACT_SCHEMA, temperature=0)
     lang = raw.get("reply_language")
     return Extraction(
         slots=normalize_slots(raw),

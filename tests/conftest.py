@@ -10,7 +10,9 @@ stand-in only proves the code works on the stand-in.
 
 from __future__ import annotations
 
+import sys
 import uuid
+from typing import Any
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -95,6 +97,64 @@ def db(make_db, partnership, settings) -> Database:
         d.upsert_product("brand-1", Product(**r))
     d.put_settings("brand-1", settings)
     return d
+
+
+def _nearest_double(method: str) -> Any:
+    """The scripted model on this call. Production never loads this module."""
+    frame = sys._getframe(2)
+    while frame is not None:
+        for value in frame.f_locals.values():
+            try:
+                fn = getattr(value, method, None)
+            except Exception:
+                continue
+            if callable(fn):
+                return value
+        frame = frame.f_back
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _scripted_models(monkeypatch):
+    """Send model calls at the FakeLLM on the stack. The app itself calls the real clients."""
+    import backend.llm.calls as calls
+
+    real = {
+        "school_json": calls.school_json,
+        "school_text": calls.school_text,
+        "flash_json": calls.flash_json,
+        "flash_tools": calls.flash_tools,
+    }
+
+    def school_json(model, *, system, messages, schema=None, temperature=0):
+        llm = _nearest_double("complete_json")
+        if llm is None:
+            return real["school_json"](model, system=system, messages=messages, schema=schema, temperature=temperature)
+        return llm.complete_json(system=system, messages=messages, schema=schema, temperature=temperature)
+
+    def school_text(model, *, system, messages, temperature=0):
+        llm = _nearest_double("stream_text")
+        if llm is None:
+            yield from real["school_text"](model, system=system, messages=messages, temperature=temperature)
+            return
+        yield from llm.stream_text(system=system, messages=messages, temperature=temperature)
+
+    def flash_json(*, system, messages, schema=None, temperature=0):
+        llm = _nearest_double("complete_json")
+        if llm is None:
+            return real["flash_json"](system=system, messages=messages, schema=schema, temperature=temperature)
+        return llm.complete_json(system=system, messages=messages, schema=schema, temperature=temperature)
+
+    def flash_tools(*, system, messages, tools):
+        llm = _nearest_double("complete")
+        if llm is None:
+            return real["flash_tools"](system=system, messages=messages, tools=tools)
+        return llm.complete(system=system, messages=messages, tools=tools)
+
+    monkeypatch.setattr(calls, "school_json", school_json)
+    monkeypatch.setattr(calls, "school_text", school_text)
+    monkeypatch.setattr(calls, "flash_json", flash_json)
+    monkeypatch.setattr(calls, "flash_tools", flash_tools)
 
 
 def rule(**over) -> CommercialRule:

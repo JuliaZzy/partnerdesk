@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,6 +18,27 @@ from backend.text2sql.prompt import ANSWER as DATA_ANSWER
 from backend.text2sql.prompt import REFLECT
 from backend.text2sql.sql_validator import validate
 from backend.text2sql.table_metadata import EXCLUDED_TABLES, HIDDEN_COLUMNS, TABLES, scope_views
+
+
+def _models(monkeypatch, replies: list[dict]):
+    """Script the campus and DeepSeek clients. The queue is shared, in call order."""
+    pending = list(replies)
+    school: list[dict] = []
+
+    class _School:
+        def chat_completion(self, model, messages, stream=False, max_tokens=None, temperature=None):
+            school.append({"model": model, "messages": messages})
+            raw = pending.pop(0)
+            return {"choices": [{"message": {"content": json.dumps(raw)}}]}
+
+    class _DeepSeek:
+        def response(self, **_kwargs):
+            raw = pending.pop(0)
+            return type("Reply", (), {"output_text": json.dumps(raw)})()
+
+    monkeypatch.setattr("backend.text2sql.text2sql.SJTUClient", lambda settings: _School())
+    monkeypatch.setattr("backend.text2sql.text2sql.DeepSeekClient", lambda settings: _DeepSeek())
+    return pending, school
 
 
 def _po(**over) -> PurchaseOrder:
@@ -110,13 +133,14 @@ def test_validator_rejects_a_forbidden_function_with_a_schema(sql):
     assert not ok and cleaned == "" and "function" in err
 
 
-def test_a_rejected_statement_is_kept_for_the_repair(db):
+def test_a_rejected_statement_is_kept_for_the_repair(db, monkeypatch):
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT pg_read_file('/etc/passwd')"},
+        {"sql": "SELECT pg_sleep(1)"},
+    ])
     result = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT pg_read_file('/etc/passwd')"},
-            {"fixed_code": "SELECT pg_sleep(1)"},
-        ]),
+        db,
         question="read a file", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert result.ok is False and result.error_type == "validation"
@@ -124,14 +148,15 @@ def test_a_rejected_statement_is_kept_for_the_repair(db):
     assert logged and "pg_sleep" in logged
 
 
-def test_a_schema_qualified_function_is_rejected_then_repaired(db):
+def test_a_schema_qualified_function_is_rejected_then_repaired(db, monkeypatch):
     db.insert_po(_po(), [], [])
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT pg_catalog.date_trunc('month', submitted_at) AS month FROM purchase_orders"},
+        {"sql": "SELECT date_trunc('month', submitted_at) AS month FROM purchase_orders"},
+    ])
     result = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT pg_catalog.date_trunc('month', submitted_at) AS month FROM purchase_orders"},
-            {"fixed_code": "SELECT date_trunc('month', submitted_at) AS month FROM purchase_orders"},
-        ]),
+        db,
         question="orders by month", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert result.ok, result.error
@@ -139,7 +164,7 @@ def test_a_schema_qualified_function_is_rejected_then_repaired(db):
     assert "date_trunc" in (result.sql or "").lower()
 
 
-def test_a_question_only_sees_this_partnership(db):
+def test_a_question_only_sees_this_partnership(db, monkeypatch):
     db.upsert_partnership(Partnership(
         id="ps-2", brand_id="brand-2", distributor_id="dist-2", brand_name="Other", distributor_name="Other",
         ship_to_country="DE", currency="EUR",
@@ -151,43 +176,47 @@ def test_a_question_only_sees_this_partnership(db):
         total_amount=9999, subtotal_amount=9999, currency="EUR", ship_to_country="DE",
     ), [], [])
 
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+    ])
     orders = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT total_amount FROM purchase_orders"},
-        ]),
+        db,
         question="what did I order?", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert orders.ok
     assert {row["total_amount"] for row in orders.rows} == {1000}
 
+    _models(monkeypatch, [
+        {"tables": ["products"]},
+        {"sql": "SELECT sku FROM products WHERE product_name_en ILIKE '%fish%'"},
+    ])
     fish = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["products"]},
-            {"sql": "SELECT sku FROM products WHERE product_name_en ILIKE '%fish%'"},
-        ]),
+        db,
         question="fish oil sku", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert fish.ok and [row["sku"] for row in fish.rows] == ["FO-100"]
 
+    _models(monkeypatch, [
+        {"tables": ["products"]},
+        {"sql": "SELECT sku FROM products"},
+    ])
     whole = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["products"]},
-            {"sql": "SELECT sku FROM products"},
-        ]),
+        db,
         question="list skus", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert "XX-1" not in {row["sku"] for row in whole.rows}
 
 
-def test_a_write_is_refused_and_the_order_stays(db):
+def test_a_write_is_refused_and_the_order_stays(db, monkeypatch):
     db.insert_po(_po(), [], [])
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "DELETE FROM purchase_orders"},
+        {"sql": "DELETE FROM purchase_orders"},
+    ])
     result = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["purchase_orders"]},
-            {"sql": "DELETE FROM purchase_orders"},
-            {"sql": "DELETE FROM purchase_orders"},
-        ]),
+        db,
         question="delete my orders", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
         session_id=db.create_session("sess-1", "ps-1")["id"],
     )
@@ -196,28 +225,31 @@ def test_a_write_is_refused_and_the_order_stays(db):
     assert db.list_text2sql_logs("ps-1")[0]["execution_success"] is False
 
 
-def test_a_bad_column_is_repaired_once(db):
+def test_a_bad_column_is_repaired_once(db, monkeypatch):
     db.insert_po(_po(), [], [])
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT missing_column FROM purchase_orders"},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+    ])
     result = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT missing_column FROM purchase_orders"},
-            {"fixed_code": "SELECT total_amount FROM purchase_orders"},
-        ]),
+        db,
         question="order total", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert result.ok and result.rows == [{"total_amount": 1000}]
     assert "missing_column" in result.sql or "total_amount" in (result.sql or "")
 
 
-def test_chat_quotes_the_rows_and_a_report_uses_them(db):
+def test_chat_quotes_the_rows_and_a_report_uses_them(db, monkeypatch):
     db.insert_po(_po(), [], [])
     sid = db.create_session("sess-data", "ps-1")["id"]
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+    ])
     llm = FakeLLM(json_replies=[
         {"tags": ["data"], "title": "orders"},
         {"tasks": [{"id": "1", "kind": "agent", "name": "data", "input": {}, "depends_on": []}]},
-        {"tables": ["purchase_orders"]},
-        {"sql": "SELECT total_amount FROM purchase_orders"},
     ], text_reply="The order total is 1000.")
     events = list(service.handle_message(db, llm, sid, "how much have I ordered?"))
     assert any(event.get("type") == "data" and event["ok"] and event["row_count"] == 1 for event in events)
@@ -243,9 +275,6 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
             {"id": "next", "questions": [], "searches": []},
             {"id": "risks", "questions": ["should not run yet"], "searches": ["should not search yet"]},
         ]},
-        {"tables": ["purchase_orders"]},
-        {"sql": "SELECT total_amount FROM purchase_orders"},
-        {"score": 90, "retry_question": ""},
         {"charts": [{
             "id": "chart_001",
             "title": "Order total",
@@ -269,19 +298,24 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db):
         {"content": "Report: 1000.", "key_points": ["1000"]},
         {"content": "Report: 1000.", "key_points": ["1000"]},
         {"write": True, "questions": ["open purchase orders"], "searches": []},
-        {"tables": ["purchase_orders"]},
-        {"sql": "SELECT total_amount FROM purchase_orders"},
-        {"score": 90, "retry_question": ""},
         {"code": "rows = datasets[0]['rows']\ninsights = [{'title': '订单总额', 'detail': '总额 ' + str(rows[0]['total_amount']), 'evidence': {'total': rows[0]['total_amount']}}]"},
         {"content": "未结订单还在。", "key_points": ["未结"]},
         {"content": "Report: 1000.", "key_points": ["1000"]},
         {"score": 90, "ok": True, "issues": []},
     ], text_reply="Report: 1000.")
+    _pending, query_school = _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+        {"score": 90, "retry_question": ""},
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+        {"score": 90, "retry_question": ""},
+    ])
     events = list(service.handle_message(db, report_llm, sid, "write a short sales note"))
-    reflects = [call for call in report_llm.calls if call["kind"] == "json" and call["system"] == REFLECT]
+    reflects = [call for call in query_school if call["messages"][0]["content"] == REFLECT]
     assert len(reflects) == 2
-    assert "order total" in reflects[0]["messages"][0]["content"]
-    assert "open purchase orders" in reflects[1]["messages"][0]["content"]
+    assert "order total" in reflects[0]["messages"][1]["content"]
+    assert "open purchase orders" in reflects[1]["messages"][1]["content"]
     write_calls = [call for call in report_llm.calls if call["kind"] == "json" and "营销报告撰写人" in call["system"]]
     wizard_calls = [call for call in report_llm.calls if call["kind"] == "json" and "text2sql 的全部输出" in call["system"]]
     assert len(wizard_calls) == 5
@@ -351,9 +385,10 @@ def test_badcase_groups_failures_and_keeps_corrections_for_review():
     }]
 
 
-def test_feedback_is_stored_on_the_attempt(db):
+def test_feedback_is_stored_on_the_attempt(db, monkeypatch):
+    _models(monkeypatch, [{"tables": []}, {"tables": []}])
     result = answer_question(
-        db, FakeLLM(json_replies=[{"tables": []}, {"tables": []}]),
+        db,
         question="what is the weather", partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert result.ok is False and result.log_id is not None
@@ -381,9 +416,9 @@ def test_queries_run_as_the_reader_and_cannot_write_or_read_files(db):
     assert db.po("hacked") is None
 
 
-def test_reflection_stops_at_80_and_retries_a_low_score(db):
+def test_reflection_stops_at_80_and_retries_a_low_score(db, monkeypatch):
     db.insert_po(_po(), [], [])
-    held = FakeLLM(json_replies=[
+    pending, _school = _models(monkeypatch, [
         {"tables": ["purchase_orders"]},
         {"sql": "SELECT notes FROM purchase_orders"},
         {"score": 80, "retry_question": "what is the order total"},
@@ -391,55 +426,56 @@ def test_reflection_stops_at_80_and_retries_a_low_score(db):
         {"sql": "SELECT total_amount FROM purchase_orders"},
     ])
     kept = answer_question(
-        db, held, question="how much did I order?",
+        db, question="how much did I order?",
         partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert kept.ok and kept.score == 80 and "total_amount" not in kept.rows[0]
-    assert len(held.json_replies) == 2
+    assert len(pending) == 2
 
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT notes FROM purchase_orders"},
+        {"score": 40, "retry_question": "what is the order total"},
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+        {"score": 91, "retry_question": ""},
+    ])
     retried = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT notes FROM purchase_orders"},
-            {"score": 40, "retry_question": "what is the order total"},
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT total_amount FROM purchase_orders"},
-            {"score": 91, "retry_question": ""},
-        ]),
-        question="how much did I order?",
+        db, question="how much did I order?",
         partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert retried.ok and retried.score == 91 and retried.rows == [{"total_amount": 1000}]
 
 
-def test_reflection_keeps_the_best_of_three_scores(db):
+def test_reflection_keeps_the_best_of_three_scores(db, monkeypatch):
     db.insert_po(_po(), [], [])
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT notes FROM purchase_orders"},
+        {"score": 20, "retry_question": "order total"},
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+        {"score": 70, "retry_question": "how many orders"},
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT count(*) AS n FROM purchase_orders"},
+        {"score": 40, "retry_question": "unused"},
+    ])
     result = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT notes FROM purchase_orders"},
-            {"score": 20, "retry_question": "order total"},
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT total_amount FROM purchase_orders"},
-            {"score": 70, "retry_question": "how many orders"},
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT count(*) AS n FROM purchase_orders"},
-            {"score": 40, "retry_question": "unused"},
-        ]),
-        question="how much did I order?",
+        db, question="how much did I order?",
         partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
     )
     assert result.ok and result.score == 70 and result.rows == [{"total_amount": 1000}]
 
 
-def test_data_feedback_endpoint_stamps_the_session_and_rejects_another(db):
+def test_data_feedback_endpoint_stamps_the_session_and_rejects_another(db, monkeypatch):
     db.insert_po(_po(), [], [])
     db.create_session("sess-rate", "ps-1")
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+    ])
     result = answer_question(
-        db, FakeLLM(json_replies=[
-            {"tables": ["purchase_orders"]},
-            {"sql": "SELECT total_amount FROM purchase_orders"},
-        ]),
+        db,
         question="order total",
         partnership_id="ps-1", brand_id="brand-1", distributor_id="dist-1",
         session_id="sess-rate",

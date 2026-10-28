@@ -1,4 +1,4 @@
-"""聊天里的查数。跑一个问题，然后引用返回的行。"""
+"""聊天里的查数。跑一个问题，然后引用返回的行。口头回答走学校的 deepseek-chat。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from collections.abc import Iterator
 from typing import Any
 
 from ..db import Database
-from ..llm import LLM
 from ..orchestrator.speak import answer_directly
 from ..orchestrator.status import status
 from .prompt import ANSWER
@@ -28,13 +27,13 @@ def _mark(result: Any) -> dict[str, Any]:
 
 
 def run(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, question: str, *,
+    db: Database, llm: Any, session: dict[str, Any], text: str, question: str, *,
     partnership_id: str, brand_id: str, distributor_id: str,
 ) -> Iterator[dict[str, Any]]:
     db.update_session(session["id"], specialist="data")
     yield status("data-query", "查数", "正在把问题写成查询并执行", state="running")
     result = answer_question(
-        db, llm, question=question,
+        db, question=question,
         partnership_id=partnership_id, brand_id=brand_id,
         distributor_id=distributor_id, session_id=session["id"],
         history=list(session.get("history") or []),

@@ -19,7 +19,7 @@ from contextvars import ContextVar, Token
 from typing import Any
 
 from .db import Database
-from .llm import LLM
+from .llm import calls as model_calls
 from .schemas import Memory
 
 log = logging.getLogger(__name__)
@@ -214,7 +214,7 @@ def _prefix_tokens(history: list[dict[str, Any]], folded: int) -> int:
 
 
 def fold_older(
-    db: Database, llm: LLM, session: dict[str, Any], history: list[dict[str, Any]], folded: int,
+    db: Database, llm: Any, session: dict[str, Any], history: list[dict[str, Any]], folded: int,
 ) -> tuple[int, str]:
     """Merge the unsummarised prefix into the rolling summary once it is about 2000 tokens.
 
@@ -231,13 +231,14 @@ def fold_older(
     if not pending:
         return start, summary
     try:
-        raw = llm.complete_json(
+        raw = model_calls.school_json(
+            model_calls.SCHOOL_CHAT,
             system=FOLD,
             messages=[{"role": "user", "content": (
                 f"=== 迄今的摘要 ===\n{summary or '（无）'}\n\n"
                 f"=== 更早的轮次 ===\n{pending}"
             )}],
-            schema=fold_schema(), temperature=0, max_tokens=800,
+            schema=fold_schema(), temperature=0,
         )
     except Exception:
         log.exception("could not fold older turns into the summary")
@@ -266,7 +267,7 @@ def _fold_lock(session_id: str) -> threading.Lock:
         return lock
 
 
-def fold_session(db: Database, llm: LLM, session_id: str) -> None:
+def fold_session(db: Database, llm: Any, session_id: str) -> None:
     """Fold whatever prefix has reached the budget, from the row as it stands now.
 
     A second task for the same session waits, then sees the cursor already moved.
@@ -289,7 +290,7 @@ def fold_session(db: Database, llm: LLM, session_id: str) -> None:
 
 def record_history(
     db: Database, session: dict[str, Any], history: list[dict[str, Any]], *,
-    llm: LLM | None = None, **fields: Any,
+    llm: Any | None = None, **fields: Any,
 ) -> None:
     """Store the whole transcript. Folding, when the prefix is long enough, does not run inside the reply.
 

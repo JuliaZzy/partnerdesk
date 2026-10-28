@@ -60,7 +60,7 @@ def test_parse_plan_keeps_six_sections_and_drops_a_search_on_a_data_section():
     assert performance.searches == []
     nxt = next(section for section in planned if section.id == "next")
     assert nxt.questions == []
-    assert nxt.searches == ["双十一", "black friday"]
+    assert nxt.searches == ["双十一", "black friday", "618"]
     risks = next(section for section in planned if section.id == "risks")
     assert risks.questions == [] and risks.searches == []
     summary = next(section for section in planned if section.id == "summary")

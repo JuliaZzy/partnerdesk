@@ -1,11 +1,10 @@
-"""Read an agreement file into the extraction `ingest.ingest_extraction` already stores.
+"""把协议文件读成 `ingest.ingest_extraction` 已经会入库的抽取结果。
 
-`split_chunks` builds a heading tree (stored in PostgreSQL on ingest). The model sees the
-whole outline and names the chunks to read; only those bodies are sent for the form.
-Fields still empty are retried against chunks not yet read, up to three passes total.
-A pass that scores its own completeness at 0.9 or higher stops the loop early.
-It does not derive PO rules — `ingest.derive_rules` does that. Quotes not in the document
-are dropped. Scanned pages (no text layer) go along as images, the same way an order photo does.
+`split_chunks` 建一棵标题树（入库时写入 PostgreSQL）。模型先看整份大纲并点名要读的块，只有这些块的正文会送去填表。
+仍为空的字段会对着还没读过的块再试，一共最多三遍。
+某一遍把自己的完整度打到 0.9 或更高时，循环提前结束。
+这里不推导采购单规则，那一步是 `ingest.derive_rules`。不在文档里的引用会被丢掉。
+没有文字层的扫描页会连同图片一起送，和订单照片同一条路。
 """
 
 from __future__ import annotations
@@ -18,7 +17,8 @@ from typing import Any
 
 from ..db import Database
 from ..documents import SUPPORTED_EXTS, load_pages, render_pdf_images
-from ..llm import LLM
+from ..llm import DeepSeekClient, SJTUClient, parse_json_loose
+from ..config import LLMSettings
 from ..schemas import ContractChunk
 from .chunks import flatten_chunk_tree, split_chunks
 from .ingest import ingest_extraction, record_from_extraction
@@ -257,35 +257,45 @@ def _chosen_chunks(raw: dict[str, Any], allowed: dict[str, dict]) -> list[dict]:
     return chosen
 
 
-def _select_chunks(llm: LLM, index: dict[str, dict]) -> list[dict]:
+def _school_json(llm: SJTUClient, *, system: str, user: str) -> dict[str, Any]:
+    """Campus chat returns the whole completion. The selection is the message text."""
+    resp = llm.chat_completion(
+        "deepseek-chat",
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0.0,
+    )
+    try:
+        text = resp["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError) as err:
+        raise ValueError("Campus model did not return a message.") from err
+    raw = parse_json_loose(text)
+    if not isinstance(raw, dict):
+        raise ValueError("Campus model did not return a JSON object.")
+    return raw
+
+
+def _select_chunks(llm: SJTUClient, index: dict[str, dict]) -> list[dict]:
     """One selection over the full outline. A single chunk has nothing to choose."""
     readable = {cid: node for cid, node in index.items() if (node.get("body") or "").strip()}
     if len(index) <= 1:
         return list(readable.values())
-    raw = llm.complete_json(
+    raw = _school_json(
+        llm,
         system=SELECT_SYSTEM,
-        messages=[{"role": "user", "content": json.dumps({"outline": _outline(index)}, ensure_ascii=False)}],
-        schema=SELECT_SCHEMA,
-        temperature=0,
-        max_tokens=800,
+        user=json.dumps({"outline": _outline(index)}, ensure_ascii=False),
     )
     return _chosen_chunks(raw, readable)
 
 
-def _reflect_chunks(llm: LLM, missing: list[str], unread: dict[str, dict]) -> list[dict]:
+def _reflect_chunks(llm: SJTUClient, missing: list[str], unread: dict[str, dict]) -> list[dict]:
     """Second and third pass: only chunks not yet read, aimed at fields still empty."""
-    raw = llm.complete_json(
+    raw = _school_json(
+        llm,
         system=REFLECT_SYSTEM,
-        messages=[{
-            "role": "user",
-            "content": json.dumps(
-                {"missing_fields": missing, "unread_outline": _outline(unread)},
-                ensure_ascii=False,
-            ),
-        }],
-        schema=SELECT_SCHEMA,
-        temperature=0,
-        max_tokens=800,
+        user=json.dumps(
+            {"missing_fields": missing, "unread_outline": _outline(unread)},
+            ensure_ascii=False,
+        ),
     )
     return _chosen_chunks(raw, unread)
 
@@ -304,12 +314,12 @@ def _chunk_extract_content(file_name: str, chunk: dict, *, images: dict[int, byt
         return text
     import base64
 
-    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    parts: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
     for n in sorted(batch_images):
         url = "data:image/jpeg;base64," + base64.b64encode(batch_images[n]).decode()
-        content.append({"type": "text", "text": f"Image of page {n}."})
-        content.append({"type": "image_url", "image_url": {"url": url}})
-    return content
+        parts.append({"type": "input_text", "text": f"Image of page {n}."})
+        parts.append({"type": "input_image", "image_url": url})
+    return [{"role": "user", "content": parts}]
 
 
 def _chunk_models(tree: list[dict]) -> list[ContractChunk]:
@@ -331,7 +341,9 @@ def _merge(parts: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def read_agreement(llm: LLM, file_name: str, data: bytes) -> tuple[dict[str, Any], list[dict]]:
+def read_agreement(
+    llm: DeepSeekClient, school: SJTUClient, file_name: str, data: bytes,
+) -> tuple[dict[str, Any], list[dict]]:
     """Sanitized extraction plus the heading tree. Raises ValueError when the file cannot be
     read or contains no enforceable terms — nothing is written in that case."""
     if not file_name.lower().endswith(SUPPORTED_EXTS):
@@ -350,16 +362,26 @@ def read_agreement(llm: LLM, file_name: str, data: bytes) -> tuple[dict[str, Any
     def take(chunks: list[dict]) -> None:
         for chunk in chunks:
             unread.pop(chunk["id"], None)
-            raw = llm.complete_json(
-                system=EXTRACT_SYSTEM,
-                messages=[{"role": "user", "content": _chunk_extract_content(file_name, chunk, images=images)}],
-                schema=EXTRACT_SCHEMA,
-                temperature=0,
-                max_tokens=2500,
+            resp = llm.response(
+                model="deepseek-flash",
+                instructions=EXTRACT_SYSTEM,
+                input=_chunk_extract_content(file_name, chunk, images=images),
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": EXTRACT_SCHEMA["name"],
+                        "schema": EXTRACT_SCHEMA["schema"],
+                    }
+                },
+                reasoning_effort="none",
+                temperature=0.0,
             )
+            raw = parse_json_loose(resp.output_text)
+            if not isinstance(raw, dict):
+                raise ValueError(f"Extraction for {chunk['id']} was not a JSON object.")
             parts.append(sanitize_extraction(raw, pages, image_pages))
 
-    first = _select_chunks(llm, index)
+    first = _select_chunks(school, index)
     if not first:
         raise ValueError(f"No agreement sections selected for reading in {file_name!r}.")
     take(first)
@@ -369,7 +391,7 @@ def read_agreement(llm: LLM, file_name: str, data: bytes) -> tuple[dict[str, Any
         score = _latest_confidence(parts)
         if not missing or not unread or (score is not None and score >= CONFIDENCE_STOP):
             break
-        more = _reflect_chunks(llm, missing, unread)
+        more = _reflect_chunks(school, missing, unread)
         if not more:
             break
         take(more)
@@ -380,11 +402,19 @@ def read_agreement(llm: LLM, file_name: str, data: bytes) -> tuple[dict[str, Any
 
 
 def read_and_ingest(
-    db: Database, llm: LLM, *, brand_id: str, partnership_id: str, file_name: str, data: bytes, title: str | None = None,
+    db: Database,
+    llm: DeepSeekClient,
+    school: SJTUClient,
+    *,
+    brand_id: str,
+    partnership_id: str,
+    file_name: str,
+    data: bytes,
+    title: str | None = None,
 ) -> Any:
     """Read the file and write the contract, its terms and the derived PO rules."""
-    extraction, tree = read_agreement(llm, file_name, data)
-    model = getattr(getattr(llm, "settings", None), "model", None)
+    extraction, tree = read_agreement(llm, school, file_name, data)
+    model = "deepseek-flash"
     return ingest_extraction(
         db, extraction, brand_id=brand_id, partnership_id=partnership_id,
         title=title or file_name, file_name=file_name, file_sha256=hashlib.sha256(data).hexdigest(), model=model,
@@ -426,14 +456,17 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     from pathlib import Path
 
-    from ..llm import OpenAICompatLLM
-
     data = Path(args.file).read_bytes()
-    llm = OpenAICompatLLM()
+    settings = LLMSettings(base_url=None, api_key="")
+    llm = DeepSeekClient(settings)
+    school = SJTUClient(settings)
     if args.apply:
-        rec = read_and_ingest(Database(), llm, brand_id=args.brand, partnership_id=args.partnership, file_name=Path(args.file).name, data=data, title=args.title)
+        rec = read_and_ingest(
+            Database(), llm, school, brand_id=args.brand, partnership_id=args.partnership,
+            file_name=Path(args.file).name, data=data, title=args.title,
+        )
     else:
-        extraction, tree = read_agreement(llm, Path(args.file).name, data)
+        extraction, tree = read_agreement(llm, school, Path(args.file).name, data)
         rec = record_from_extraction(
             extraction, brand_id=args.brand, partnership_id=args.partnership, title=args.title,
             file_name=Path(args.file).name, chunks=_chunk_models(tree),

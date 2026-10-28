@@ -13,8 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from .. import service
 from ..db import Database
-from ..deps import get_db, get_llm, llm_for
-from ..llm import LLM, OpenAICompatLLM
+from ..deps import get_db, get_llm
 from ..memory import bind_fold_scheduler, reset_fold_scheduler
 from ..schemas import Confirm, ConfirmContract, ConfirmReport, DataFeedback, Inbound, InboundFile, NewSession
 from ..stream_pin import pin_stream
@@ -105,10 +104,9 @@ async def _defer_folds(background_tasks: BackgroundTasks):
 @router.post("/api/sessions/{sid}/message")
 def message(
     sid: str, body: Inbound, background_tasks: BackgroundTasks,
-    db: Database = Depends(get_db), llm: LLM = Depends(get_llm),
+    db: Database = Depends(get_db), llm: Any = Depends(get_llm),
     _folds: None = Depends(_defer_folds),
 ) -> StreamingResponse:
-    llm = llm_for(llm, body.model)
     if not db.session(sid):
         raise HTTPException(404, "session not found")
     if not body.message.strip() and not body.images and not body.files:
@@ -118,7 +116,7 @@ def message(
     def gen() -> Iterator[bytes]:
         # A model error after the first status frame must still close the stream.
         # The provider body can carry account ids, so the client only gets a fixed line.
-        outputs = llm.model_outputs if isinstance(llm, OpenAICompatLLM) else []
+        outputs = getattr(llm, "model_outputs", None) or []
         sent = 0
         # Closed in finally so a reader that leaves releases this chat's turn lock.
         # The lock is held inside the iterator, and closing only this wrapper would

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 
-import { api, postJson, streamMessage } from "../api";
+import { api, cancelRun, postJson, streamMessage } from "../api";
 import { flightOf, isChatBusy, isForgotten, onForgetChat, patchFlight, setActiveChat, useFlight } from "../chat-live";
 import { NeedPartnership, useDesk } from "../desk";
 import {
@@ -176,6 +176,15 @@ function fromSession(session: SessionRow, hello: string): Snap {
   };
 }
 
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.25" fill="none" stroke="currentColor" strokeWidth="1.75" />
+      <rect x="8.25" y="8.25" width="7.5" height="7.5" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function Chat() {
   return (
     <NeedPartnership>
@@ -199,6 +208,7 @@ function ChatDesk() {
   // True while an IME preedit is still uncommitted. Enter confirms that
   // preedit; it must not also send, or the commit lands in the cleared box.
   const composing = useRef(false);
+  const stops = useRef(new Map<string, AbortController>());
   const flight = useFlight(sid);
   sidRef.current = sid;
   const pendingKinds = flight.tasks;
@@ -356,7 +366,12 @@ function ChatDesk() {
     const chosen = attached ?? flightOf(chatId).files;
     const trimmed = message.trim();
     if (!trimmed && chosen.length === 0) return;
-    patchFlight(chatId, { busy: true, error: null, draft: "", files: [], live: "", activity: [], modelJson: [], task: null, tasks: [] });
+    const stop = new AbortController();
+    stops.current.set(chatId, stop);
+    patchFlight(chatId, {
+      busy: true, streaming: true, runId: null, error: null,
+      draft: "", files: [], live: "", activity: [], modelJson: [], task: null, tasks: [],
+    });
     const images: string[] = [];
     const documents: { name: string; data: string }[] = [];
     for (const file of chosen) {
@@ -416,7 +431,7 @@ function ChatDesk() {
         confirmToken: poTurn ? ((done?.confirm_token as string | null) ?? null) : base.confirmToken,
       };
       commitSnap(chatId, next);
-      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [], task: null, tasks: [] });
+      patchFlight(chatId, { busy: false, streaming: false, live: "", activity: [], modelJson: [], task: null, tasks: [] });
     }
     try {
       await streamMessage(chatId, {
@@ -426,6 +441,7 @@ function ChatDesk() {
         files: documents,
         model: modelId || null,
       }, (event) => {
+        if (typeof event.run_id === "string" && event.run_id) patchFlight(chatId, { runId: event.run_id });
         if (event.type === "status") {
           steps = applyActivity(steps, event);
           patchFlight(chatId, { activity: steps });
@@ -463,14 +479,32 @@ function ChatDesk() {
           finished.event = event;
           finish();
         }
-      });
+      }, stop.signal);
       finish();
     } catch (err) {
-      if (!committed) patchFlight(chatId, { error: err instanceof Error ? err.message : "send failed" });
+      // Abort is the cancel click. The user already asked to stop, so it is not a send failure.
+      if (!committed && !(err instanceof Error && err.name === "AbortError")) {
+        patchFlight(chatId, { error: err instanceof Error ? err.message : "send failed" });
+      }
     } finally {
-      patchFlight(chatId, { busy: false, live: "", activity: [], modelJson: [], task: null, tasks: [] });
+      stops.current.delete(chatId);
+      patchFlight(chatId, { busy: false, streaming: false, live: "", activity: [], modelJson: [], task: null, tasks: [] });
     }
     void desk.reloadSessions().catch(() => undefined);
+  }
+
+  async function cancelTurn() {
+    const chatId = sidRef.current;
+    if (!chatId) return;
+    const runId = flightOf(chatId).runId;
+    // Closing this stream stops the desk turn at its next yield.
+    stops.current.get(chatId)?.abort();
+    if (!runId || !userId) return;
+    try {
+      await cancelRun(runId, partnership.id, userId);
+    } catch (err) {
+      patchFlight(chatId, { error: err instanceof Error ? err.message : "cancel failed" });
+    }
   }
 
   async function confirm() {
@@ -757,7 +791,13 @@ function ChatDesk() {
               />
             </label>
             {flight.files.length > 0 && <span className="muted">{flight.files.map((file) => file.name).join(", ")}</span>}
-            <button className="btn-primary" type="submit" disabled={flight.busy || !sid}>Send</button>
+            {flight.streaming ? (
+              <button className="btn-stop" type="button" aria-label="取消" onClick={() => void cancelTurn()}>
+                <StopIcon />
+              </button>
+            ) : (
+              <button className="btn-primary" type="submit" disabled={flight.busy || !sid}>Send</button>
+            )}
           </div>
         </form>
       </section>

@@ -5,6 +5,10 @@ import type { Activity } from "./format";
 /** One chat's composer and the reply that is still coming in. Other chats keep their own. */
 export type Flight = {
   busy: boolean;
+  /** True only while a chat reply stream is open. Confirm and save stay busy without this. */
+  streaming: boolean;
+  /** Exercise run id, when the stream event carried one. The cancel click uses it. */
+  runId: string | null;
   live: string;
   activity: Activity[];
   modelJson: unknown[];
@@ -17,6 +21,8 @@ export type Flight = {
 
 const EMPTY: Flight = {
   busy: false,
+  streaming: false,
+  runId: null,
   live: "",
   activity: [],
   modelJson: [],

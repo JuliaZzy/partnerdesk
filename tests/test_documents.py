@@ -60,7 +60,7 @@ def test_pdf_pages_come_from_GLM_layout(monkeypatch):
         seen["timeout"] = timeout
         return _response(payload)
 
-    monkeypatch.setattr("backend.documents.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("backend.llm.client.urllib.request.urlopen", fake_urlopen)
     pages = load_pages("agreement.pdf", b"%PDF-1.4")
     assert pages == [(1, "Term 2026-01-01\n\nUSD 500"), (2, "Sweden")]
     assert seen["url"] == "https://ocr.example/layout_parsing"
@@ -77,5 +77,5 @@ def test_pdf_uses_markdown_when_the_response_has_no_pages(monkeypatch):
     def fake_urlopen(req, timeout=0):
         return _response({"md_results": "# Agreement\n\nMinimum order USD 500."})
 
-    monkeypatch.setattr("backend.documents.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("backend.llm.client.urllib.request.urlopen", fake_urlopen)
     assert load_pages("agreement.pdf", b"%PDF") == [(1, "# Agreement\n\nMinimum order USD 500.")]

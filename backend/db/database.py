@@ -1,7 +1,7 @@
 """The one object the rest of the code talks to for persistence.
 
 It speaks pydantic models (`backend/schemas/`) and plain dicts outward and SQLAlchemy
-rows (`orm.py`) inward — nothing outside this package imports `orm`. Every method is one
+rows (`orm/`) inward — nothing outside this package imports `orm`. Every method is one
 transaction; the multi-row writes (an order with its items and rule snapshot, a contract
 with its terms and derived rules) commit together or not at all.
 
@@ -15,11 +15,12 @@ import json
 import re
 import uuid
 from collections.abc import Iterable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import Engine, func, inspect, or_, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import db_url
@@ -535,6 +536,527 @@ class Database:
         with self.tx() as s:
             row = s.scalars(select(orm.ChatSession).where(orm.ChatSession.confirm_token == token)).first()
             return _row_dict(row) if row else None
+
+    # --- runs -------------------------------------------------------------------------
+    def find_agent_run(self, org_id: str, run_id: str) -> dict[str, Any] | None:
+        """Load one run. `org_id` is part of the lookup, so another org's id looks missing."""
+        with self.tx() as s:
+            row = s.scalars(
+                select(orm.AgentRun).where(orm.AgentRun.id == run_id, orm.AgentRun.org_id == org_id)
+            ).first()
+            return _row_dict(row) if row else None
+
+    def create_agent_run(
+        self,
+        org_id: str,
+        user_id: str,
+        run_type: str,
+        idempotency_key: str,
+        run_input: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Insert the queued run row only. The `run.created` event is a separate call.
+
+        False means this org already has the idempotency key, and the returned row is that run.
+        """
+        now = utcnow()
+        run_id = f"run_{uuid.uuid4().hex}"
+        try:
+            with self.tx() as s:
+                run = orm.AgentRun(
+                    id=run_id,
+                    org_id=org_id,
+                    user_id=user_id,
+                    run_type=run_type,
+                    idempotency_key=idempotency_key,
+                    status="queued",
+                    input_json=run_input,
+                    created_at=now,
+                    updated_at=now,
+                )
+                s.add(run)
+                s.flush()
+                return _row_dict(run), True
+        except IntegrityError:
+            existing = self.find_agent_run_by_idempotency(org_id, idempotency_key)
+            if existing is None:
+                raise
+            return existing, False
+
+    def find_agent_run_by_idempotency(self, org_id: str, idempotency_key: str) -> dict[str, Any] | None:
+        with self.tx() as s:
+            row = s.scalars(
+                select(orm.AgentRun).where(
+                    orm.AgentRun.org_id == org_id, orm.AgentRun.idempotency_key == idempotency_key,
+                )
+            ).first()
+            return _row_dict(row) if row else None
+
+    def list_run_events(self, org_id: str, run_id: str) -> list[dict[str, Any]] | None:
+        """Events in `sequence` order, or None when this org has no such run."""
+        with self.tx() as s:
+            owned = s.scalars(
+                select(orm.AgentRun.id).where(orm.AgentRun.id == run_id, orm.AgentRun.org_id == org_id)
+            ).first()
+            if owned is None:
+                return None
+            rows = s.scalars(
+                select(orm.RunEvent).where(orm.RunEvent.run_id == run_id).order_by(orm.RunEvent.sequence)
+            )
+            return [_row_dict(row) for row in rows]
+
+    def update_run_status(self, org_id: str, run_id: str, status: str) -> dict[str, Any] | None:
+        """Set `agent_runs.status` and stamp `updated_at`. The matching event is `append_run_event`."""
+        now = utcnow()
+        with self.tx() as s:
+            run = s.scalars(
+                select(orm.AgentRun)
+                .where(orm.AgentRun.id == run_id, orm.AgentRun.org_id == org_id)
+                .with_for_update()
+            ).first()
+            if run is None:
+                return None
+            run.status = status
+            run.updated_at = now
+            if status in {"succeeded", "failed", "cancelled"}:
+                run.ended_at = now
+            s.flush()
+            return _row_dict(run)
+
+    def request_run_cancel(
+        self,
+        org_id: str,
+        run_id: str,
+        reason: str | None,
+    ) -> dict[str, Any] | None:
+        """Mark a running run for cancel. Status stays `running`. None when this org has no such run."""
+        now = utcnow()
+        with self.tx() as s:
+            run = s.scalars(
+                select(orm.AgentRun)
+                .where(orm.AgentRun.id == run_id, orm.AgentRun.org_id == org_id)
+                .with_for_update()
+            ).first()
+            if run is None:
+                return None
+            if run.status != "running":
+                return _row_dict(run)
+            run.cancel_requested_at = now
+            run.updated_at = now
+            payload: dict[str, Any] = {"status": "running"}
+            if reason:
+                payload["reason"] = reason
+            self.__append_event(s, run_id, "run.cancel_requested", payload, now)
+            s.flush()
+            return _row_dict(run)
+
+    def cancel_run(self, run_id: str) -> dict[str, Any] | None:
+        """Worker path: running to cancelled, plus `run.cancelled`. None unless the flag is set."""
+        now = utcnow()
+        with self.tx() as s:
+            run = s.scalars(
+                select(orm.AgentRun)
+                .where(orm.AgentRun.id == run_id, orm.AgentRun.status == "running")
+                .with_for_update()
+            ).first()
+            if run is None or run.cancel_requested_at is None:
+                return None
+            run.status = "cancelled"
+            run.ended_at = now
+            run.updated_at = now
+            run.lease_owner = None
+            run.lease_expires_at = None
+            self.__append_event(s, run_id, "run.cancelled", {"status": "cancelled"}, now)
+            s.flush()
+            return _row_dict(run)
+
+    @staticmethod 
+    def __append_event(
+        s: Session,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        now: datetime,
+    ) -> orm.RunEvent:
+        current = s.scalar(
+            select(func.max(orm.RunEvent.sequence)).where(orm.RunEvent.run_id == run_id)
+        )
+        event = orm.RunEvent(
+            id=f"evt_{uuid.uuid4().hex}",
+            run_id=run_id,
+            sequence=int(current or 0) + 1,
+            event_type=event_type,
+            payload_json=payload,
+            created_at=now,
+        )
+        s.add(event)
+        return event
+
+    def append_run_event(
+        self, org_id: str, run_id: str, event_type: str, payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Append the next `sequence` for this run. None when the org has no such run."""
+        now = utcnow()
+        with self.tx() as s:
+            owned = s.scalars(
+                select(orm.AgentRun.id).where(orm.AgentRun.id == run_id, orm.AgentRun.org_id == org_id)
+            ).first()
+            if owned is None:
+                return None
+            event = self.__append_event(s, run_id, event_type, payload, now)
+            s.flush()
+            return _row_dict(event)
+
+    def create_run_with_outbox(
+        self,
+        org_id: str,
+        user_id: str,
+        run_type: str,
+        idempotency_key: str,
+        run_input: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Insert the queued run, `run.created`, and a pending `execute_run` outbox row together.
+
+        False means this org already has the idempotency key, and the returned row is that run. That replay does not add another outbox row.
+        """
+        now = utcnow()
+        run_id = f"run_{uuid.uuid4().hex}"
+        try:
+            with self.tx() as s:
+                run = orm.AgentRun(
+                    id=run_id,
+                    org_id=org_id,
+                    user_id=user_id,
+                    run_type=run_type,
+                    idempotency_key=idempotency_key,
+                    status="queued",
+                    input_json=run_input,
+                    created_at=now,
+                    updated_at=now,
+                )
+                s.add(run)
+                s.flush()
+                self.__append_event(s, run_id, "run.created", {"status": "queued"}, now)
+                s.add(orm.OutboxJob(
+                    id=f"obx_{uuid.uuid4().hex}",
+                    job_type="execute_run",
+                    payload_json={"run_id": run_id},
+                    status="pending",
+                    next_attempt_at=now,
+                    created_at=now,
+                    dispatch_at=now,
+                ))
+                s.flush()
+                return _row_dict(run), True
+        except IntegrityError:
+            existing = self.find_agent_run_by_idempotency(org_id, idempotency_key)
+            if existing is None:
+                raise
+            return existing, False
+
+    def find_pending_outbox_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Pending outbox rows whose `next_attempt_at` has arrived, oldest first."""
+        now = utcnow()
+        with self.tx() as s:
+            rows = s.scalars(
+                select(orm.OutboxJob)
+                .where(orm.OutboxJob.status == "pending", orm.OutboxJob.next_attempt_at <= now)
+                .order_by(orm.OutboxJob.next_attempt_at)
+                .limit(limit)
+            )
+            return [_row_dict(row) for row in rows]
+
+    def enqueue_job(self, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Insert one `job_queue` row. This is the publish step, in its own transaction."""
+        now = utcnow()
+        with self.tx() as s:
+            job = orm.JobQueue(
+                id=f"job_{uuid.uuid4().hex}",
+                job_type=job_type,
+                payload_json=payload,
+                status="queued",
+                available_at=now,
+                created_at=now,
+            )
+            s.add(job)
+            s.flush()
+            return _row_dict(job)
+
+    def mark_outbox_retry(self, outbox_id: str, error: str) -> dict[str, Any] | None:
+        """Push a pending outbox row forward after a failed publish. `failed` when attempts are used up."""
+        now = utcnow()
+        cap_seconds = timedelta(minutes=15).total_seconds()
+        with self.tx() as s:
+            job = s.scalars(
+                select(orm.OutboxJob)
+                .where(orm.OutboxJob.id == outbox_id)
+                .with_for_update()
+            ).first()
+            if job is None or job.status != "pending":
+                return None
+            attempts = int(job.attempts) + 1
+            job.attempts = attempts
+            job.last_error_json = {"message": error}
+            if attempts > int(job.max_attempts):
+                job.status = "failed"
+                s.flush()
+                return _row_dict(job)
+            delay_seconds = min(cap_seconds, 2 ** (attempts - 1))
+            job.next_attempt_at = now + timedelta(seconds=delay_seconds)
+            s.flush()
+            return _row_dict(job)
+
+    def claim_queued_job(self, worker_id: str) -> dict[str, Any] | None:
+        """Lock one queued execute_run job and mark it running. None when nothing is due."""
+        now = utcnow()
+        with self.tx() as s:
+            job = s.scalars(
+                select(orm.JobQueue)
+                .where(
+                    orm.JobQueue.status == "queued", 
+                    orm.JobQueue.job_type == "execute_run",
+                    orm.JobQueue.available_at <= now,
+                )
+                .order_by(orm.JobQueue.available_at, orm.JobQueue.created_at)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            ).first()
+            if job is None:
+                return None
+            job.status = "running"
+            job.lock_by = worker_id
+            s.flush()
+            return _row_dict(job)
+
+    def mark_outbox_dispatched(self, outbox_id: str) -> dict[str, Any] | None:
+        """Mark one outbox row as dispatched. This is the consume step, in its own transaction."""
+        now = utcnow()
+        with self.tx() as s:
+            job = s.scalars(
+                select(orm.OutboxJob).where(orm.OutboxJob.id == outbox_id).with_for_update()
+            ).first()
+            if job is None or job.status != "pending":
+                return None
+            payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+            run_id = payload.get("run_id")
+            run = s.get(orm.AgentRun, run_id) if isinstance(run_id, str) else None
+            if run is None:
+                return None
+            job.status = "dispatched"
+            job.dispatch_at = now
+            self.__append_event(s, run_id, "run.enqueued", {"outbox_job_id": job.id}, now)
+            s.flush()
+            return _row_dict(job)
+
+    def find_agent_run_by_id(self, run_id: str) -> dict[str, Any] | None:
+        """Load a run by primary key. The worker has noorg header; the HTTP API still filters by org."""
+        with self.tx() as s:
+            row = s.get(orm.AgentRun, run_id)
+            return _row_dict(row) if row else None
+
+    def claim_run(self, run_id: str, worker_id: str, lease_expires_at: datetime) -> dict[str, Any] | None:
+        """Claim a queued run and append `run.started` together. None when it is no longer queued."""
+        now = utcnow()
+        with self.tx() as s:
+            run = s.scalars(
+                select(orm.AgentRun)
+                .where(orm.AgentRun.id == run_id, orm.AgentRun.status == "queued")
+                .with_for_update()
+            ).first()
+            if run is None:
+                return None
+            run.status = "running"
+            run.lease_owner = worker_id
+            run.lease_expires_at = lease_expires_at
+            run.updated_at = now
+            if run.started_at is None:
+                run.started_at = now
+            self.__append_event(s, run_id, "run.started", {"lease_owner": worker_id}, now)
+            s.flush()
+            return _row_dict(run)
+
+    def complete_run(self, run_id: str, output: dict[str, Any]) -> dict[str, Any] | None:
+        """Write `succeeded`, `output_json`, and `run.completed` together. None when the run is not running."""
+        now = utcnow()
+        with self.tx() as s:
+            run = s.scalars(
+                select(orm.AgentRun)
+                .where(orm.AgentRun.id == run_id, orm.AgentRun.status == "running")
+                .with_for_update()
+            ).first()
+            if run is None:
+                return None
+            if run.cancel_requested_at is not None:
+                return None
+            run.status = "succeeded"
+            run.output_json = output
+            run.ended_at = now
+            run.updated_at = now
+            self.__append_event(s, run_id, "run.completed", {"status": "succeeded"}, now)
+            s.flush()
+            return _row_dict(run)
+
+    def ack_job(self, job_id: str) -> dict[str, Any] | None:
+        """Mark a queue row finished. Call this only after the run row has committed."""
+        now = utcnow()
+        with self.tx() as s:
+            job = s.get(orm.JobQueue, job_id)
+            if job is None:
+                return None
+            job.status = "succeeded"
+            job.finished_at = now
+            s.flush()
+            return _row_dict(job)
+
+    def requeue_job(self, job_id: str, run_id: str, error: str) -> dict[str, Any] | None: 
+        """Put a running queue row back. A still-running run goes back to queued so it can be claimed again."""
+        now = utcnow()
+        with self.tx() as s:
+            job = s.scalars(
+                select(orm.JobQueue)
+                .where(orm.JobQueue.id == job_id, orm.JobQueue.status == "running")
+                .with_for_update()
+            ).first()
+            if job is None:
+                return None
+            job.status = "queued"
+            job.lock_by = None
+            job.lock_until = None
+            job.available_at = now + timedelta(seconds=5)
+            job.last_error_json = {"kind": "infrastructure", "message": error}
+            if run_id:
+                run = s.scalars(
+                    select(orm.AgentRun)
+                    .where(orm.AgentRun.id == run_id, orm.AgentRun.status == "running")
+                    .with_for_update()
+                ).first()
+                if run is not None:
+                    run.status = "queued"
+                    run.lease_owner = None
+                    run.lease_expires_at = None
+                    run.updated_at = now
+            s.flush()
+            return _row_dict(job)
+
+    def _lock_running_pair(
+        self, s: Session, job_id: str, run_id: str
+    ) -> tuple[orm.JobQueue | None, orm.AgentRun | None]:
+        job = s.scalars(
+            select(orm.JobQueue)
+            .where(orm.JobQueue.id == job_id, orm.JobQueue.status == "running")
+            .with_for_update()
+        ).first()
+        run = s.scalars(
+            select(orm.AgentRun)
+            .where(orm.AgentRun.id == run_id, orm.AgentRun.status == "running")
+            .with_for_update()
+        ).first()
+        if job is None or run is None:
+            return None
+        return job, run
+
+    def fail_run(self, job_id: str, run_id: str, error: dict[str, Any]) -> dict[str, Any] | None:
+        """Permanent failure: fail the run, append `run.failed`, and finish the queue row."""
+        now = utcnow()
+        with self.tx() as s:
+            locked = self._lock_running_pair(s, job_id, run_id)
+            if locked is None:
+                return None
+            job, run = locked
+            self._fail_locked_run(s, job, run, error, "permanent", now)
+            s.flush()
+            return _row_dict(run)
+
+    def schedule_retry(
+        self, 
+        job_id: str, 
+        run_id: str,
+        error: dict[str, Any],
+        delays: tuple[timedelta, ...],
+    ) -> str | None:
+        """Count one transient failure. `retry` queues it again; `dead letter` stops it.
+
+        None when the run is no longer running, for example because it was cancelled.
+        """
+        now = utcnow()
+        with self.tx() as s:
+            locked = self._lock_running_pair(s, job_id, run_id)
+            if locked is None:
+                return None
+            job, run = locked
+            attempts = int(job.attempts) + 1
+            job.attempts = attempts
+            job.last_error_json = error
+            if attempts > int(job.max_attempts):
+                self._fail_locked_run(s, job, run, error, "dead_letter", now)
+                s.add(orm.DeadLetterJob(
+                    id=f"dlj_{uuid.uuid4().hex}", 
+                    original_job_id=job.id, 
+                    job_type=job.job_type,
+                    payload_json=job.payload_json,
+                    attempts=attempts,
+                    error_json=error,
+                    created_at=now
+                ))
+                s.flush()
+                return "dead_letter"
+            delay = delays[min(attempts, len(delays)) - 1]
+            available_at = now + delay
+            job.status = "queued"
+            job.available_at = available_at
+            job.lock_by = None
+            run.status = "queued"
+            run.lease_owner = None
+            run.lease_expires_at = None
+            run.updated_at = now
+            self.__append_event(s, run_id, "run.retry_scheduled", {"attempts": attempts, "available_at": available_at.isoformat()}, now)
+            s.flush()
+            return "retry"
+
+    def _fail_locked_run(
+        self, 
+        s: Session, 
+        job: orm.JobQueue, 
+        run: orm.AgentRun, 
+        error: dict[str, Any], 
+        reason: str, 
+        now: datetime
+    ) -> None:
+        run.status = "failed"
+        run.error_json = error
+        run.ended_at = now
+        run.updated_at = now
+        run.lease_owner = None
+        run.lease_expires_at = None
+        job.status = "failed"
+        job.finished_at = now
+        job.last_error_json = error
+        self.__append_event(s, run.id, "run.failed", {"status": "failed", "reason": reason}, now)
+
+    def run_trace(self, org_id: str, run_id: str) -> dict[str, Any] | None:
+        """Run plus its steps, events, model calls, tool calls and checkpoints.
+
+        None when the run is missing or belongs to another org. The lists stay empty until a
+        later chapter writes those rows; the final reply is only `output_json`.
+        """
+        with self.tx() as s:
+            run = s.scalars(
+                select(orm.AgentRun).where(orm.AgentRun.id == run_id, orm.AgentRun.org_id == org_id)
+            ).first()
+            if run is None:
+                return None
+            return {
+                "run": _row_dict(run),
+                "steps": self._run_rows(s, orm.AgentStep, orm.AgentStep.step_index, run_id),
+                "events": self._run_rows(s, orm.RunEvent, orm.RunEvent.sequence, run_id),
+                "model_calls": self._run_rows(s, orm.ModelCall, orm.ModelCall.created_at, run_id),
+                "tool_calls": self._run_rows(s, orm.ToolCall, orm.ToolCall.created_at, run_id),
+                "checkpoints": self._run_rows(s, orm.Checkpoint, orm.Checkpoint.checkpoint_index, run_id),
+            }
+
+    @staticmethod
+    def _run_rows(s: Session, model: type, order: Any, run_id: str) -> list[dict[str, Any]]:
+        rows = s.scalars(select(model).where(model.run_id == run_id).order_by(order))
+        return [_row_dict(row) for row in rows]
 
     # --- purchase orders --------------------------------------------------------------
     def insert_po(self, po: PurchaseOrder, items: list[dict[str, Any]], rule_snapshot: list[dict[str, Any]]) -> None:

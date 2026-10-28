@@ -9,12 +9,12 @@ from collections.abc import Iterator
 from typing import Any
 
 from ..db import Database
-from ..llm import LLM
+from ..llm import calls as model_calls
 from ..memory import attach, prompt_context, prompt_turns, record_history, standing_block, summary_block
 from .prompt import ANSWER
 
 
-def attach_model_json(message: dict[str, Any], llm: LLM | None) -> None:
+def attach_model_json(message: dict[str, Any], llm: Any | None) -> None:
     """Copy this turn's JSON objects onto the assistant message. The list on the client is replaced next turn."""
     from .status import current_activity
 
@@ -28,7 +28,7 @@ def attach_model_json(message: dict[str, Any], llm: LLM | None) -> None:
 
 def one_shot(
     db: Database, session: dict[str, Any], text: str, extra: dict[str, Any] | None = None,
-    llm: LLM | None = None,
+    llm: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
     assistant: dict[str, Any] = {"role": "assistant", "content": text}
     attach_model_json(assistant, llm)
@@ -55,7 +55,7 @@ def _chat_messages(session: dict[str, Any], prompt: str) -> list[dict[str, Any]]
 
 def save_reply(
     db: Database, session: dict[str, Any], text: str, reply: str, extra: dict[str, Any] | None,
-    llm: LLM | None = None, session_fields: dict[str, Any] | None = None,
+    llm: Any | None = None, session_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     history = list(session.get("history") or [])
     # The raw extraction and heading tree stay on the message for confirm. The done
@@ -116,7 +116,7 @@ def save_reply(
 
 
 def answer_directly(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, *,
+    db: Database, llm: Any, session: dict[str, Any], text: str, *,
     prompt_text: str | None = None, system: str | None = None, extra: dict[str, Any] | None = None,
     done_step: tuple[str, str, str] | None = None, session_fields: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
@@ -126,7 +126,9 @@ def answer_directly(
     system = attach(system or ANSWER, prompt_context(
         standing_block(db, session["partnership_id"], session.get("user_id")), summary_block(session.get("summary")),
     ))
-    for chunk in llm.stream_text(system=system, messages=_chat_messages(session, prompt_text or text)):
+    for chunk in model_calls.school_text(
+        model_calls.SCHOOL_CHAT, system=system, messages=_chat_messages(session, prompt_text or text),
+    ):
         parts.append(chunk)
         yield {"type": "token", "text": chunk}
     reply = "".join(parts).strip() or "How can I help?"

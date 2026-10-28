@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..db import Database
-from ..llm import LLM
+from ..llm import calls as model_calls
 from ..schemas import PurchaseOrder
 from .prompt import CLAIM, PAYMENT, RECEIPT
 
@@ -109,19 +109,28 @@ def _conf(raw: dict[str, Any]) -> float:
     return c if 0 <= c <= 1 else 0.0
 
 
-def classify_receipt(llm: LLM, message: str) -> tuple[str, float]:
-    raw = llm.complete_json(system=RECEIPT_PROMPT, messages=[{"role": "user", "content": message[:4000]}], temperature=0, max_tokens=100)
+def classify_receipt(llm: Any, message: str) -> tuple[str, float]:
+    raw = model_calls.school_json(
+        model_calls.SCHOOL_CHAT, system=RECEIPT_PROMPT,
+        messages=[{"role": "user", "content": message[:4000]}], temperature=0,
+    )
     v = raw.get("verdict")
     return (v if v in ("none", "received_ok", "received_ok_paid", "issues") else "none"), _conf(raw)
 
 
-def classify_payment(llm: LLM, message: str) -> tuple[bool, float]:
-    raw = llm.complete_json(system=PAYMENT_PROMPT, messages=[{"role": "user", "content": message[:4000]}], temperature=0, max_tokens=60)
+def classify_payment(llm: Any, message: str) -> tuple[bool, float]:
+    raw = model_calls.school_json(
+        model_calls.SCHOOL_CHAT, system=PAYMENT_PROMPT,
+        messages=[{"role": "user", "content": message[:4000]}], temperature=0,
+    )
     return raw.get("paid") is True, _conf(raw)
 
 
-def extract_claim(llm: LLM, message: str) -> dict[str, Any]:
-    raw = llm.complete_json(system=CLAIM_PROMPT, messages=[{"role": "user", "content": message[:4000]}], temperature=0, max_tokens=400)
+def extract_claim(llm: Any, message: str) -> dict[str, Any]:
+    raw = model_calls.school_json(
+        model_calls.SCHOOL_CHAT, system=CLAIM_PROMPT,
+        messages=[{"role": "user", "content": message[:4000]}], temperature=0,
+    )
     return {"lines": raw.get("lines") or [], "resolution": raw.get("resolution"), "confidence": _conf(raw)}
 
 
@@ -135,7 +144,7 @@ class ClaimOutcome:
     data: dict[str, Any] | None = None
 
 
-def handle_post_submit(db: Database, llm: LLM, po: PurchaseOrder, message: str) -> ClaimOutcome:
+def handle_post_submit(db: Database, llm: Any, po: PurchaseOrder, message: str) -> ClaimOutcome:
     """Run the classifiers that make sense for the order's state and apply the first
     confident verdict. Anything below MIN_CONFIDENCE is left for a human."""
     verdict, conf = classify_receipt(llm, message)

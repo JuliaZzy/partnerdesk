@@ -4,17 +4,20 @@
 call and one assistant turn. `fake` is the test double.
 """
 
-from .client import LLM, OpenAICompatLLM
+from .client import GLMClient, GLMOCRClient, QwenClient, DeepSeekClient, SJTUClient
 from .fake import FakeLLM
 from .parse import parse_json_loose
 from .types import AssistantTurn, Message, ToolCall
 
 __all__ = [
-    "LLM",
+    "GLMClient",
+    "GLMOCRClient",
+    "QwenClient",
+    "DeepSeekClient",
+    "SJTUClient",
     "AssistantTurn",
     "FakeLLM",
     "Message",
-    "OpenAICompatLLM",
     "ToolCall",
     "parse_json_loose",
 ]

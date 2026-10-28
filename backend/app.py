@@ -6,14 +6,15 @@ database and a model for this process (tests pass their own).
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import FastAPI
 
 from .db import Database
-from .llm import LLM
 from .router import include_routers
 
 
-def create_app(db: Database | None = None, llm: LLM | None = None) -> FastAPI:
+def create_app(db: Database | None = None, llm: Any | None = None) -> FastAPI:
     app = FastAPI(title="KA Account Agent")
     app.state.db = db
     app.state.llm = llm

@@ -8,12 +8,8 @@ rendered to JPEG for a vision model; that image does not replace the OCR text.
 
 from __future__ import annotations
 
-import base64
 import io
-import json
 import re
-import urllib.error
-import urllib.request
 
 from .config import env
 
@@ -22,7 +18,6 @@ PSEUDO_PAGE_CHARS = 3500
 MAX_FILE_BYTES = 20 * 1024 * 1024
 JPEG_QUALITY = 72
 MAX_IMAGE_WIDTH = 1600
-GLM_TIMEOUT = 180
 
 SUPPORTED_EXTS = (".pdf", ".txt", ".md", ".docx")
 
@@ -82,31 +77,13 @@ def _pages_from_payload(payload: dict) -> list[tuple[int, str]]:
 
 def ocr_pdf(data: bytes) -> list[tuple[int, str]]:
     """Pages of one PDF from GLM-OCR. Raises ValueError when the key is missing or the call fails."""
+    from .llm.client import GLMOCRClient
+
     key = env("GLM_API_KEY")
     url = env("GLM_BASE_URL")
     if not key or not url:
         raise ValueError("GLM_API_KEY and GLM_BASE_URL must both be set in .env.")
-    body = json.dumps({
-        "model": "glm-ocr",
-        "file": "data:application/pdf;base64," + base64.b64encode(data).decode(),
-    }).encode()
-    req = urllib.request.Request(
-        url, data=body, method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=GLM_TIMEOUT) as resp:
-            payload = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as err:
-        detail = err.read().decode("utf-8", errors="replace")[:300]
-        raise ValueError(f"GLM-OCR HTTP {err.code}: {detail}") from err
-    except urllib.error.URLError as err:
-        raise ValueError(f"GLM-OCR request failed: {err.reason}") from err
-    if not isinstance(payload, dict):
-        raise ValueError("GLM-OCR returned a non-object response.")
-    if payload.get("error"):
-        raise ValueError(f"GLM-OCR error: {payload['error']}")
-    return _pages_from_payload(payload)
+    return _pages_from_payload(GLMOCRClient(api_key=key, url=url).parse(data))
 
 
 def load_pages(file_name: str, data: bytes) -> list[tuple[int, str]]:

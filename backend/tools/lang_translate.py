@@ -1,14 +1,15 @@
 """翻译一段文字。模型只改语言，不增加事实，也不删事实。
 
 「把刚刚的报告译成英语」这种理解属于调用方。这个模块只决定翻译哪一段，
-然后做一次模型调用。
+然后用学校网关的 deepseek-chat 做一次调用。聊天模型不参与。
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from ..llm import LLM
+from ..config import LLMSettings
+from ..llm import SJTUClient
 
 SYSTEM = """你是一名专业的翻译，请把用户给出的文字译成用户要求的语言。
 如果用户没有提供目标语言，请及时提问，直到用户提供为止。
@@ -78,26 +79,22 @@ def resolve_text(arguments: dict[str, Any], context: dict[str, Any] | None) -> s
     return report
 
 
-def translate(llm: LLM, *, text: str, target_language: str) -> str:
-    raw = llm.complete_json(
-        system=SYSTEM,
-        messages=[{
-            "role": "user",
-            "content": f"目标语言：{target_language}\n\n原文：\n{text}",
-        }],
-        schema={
-            "name": "translation",
-            "strict": False,
-            "schema": {
-                "type": "object",
-                "properties": {"translation": {"type": "string"}},
-                "required": ["translation"],
-            },
-        },
-        temperature=0,
-        max_tokens=2000,
+def translate(*, text: str, target_language: str) -> str:
+    """One campus chat call. The reply text is the translation."""
+    client = SJTUClient(LLMSettings(base_url=None, api_key=""))
+    resp = client.chat_completion(
+        "deepseek-chat",
+        [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": f"目标语言：{target_language}\n\n原文：\n{text}"},
+        ],
+        temperature=0.3,
     )
-    out = str(raw.get("translation") or "").strip()
+    try:
+        raw = resp["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError) as err:
+        raise ValueError("Campus model did not return a translation.") from err
+    out = str(raw).strip()
     if not out:
         raise ValueError("empty translation")
     return out
@@ -112,12 +109,14 @@ def _target(arguments: dict[str, Any]) -> str:
     return ""
 
 
-def run(arguments: dict[str, Any], *, llm: LLM, context: dict[str, Any] | None = None) -> dict[str, Any]:
+def run(arguments: dict[str, Any], *, llm: Any = None, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """`llm` is the chat model. Translation does not use it."""
+    del llm
     target = _target(arguments)
     if not target:
         return {"ok": False, "data": None, "error": "target_language required"}
     try:
         text = resolve_text(arguments, context)
-        return {"ok": True, "data": {"translation": translate(llm, text=text, target_language=target)}, "error": None}
+        return {"ok": True, "data": {"translation": translate(text=text, target_language=target)}, "error": None}
     except Exception as err:
         return {"ok": False, "data": None, "error": str(err)}

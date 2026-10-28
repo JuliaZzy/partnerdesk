@@ -5,11 +5,42 @@ the contract. A chat attachment that is only a name does not pretend to have the
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from backend import service
 from backend.contract import read_agreement, read_and_ingest, sanitize_extraction
 from backend.llm import FakeLLM
+
+
+class _Output:
+    def __init__(self, text: str):
+        self.output_text = text
+
+
+class _Readers:
+    """One queue for both clients. School selections and extractions are consumed in call order."""
+
+    def __init__(self, replies: list[dict]):
+        self.replies = list(replies)
+        self.calls: list[dict] = []
+
+    def chat_completion(self, model, messages, stream=False, max_tokens=None, temperature=None):
+        self.calls.append({"kind": "school", "model": model, "messages": messages})
+        raw = self.replies.pop(0)
+        return {"choices": [{"message": {"content": json.dumps(raw, ensure_ascii=False)}}]}
+
+    def response(self, **kwargs):
+        self.calls.append({
+            "kind": "extract", "model": kwargs.get("model"), "input": kwargs.get("input"), "text": kwargs.get("text"),
+        })
+        raw = self.replies.pop(0)
+        return _Output(json.dumps(raw, ensure_ascii=False))
+
+
+def _user(call: dict) -> str:
+    return call["messages"][1]["content"]
 
 AGREEMENT = (
     "Distribution agreement.\n\n"
@@ -60,13 +91,17 @@ def test_sanitize_keeps_only_quotes_that_are_in_the_document():
 
 
 def test_read_and_file_an_agreement(db):
-    llm = FakeLLM(json_replies=[dict(EXTRACTION)])
-    rec = read_and_ingest(db, llm, brand_id="brand-1", partnership_id="ps-1", file_name="agreement.txt", data=AGREEMENT.encode(), title="Nordic 2026")
+    readers = _Readers([dict(EXTRACTION)])
+    rec = read_and_ingest(
+        db, readers, readers, brand_id="brand-1", partnership_id="ps-1",
+        file_name="agreement.txt", data=AGREEMENT.encode(), title="Nordic 2026",
+    )
     assert rec.contract.title == "Nordic 2026" and rec.terms.discount_rules[0].tiers[0].discount_percent == 3
     assert len(rec.terms.evidence) == 1
     stored = db.active_contract("ps-1")
     assert stored and stored.id == rec.contract.id and stored.file_name == "agreement.txt"
-    content = llm.calls[0]["messages"][0]["content"]
+    assert readers.calls[0]["model"] == "deepseek-flash"
+    content = readers.calls[0]["input"]
     assert "Section path: preamble" in content or "Section id: c1" in content
     assert db.contract_chunks(rec.contract.id)
 
@@ -83,68 +118,71 @@ _EMPTY = {
 
 def test_the_model_picks_chunks_from_the_full_outline():
     text = "第一条 定义\n术语以本合同为准。\n第二条 订货\n最低订单金额为 USD 500。\n"
-    llm = FakeLLM(json_replies=[{"selected_ids": ["c2"]}, dict(EXTRACTION), {"selected_ids": []}])
-    read_agreement(llm, "agreement.txt", text.encode())
-    select, extract, reflect = llm.calls
-    assert select["schema"]["name"] == "contract_chunk_select"
-    outline = select["messages"][0]["content"]
+    readers = _Readers([{"selected_ids": ["c2"]}, dict(EXTRACTION), {"selected_ids": []}])
+    read_agreement(readers, readers, "agreement.txt", text.encode())
+    select, extract, reflect = readers.calls
+    assert select["model"] == "deepseek-chat"
+    outline = _user(select)
     assert "第一条" in outline and "定义" in outline and "第二条" in outline and "订货" in outline
     assert "术语以本合同为准" not in outline
-    body = extract["messages"][0]["content"]
+    body = extract["input"]
     assert "USD 500" in body and "术语以本合同为准" not in body
-    retry = reflect["messages"][0]["content"]
+    retry = _user(reflect)
     assert "missing_fields" in retry and "定义" in retry and "订货" not in retry
 
 
 def test_high_confidence_skips_another_pass():
     text = "第一条 定义\n术语以本合同为准。\n第二条 订货\n最低订单金额为 USD 500。\n"
     high = {**EXTRACTION, "confidence_score": 0.9}
-    llm = FakeLLM(json_replies=[{"selected_ids": ["c2"]}, high, {"selected_ids": ["c1"]}])
-    extraction, _tree = read_agreement(llm, "agreement.txt", text.encode())
+    readers = _Readers([{"selected_ids": ["c2"]}, high, {"selected_ids": ["c1"]}])
+    extraction, _tree = read_agreement(readers, readers, "agreement.txt", text.encode())
     assert extraction["confidence_score"] == 0.9
-    assert len(llm.calls) == 2
-    assert llm.json_replies == [{"selected_ids": ["c1"]}]
+    assert len(readers.calls) == 2
+    assert readers.replies == [{"selected_ids": ["c1"]}]
 
 
 def test_a_blank_field_is_read_from_an_unread_chunk():
     text = "第一条 定义\n术语以本合同为准。\n第二条 订货\n最低订单金额为 USD 500。\n"
-    llm = FakeLLM(json_replies=[{"selected_ids": ["c1"]}, dict(_EMPTY), {"selected_ids": ["c2"]}, dict(EXTRACTION)])
-    extraction, _tree = read_agreement(llm, "agreement.txt", text.encode())
+    readers = _Readers([{"selected_ids": ["c1"]}, dict(_EMPTY), {"selected_ids": ["c2"]}, dict(EXTRACTION)])
+    extraction, _tree = read_agreement(readers, readers, "agreement.txt", text.encode())
     assert extraction["minimum_order_quantities"][0]["quantity"] == 500
     assert extraction["territory_text"] == "Sweden."
-    reflect = llm.calls[2]["messages"][0]["content"]
+    reflect = _user(readers.calls[2])
     assert "minimum_order_quantities" in reflect and "订货" in reflect and "术语以本合同为准" not in reflect
-    assert len(llm.calls) == 4
+    assert len(readers.calls) == 4
 
 
 def test_reflection_stops_after_three_passes():
     text = "第一条 定义\n甲。\n第二条 期限\n自 2026-01-01 起。\n第三条 区域\n瑞典。\n第四条 订货\n最低订单金额为 USD 500。\n"
-    llm = FakeLLM(json_replies=[
+    readers = _Readers([
         {"selected_ids": ["c1"]}, dict(_EMPTY),
         {"selected_ids": ["c2"]}, dict(_EMPTY),
         {"selected_ids": ["c3"]}, dict(_EMPTY),
         {"selected_ids": ["c4"]}, dict(EXTRACTION),
     ])
     with pytest.raises(ValueError, match="No enforceable terms"):
-        read_agreement(llm, "agreement.txt", text.encode())
-    extracts = [call for call in llm.calls if (call.get("schema") or {}).get("name") == "contract_extraction"]
-    assert len(llm.calls) == 6 and len(extracts) == 3
-    assert all("最低订单金额" not in call["messages"][0]["content"] for call in extracts)
-    assert len(llm.json_replies) == 2
+        read_agreement(readers, readers, "agreement.txt", text.encode())
+    extracts = [call for call in readers.calls if call["kind"] == "extract"]
+    assert len(readers.calls) == 6 and len(extracts) == 3
+    assert all("最低订单金额" not in call["input"] for call in extracts)
+    assert len(readers.replies) == 2
 
 
 def test_outline_shows_a_heading_sentence_when_there_is_no_short_title():
     text = '1.1 "Container" means one shipping container.\n第二条 订货\n最低订单金额为 USD 500。\n'
-    llm = FakeLLM(json_replies=[{"selected_ids": ["c2"]}, dict(EXTRACTION), {"selected_ids": []}])
-    read_agreement(llm, "agreement.txt", text.encode())
-    outline = llm.calls[0]["messages"][0]["content"]
+    readers = _Readers([{"selected_ids": ["c2"]}, dict(EXTRACTION), {"selected_ids": []}])
+    read_agreement(readers, readers, "agreement.txt", text.encode())
+    outline = _user(readers.calls[0])
     assert "Container" in outline and "订货" in outline and "USD 500" not in outline
 
 
 def test_a_file_with_no_terms_is_not_written(db):
-    llm = FakeLLM(json_replies=[{"commercial_discount_rules": [], "minimum_order_quantities": [], "allowed_countries": [], "excluded_countries": [], "field_evidence": {}}])
+    readers = _Readers([{
+        "commercial_discount_rules": [], "minimum_order_quantities": [],
+        "allowed_countries": [], "excluded_countries": [], "field_evidence": {},
+    }])
     with pytest.raises(ValueError, match="No enforceable terms"):
-        read_agreement(llm, "empty.txt", b"Hello, this message has no commercial terms at all, just a greeting.")
+        read_agreement(readers, readers, "empty.txt", b"Hello, this message has no commercial terms at all, just a greeting.")
     assert db.active_contract("ps-1") is None
 
 
@@ -152,7 +190,7 @@ def _plan(name: str) -> dict:
     return {"tasks": [{"id": "1", "kind": "agent", "name": name, "input": {}, "depends_on": []}]}
 
 
-def test_chat_holds_the_agreement_until_confirm(db):
+def test_chat_holds_the_agreement_until_confirm(db, monkeypatch):
     sid = service.new_session(db, "ps-1")["id"]
     named = FakeLLM(
         json_replies=[{"tags": ["contract"], "title": "agreement"}, _plan("contract")],
@@ -164,7 +202,10 @@ def test_chat_holds_the_agreement_until_confirm(db):
     assert db.active_contract("ps-1") is None
     assert not any((c.get("schema") or {}).get("name") == "contract_extraction" for c in named.calls)
 
-    llm = FakeLLM(json_replies=[_plan("contract"), dict(EXTRACTION)], text_reply="Filed the agreement.")
+    readers = _Readers([dict(EXTRACTION)])
+    monkeypatch.setattr("backend.contract.turn.DeepSeekClient", lambda settings: readers)
+    monkeypatch.setattr("backend.contract.turn.SJTUClient", lambda settings: readers)
+    llm = FakeLLM(json_replies=[_plan("contract")], text_reply="Filed the agreement.")
     ev = list(service.handle_message(db, llm, sid, "please file this", documents=[("agreement.txt", AGREEMENT.encode())]))
     done = ev[-1]
     assert done.get("contract_id") in (None, "")

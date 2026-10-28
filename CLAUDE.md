@@ -9,7 +9,7 @@
 
 不要在宿主机调 `uvicorn` / `pytest` / `npm`，也不要创建 `.venv` 来跑这个项目。统一走 `./dev`
 （Windows 是 `dev.bat`）：它把每条命令送到 Docker Compose。桌面是 `frontend/` 里的 Vite 应用，
-`./dev` 会拉起 Postgres + Redis + Milvus + API + 前端：
+`./dev` 会拉起 Postgres + Redis + Milvus + API + Celery worker + 前端：
 
 ```
 ./dev            桌面 UI（Vite + React） http://localhost:5173

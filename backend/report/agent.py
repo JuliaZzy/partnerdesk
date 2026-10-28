@@ -7,13 +7,12 @@ from collections.abc import Iterator
 from typing import Any
 
 from ..db import Database
-from ..llm import LLM
 from ..orchestrator.speak import save_reply
 from .turn import ReportDraft, iter_draft
 
 
 def run(
-    db: Database, llm: LLM, session: dict[str, Any], text: str, *,
+    db: Database, llm: Any, session: dict[str, Any], text: str, *,
     partnership_id: str, brand_id: str, distributor_id: str, hint: str | None,
 ) -> Iterator[dict[str, Any]]:
     db.update_session(session["id"], specialist="report")

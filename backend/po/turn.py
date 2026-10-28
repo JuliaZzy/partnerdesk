@@ -18,7 +18,6 @@ from typing import Any
 
 from ..contract import contract_discount_for_next_order
 from ..db import Database
-from ..llm import LLM
 from ..memory import prompt_context, recall, record_history, summary_block, with_memory
 from ..orchestrator.speak import attach_model_json
 from ..orchestrator.status import status
@@ -57,7 +56,7 @@ def load_bundle(db: Database, partnership_id: str, user_id: str | None = None) -
     return Bundle(partnership=p, settings=settings, catalog=Catalog(db.products(p.brand_id)), rules=db.rules(p.brand_id))
 
 
-def _check(bundle: Bundle, slots: PoSlots, llm: LLM | None) -> CheckResult:
+def _check(bundle: Bundle, slots: PoSlots, llm: Any | None) -> CheckResult:
     resolve = (lambda refs: resolve_references(llm, refs, bundle.catalog.resolver_rows())) if llm else None
     check = run_code_check(
         slots=slots, catalog=bundle.catalog, rules=bundle.rules,
@@ -103,7 +102,7 @@ def _gap_detail(check: CheckResult) -> list[dict[str, Any]]:
 
 
 def prepare_order(
-    db: Database, llm: LLM, bundle: Bundle, session: dict[str, Any], message: str, images: list[str] | None = None,
+    db: Database, llm: Any, bundle: Bundle, session: dict[str, Any], message: str, images: list[str] | None = None,
 ) -> PoPrepared:
     """Fill slots and price the draft. Does not speak and does not write the session."""
     images = images or []
@@ -181,7 +180,7 @@ def order_result(prepared: PoPrepared, bundle: Bundle, *, clear_po: bool = False
 
 
 def run_po_turn(
-    db: Database, llm: LLM, bundle: Bundle, session: dict[str, Any], message: str, images: list[str] | None = None,
+    db: Database, llm: Any, bundle: Bundle, session: dict[str, Any], message: str, images: list[str] | None = None,
 ) -> Iterator[dict[str, Any]]:
     prepared = prepare_order(db, llm, bundle, session, message, images)
     yield from prepared.events

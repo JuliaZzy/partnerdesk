@@ -33,15 +33,24 @@ export function postForm<T>(path: string, file: File, fields: Record<string, str
   return api<T>(path, { method: "POST", body });
 }
 
+export function cancelRun(runId: string, orgId: string, userId: string): Promise<void> {
+  return api<void>(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+    headers: { "X-Org-Id": orgId, "X-User-Id": userId },
+  });
+}
+
 export async function streamMessage(
   sid: string,
   body: unknown,
   onEvent: (event: Record<string, unknown>) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`/api/sessions/${sid}/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok || !res.body) throw new ApiError(await readError(res));
   const reader = res.body.getReader();

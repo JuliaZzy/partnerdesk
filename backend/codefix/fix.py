@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from ..llm import LLM
+from ..llm import calls as model_calls
 from .prompt import CODE_FIX_PROMPT
 
 MAX_ATTEMPTS = 3
@@ -30,7 +30,7 @@ def fix_schema() -> dict[str, Any]:
 
 
 def with_reflection(
-    llm: LLM, *, kind: str, first: str,
+    llm: Any, *, kind: str, first: str,
     run: Callable[[str], tuple[bool, Any, str | None, str]],
 ) -> tuple[Any, list[dict[str, str]]]:
     """Run first. On failure, revise and run again, at most three runs."""
@@ -69,9 +69,9 @@ def format_failures(attempts: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def _revise(llm: LLM, *, kind: str, artifact: str, error: str, output: str) -> str:
+def _revise(llm: Any, *, kind: str, artifact: str, error: str, output: str) -> str:
     try:
-        raw = llm.complete_json(
+        raw = model_calls.flash_json(
             system=CODE_FIX_PROMPT.format(
                 kind=kind,
                 code=(artifact or "（无）")[:6000],
@@ -79,7 +79,7 @@ def _revise(llm: LLM, *, kind: str, artifact: str, error: str, output: str) -> s
                 stdout=(output or "（无）")[:1500],
             ),
             messages=[{"role": "user", "content": "按错误信息修复这一次失败的内容。"}],
-            schema=fix_schema(), temperature=0.2, max_tokens=2_000,
+            schema=fix_schema(), temperature=0,
         )
     except Exception:
         return ""

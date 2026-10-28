@@ -83,7 +83,7 @@ def test_cached_exchange_rate_skips_the_network(monkeypatch):
         fx_drop("USD", "EUR")
 
 
-def test_one_reply_covers_contract_and_data(db):
+def test_one_reply_covers_contract_and_data(db, monkeypatch):
     db.insert_po(PurchaseOrder(**dict(
         id="po-fan", po_number="PO-FAN", brand_id="brand-1", distributor_id="dist-1", partnership_id="ps-1",
         status="submitted", currency="USD", payment_terms="net_30", incoterms="FOB", shipping_method="sea",
@@ -91,14 +91,18 @@ def test_one_reply_covers_contract_and_data(db):
         subtotal_amount=1000, total_amount=1000,
     )), [], [])
     sid = db.create_session("sess-fan", "ps-1")["id"]
+    from tests.test_text2sql import _models
+
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+    ])
     llm = FakeLLM(json_replies=[
         {"tags": ["data", "contract"], "title": "一起"},
         {"tasks": [
             {"id": "c", "kind": "agent", "name": "contract", "input": {}, "depends_on": []},
             {"id": "d", "kind": "agent", "name": "data", "input": {"question": "order total"}, "depends_on": []},
         ]},
-        {"tables": ["purchase_orders"]},
-        {"sql": "SELECT total_amount FROM purchase_orders"},
     ], text_reply="合同还没有文件。总额 1000。")
     events = list(service.handle_message(db, llm, sid, "查一下订单总额，顺便看看合同"))
     running = [event.get("title") for event in events if event.get("type") == "status" and event.get("state") == "running"]

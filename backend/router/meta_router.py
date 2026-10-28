@@ -7,9 +7,9 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from .. import service
-from ..config import chat_models, default_model_id
 from ..db import Database
 from ..deps import get_db
+from ..llm_config import LLM_CONFIGS
 from ..memory import KIND_LABELS
 from ..schemas import PRODUCT_STATUS_VALUES
 
@@ -23,15 +23,20 @@ def index() -> dict[str, str]:
 
 @router.get("/api/meta")
 def meta() -> dict[str, Any]:
+    models = [
+        {
+            "id": row.id,
+            "label": row.id,
+            "short": row.id,
+            "description": row.description,
+            "vision": row.id == "qwen",
+            "thinking": row.thinking,
+        }
+        for row in LLM_CONFIGS
+    ]
     return {
-        "models": [
-            {
-                "id": m.id, "label": m.label, "short": m.short or m.label, "description": m.description,
-                "vision": m.vision, "thinking": m.thinking,
-            }
-            for m in chat_models()
-        ],
-        "default_model": default_model_id(),
+        "models": models,
+        "default_model": models[0]["id"] if models else "",
         "product_statuses": list(PRODUCT_STATUS_VALUES),
         "memory_kinds": KIND_LABELS,
         "max_images": service.MAX_IMAGES,

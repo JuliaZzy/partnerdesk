@@ -15,7 +15,6 @@ from typing import Any
 
 from .contract.confirm import confirm_contract as _confirm_contract
 from .db import Database
-from .llm import LLM
 from .memory import record_history
 from .orchestrator import MAX_IMAGES
 from .orchestrator.turn import handle_message as run_turn
@@ -42,7 +41,7 @@ def new_session(db: Database, partnership_id: str | None = None, user_id: str | 
 
 
 def handle_message(
-    db: Database, llm: LLM, session_id: str, text: str, images: list[str] | None = None,
+    db: Database, llm: Any, session_id: str, text: str, images: list[str] | None = None,
     attachments: list[str] | None = None, documents: list[tuple[str, bytes]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """One turn. A second send on this chat waits; other chats do not."""

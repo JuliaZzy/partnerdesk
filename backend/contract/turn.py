@@ -11,9 +11,10 @@ import hashlib
 import uuid
 from typing import Any
 
+from ..config import LLMSettings
 from ..db import Database
 from ..documents import SUPPORTED_EXTS
-from ..llm import LLM
+from ..llm import DeepSeekClient, SJTUClient
 from ..schemas import ContractChunk
 from .chunks import flatten_chunk_tree
 from .ingest import record_from_extraction
@@ -21,20 +22,24 @@ from .read import read_agreement
 
 
 def file_contract(
-    db: Database, llm: LLM, session: dict[str, Any], documents: list[tuple[str, bytes]],
+    db: Database, session: dict[str, Any], documents: list[tuple[str, bytes]],
 ) -> dict[str, Any]:
     """Read the first agreement into a draft table. Nothing is written.
 
     `table` is what the panel shows. `pending` is what confirm needs and is not sent to
-    the model. A filename without bytes never reaches here.
+    the model. A filename without bytes never reaches here. The chat model does not
+    read the file: the campus model picks sections, DeepSeek fills the form.
     """
     readable = [(name, data) for name, data in documents if name.lower().endswith(SUPPORTED_EXTS)]
     if not readable:
         return {"status": "need_file", "contract_id": None, "table": None, "pending": None, "error": None}
     name, data = readable[0]
     try:
-        extraction, tree = read_agreement(llm, name, data)
-        model = getattr(getattr(llm, "settings", None), "model", None)
+        settings = LLMSettings(base_url=None, api_key="")
+        extraction, tree = read_agreement(
+            DeepSeekClient(settings), SJTUClient(settings), name, data,
+        )
+        model = "deepseek-flash"
         digest = hashlib.sha256(data).hexdigest()
         chunks = [ContractChunk(**row) for row in flatten_chunk_tree(tree)]
         rec = record_from_extraction(

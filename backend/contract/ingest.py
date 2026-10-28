@@ -1,21 +1,19 @@
-"""Contract → database → purchase orders.
+"""合同 → 数据库 → 采购单。
 
-`read` fills an extraction (discount tiers, MOQ, price list, territory, evidence). This
-module keeps ALL of it: the raw extraction is stored verbatim,
-the terms are normalized into their own tables, and from those terms it derives what the
-PO gate needs:
+`read` 填好一份抽取结果（折扣阶梯、起订量、价目表、销售区域、证据）。本模块把它全部留下：
+原始抽取原样入库，条款拆进各自的表，再从这些条款推出采购单闸门要的东西：
 
-  minimum_order_quantities[per_order, money]  → min_order_value rule (block)
-  minimum_order_quantities[per SKU, units]    → products.moq_units
-  excluded_countries                          → territory_restriction rule (block)
-  commercial_discount_rules (max tier)        → discount_approval rule (approval_required)
-  commercial_discount_rules (tier schedule)   → the discount PRE-FILLED on the next order
-                                                (`contract_discount_for_next_order`)
+  minimum_order_quantities[每单, 金额]   → min_order_value 规则（拦截）
+  minimum_order_quantities[按 SKU, 件数] → products.moq_units
+  excluded_countries                      → territory_restriction 规则（拦截）
+  commercial_discount_rules（最高档）     → discount_approval 规则（需要审批）
+  commercial_discount_rules（阶梯）       → 下一张订单上预填的折扣
+                                          （`contract_discount_for_next_order`）
 
-Every derived rule carries `contract_id`, so an approver can follow it back to the clause.
-Ambiguous fields are reported in `skipped`, never guessed.
+每条派生规则都带 `contract_id`，审批人可以顺着它回到条款。
+含糊的字段记在 `skipped` 里，不猜测。
 
-CLI (manual ops entry point):
+命令行（手工录入入口）：
   python -m backend.contract extraction.json --brand <brand_id> --partnership <id> [--apply]
 """
 

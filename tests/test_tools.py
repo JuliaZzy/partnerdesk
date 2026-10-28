@@ -1,4 +1,4 @@
-"""Tools return a typed envelope. Translate uses FakeLLM; search does not hit Bocha."""
+"""Tools return a typed envelope. Translate uses the campus client; search does not hit Bocha."""
 
 from __future__ import annotations
 
@@ -16,18 +16,35 @@ from backend.tools.web_search import run as search_run
 from backend.tools.web_search import search
 
 
-def test_translate_returns_only_the_model_text():
-    llm = FakeLLM(json_replies=[{"translation": "ten cases of fish oil"}])
-    out = translate_run({"text": "10 箱鱼油", "target_language": "English"}, llm=llm)
+class _School:
+    def __init__(self, text: str):
+        self.calls: list[dict] = []
+        self.text = text
+
+    def chat_completion(self, model, messages, stream=False, max_tokens=None, temperature=None):
+        self.calls.append({"model": model, "messages": messages, "temperature": temperature})
+        return {"choices": [{"message": {"content": self.text}}]}
+
+
+def _school(monkeypatch, text: str) -> _School:
+    client = _School(text)
+    monkeypatch.setattr("backend.tools.lang_translate.SJTUClient", lambda settings: client)
+    return client
+
+
+def test_translate_returns_only_the_model_text(monkeypatch):
+    school = _school(monkeypatch, "ten cases of fish oil")
+    out = translate_run({"text": "10 箱鱼油", "target_language": "English"}, llm=FakeLLM())
     assert out == {"ok": True, "data": {"translation": "ten cases of fish oil"}, "error": None}
-    assert "10 箱鱼油" in llm.calls[0]["messages"][0]["content"]
+    assert school.calls[0]["model"] == "deepseek-chat"
+    assert "10 箱鱼油" in school.calls[0]["messages"][1]["content"]
 
 
-def test_translate_accepts_target_as_the_language():
-    llm = FakeLLM(json_replies=[{"translation": "Hello"}])
-    out = translate_run({"text": "你好", "target": "en"}, llm=llm)
+def test_translate_accepts_target_as_the_language(monkeypatch):
+    school = _school(monkeypatch, "Hello")
+    out = translate_run({"text": "你好", "target": "en"}, llm=FakeLLM())
     assert out["ok"] is True and out["data"]["translation"] == "Hello"
-    assert "目标语言：en" in llm.calls[0]["messages"][0]["content"]
+    assert "目标语言：en" in school.calls[0]["messages"][1]["content"]
 
 
 def test_translate_rejects_an_empty_request():
@@ -35,24 +52,24 @@ def test_translate_rejects_an_empty_request():
     assert translate_run({"target_language": "English", "source": "message"}, llm=FakeLLM())["error"] == "text required when source is message"
 
 
-def test_translate_uses_the_last_assistant_turn_when_asked():
-    llm = FakeLLM(json_replies=[{"translation": "Order placed."}])
+def test_translate_uses_the_last_assistant_turn_when_asked(monkeypatch):
+    school = _school(monkeypatch, "Order placed.")
     ctx = {"history": [
         {"role": "user", "content": "10 cases"},
         {"role": "assistant", "content": "已下单。"},
     ]}
-    out = translate_run({"target_language": "English", "source": "last_assistant"}, llm=llm, context=ctx)
-    assert out["ok"] and "已下单。" in llm.calls[0]["messages"][0]["content"]
+    out = translate_run({"target_language": "English", "source": "last_assistant"}, llm=FakeLLM(), context=ctx)
+    assert out["ok"] and "已下单。" in school.calls[0]["messages"][1]["content"]
 
 
-def test_translate_uses_the_session_report_and_fails_if_missing():
-    llm = FakeLLM(json_replies=[{"translation": "Sales were flat."}])
+def test_translate_uses_the_session_report_and_fails_if_missing(monkeypatch):
+    school = _school(monkeypatch, "Sales were flat.")
     out = translate_run(
         {"target_language": "English", "source": "report"},
-        llm=llm,
+        llm=FakeLLM(),
         context={"last_report": "本月销量持平。"},
     )
-    assert out["ok"] and "本月销量持平。" in llm.calls[0]["messages"][0]["content"]
+    assert out["ok"] and "本月销量持平。" in school.calls[0]["messages"][1]["content"]
     assert translate_run({"target_language": "English", "source": "report"}, llm=FakeLLM(), context={})["ok"] is False
 
 
@@ -80,7 +97,8 @@ def test_web_search_parses_bocha_pages(monkeypatch):
     assert search_run({"query": "Nordic Beauty"})["ok"] is True
 
 
-def test_orchestrator_runs_translate_then_answers():
+def test_orchestrator_runs_translate_then_answers(monkeypatch):
+    school = _school(monkeypatch, "ten cases of fish oil")
     llm = FakeLLM(
         tool_replies=[
             AssistantTurn(tool_calls=[ToolCall(
@@ -89,13 +107,16 @@ def test_orchestrator_runs_translate_then_answers():
             )]),
             AssistantTurn(content="ten cases of fish oil"),
         ],
-        json_replies=[{"translation": "ten cases of fish oil"}],
     )
     reply = run_tool_calls(llm, text="把这句话译成英语：10 箱鱼油", history=[], include_mcp=False)
     assert reply == "ten cases of fish oil"
-    kinds = [c["kind"] for c in llm.calls]
-    assert kinds == ["complete", "json", "complete"]
+    assert [c["kind"] for c in llm.calls] == ["complete", "complete"]
     assert llm.calls[0]["tools"] == SCHEMAS
+    assert school.calls[0]["model"] == "deepseek-chat"
+    assert "10 箱鱼油" in school.calls[0]["messages"][1]["content"]
+    tool_turn = llm.calls[1]["messages"][-1]
+    assert tool_turn["role"] == "tool"
+    assert "ten cases of fish oil" in tool_turn["content"]
 
 
 def test_orchestrator_skips_tools_when_the_model_calls_none():
@@ -135,7 +156,7 @@ def test_exchange_rate_normalizes_rmb_and_quotes(monkeypatch):
     data = quote("rmb", "eur")
     sent = opened[0]
     assert "api.frankfurter.dev" in sent.full_url
-    assert sent.get_header("User-agent") == "PartnerDesk/1.0"
+    assert sent.get_header("User-agent") == "KA_Account/1.0"
     assert data["base"] == "CNY" and data["target"] == "EUR" and data["converted"] == 0.13
     assert fx_run({"base_currency": "CNY", "target_currency": "EUR"})["ok"] is True
     assert fx_run({"base_currency": "", "target_currency": "EUR"})["ok"] is False

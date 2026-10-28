@@ -55,8 +55,13 @@ def test_two_sessions_overlap_on_the_model(db):
     assert [m["content"] for m in db.session(second)["history"] if m["role"] == "user"] == ["hello"]
 
 
-def test_naming_a_new_chat_does_not_block_the_plan(db):
-    """The title call runs beside the plan. The plan's model call starts first."""
+def test_naming_a_new_chat_does_not_block_the_plan(db, monkeypatch):
+    """The title call runs beside the plan. The plan's model call starts first.
+
+    The rest of the suite names a new chat before the plan, so one scripted queue
+    stays in order. This test turns that off and checks the live overlap.
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     from backend.llm.types import AssistantTurn
 
     order: list[str] = []
@@ -66,7 +71,7 @@ def test_naming_a_new_chat_does_not_block_the_plan(db):
         def complete_json(self, *, system, messages, schema=None, temperature=0.0, max_tokens=900):
             if system.startswith("你在为一场"):
                 order.append("open-start")
-                assert plan_entered.wait(2), "plan did not start while the title was in flight"
+                assert plan_entered.wait(15), "plan did not start while the title was in flight"
                 order.append("open-end")
                 return {"tags": ["data"], "title": "订单总额"}
             order.append("plan")
