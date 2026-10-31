@@ -1,9 +1,9 @@
-"""Session open + plan — replaces the old classify→route gate."""
+"""Session open — title and tags for a new chat."""
 
 from __future__ import annotations
 
 from backend.llm import FakeLLM
-from backend.orchestrator import TOPIC_KEYS, make_plan, open_session
+from backend.orchestrator import TOPIC_KEYS, open_session
 
 
 def test_open_session_returns_title_and_tags():
@@ -25,23 +25,3 @@ def test_open_session_does_not_send_history():
     user = llm.calls[0]["messages"][0]["content"]
     assert "最近对话" not in user
     assert "=== 消息 ===" in user
-
-
-def test_make_plan_keeps_agents_and_tools():
-    llm = FakeLLM(json_replies=[{
-        "tasks": [
-            {"id": "1", "kind": "agent", "name": "po", "input": {}, "depends_on": []},
-            {"id": "2", "kind": "tool", "name": "web_search", "input": {"query": "x"}, "depends_on": []},
-            {"id": "3", "kind": "agent", "name": "data", "input": {}, "depends_on": []},
-            {"id": "4", "kind": "agent", "name": "nope", "input": {}, "depends_on": []},
-        ],
-    }])
-    tasks = make_plan(
-        llm, message="order fish oil", attachments=[], history=[], stage=None, tags=["po"],
-    )
-    assert [(t.kind, t.name) for t in tasks] == [("agent", "po"), ("tool", "web_search"), ("agent", "data")]
-
-
-def test_empty_plan_is_allowed():
-    llm = FakeLLM(json_replies=[{"tasks": []}])
-    assert make_plan(llm, message="thanks", attachments=[], history=[], stage=None, tags=[]) == []

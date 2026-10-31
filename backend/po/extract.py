@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
+from ..db import Database
 from ..llm import calls as model_calls
 from ..llm.types import Message
 from ..memory import prompt_turns
@@ -19,8 +21,8 @@ from ..schemas import INCOTERMS_VALUES, PAYMENT_TERMS_VALUES, SHIPPING_METHOD_VA
 from .prompt import EXTRACT, EXTRACT_IMAGES, fill
 from .slots import Discount, LineItemSlot, PoSlots, enum_or_none
 
-MAX_MESSAGE_CHARS = 4000
-MAX_HISTORY_CONTENT_CHARS = 2000
+MAX_MESSAGE_CHARS = 8000
+MAX_HISTORY_CONTENT_CHARS = 4000
 
 IMAGE_RULES = EXTRACT_IMAGES
 
@@ -139,6 +141,40 @@ class Extraction:
     user_confirmed: bool
     reply_language: str
 
+def _extract_client(llm: Any, *, images: bool) -> Any:
+    if images:
+        return llm 
+    if callable(getattr(llm, "response", None)):
+        return llm
+    return None 
+
+def _record_extract_call(
+    db: Database | None, 
+    run_id: str | None,
+    step_id: str | None,
+    *,
+    provider: str,
+    model: str, 
+    request: str,
+    response: str,
+    usage: dict[str, int],
+    latency_ms: int,
+    error: Exception | None,
+) -> None:
+    if db is None or not run_id or not step_id:
+        return
+    db.insert_model_call(
+        run_id, step_id,
+        provider=provider,
+        model=model,
+        request=request,
+        response=response,
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        completion_tokens=int(usage.get("completion_tokens") or 0),
+        latency_ms=latency_ms,
+        status="failed" if error is not None else "succeeded",
+        error={"message": str(error) if error is not None else None}
+    )
 
 def extract_turn(
     llm: Any,
@@ -151,6 +187,9 @@ def extract_turn(
     operating_context: str | None = None,
     contract_discount: str | None = None,
     folded_through: int = 0,
+    db: Database | None = None,
+    run_id: str | None = None,
+    step_id: str | None = None,
 ) -> Extraction:
     """Throws on model/parse failure — the caller degrades (keeps the previous slots)."""
     images = images or []
@@ -166,13 +205,36 @@ def extract_turn(
         {"role": m["role"], "content": str(m["content"])[:MAX_HISTORY_CONTENT_CHARS]}
         for m in prompt_turns(history, folded_through)
     ] + [{"role": "user", "content": user_content}]
-    ask = model_calls.school_json if images else model_calls.flash_json
-    if images:
-        raw = ask(
-            model_calls.SCHOOL_VISION, system=system, messages=msgs, schema=EXTRACT_SCHEMA, temperature=0,
-        )
-    else:
-        raw = ask(system=system, messages=msgs, schema=EXTRACT_SCHEMA, temperature=0)
+    
+    client = _extract_client(llm, images=bool(images))
+    model = model_calls.SCHOOL_VISION if images else model_calls.DEEPSEEK_FLASH
+    request = {"model": model, "system": system, "messages": msgs, "schema": EXTRACT_SCHEMA}
+    raw: dict[str, Any] = {}
+    error: Exception | None = None
+    started = time.perf_counter()
+    try:
+        if images:
+            raw = model_calls.school_json(
+                model_calls.SCHOOL_VISION, system=system, messages=msgs, schema=EXTRACT_SCHEMA, temperature=0, client=client
+            )
+        else:
+            raw = model_calls.flash_json(system=system, messages=msgs, schema=EXTRACT_SCHEMA, temperature=0, client=client)
+    except Exception as e:
+        error = e 
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    usage = getattr(client, "last_usage", None) or getattr(llm, "last_usage", None)
+    _record_extract_call(
+        db, run_id, step_id,
+        provider=str(getattr(client or llm, "provider", None) or ("sjtu" if images else "deepseek")),
+        model=model,
+        request=request,
+        response={"json": raw} if raw else {},
+        usage=usage if isinstance(usage, dict) else None,
+        latency_ms=latency_ms,
+        error=error,
+    )
+    if error is not None:
+        raise error 
     lang = raw.get("reply_language")
     return Extraction(
         slots=normalize_slots(raw),

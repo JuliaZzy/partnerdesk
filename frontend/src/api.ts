@@ -3,8 +3,9 @@ export class ApiError extends Error {}
 async function readError(res: Response): Promise<string> {
   const text = await res.text();
   try {
-    const body = JSON.parse(text) as { detail?: unknown };
+    const body = JSON.parse(text) as { detail?: unknown; error?: { message?: unknown } };
     if (typeof body.detail === "string") return body.detail;
+    if (typeof body.error?.message === "string") return body.error.message;
   } catch {
     /* not JSON */
   }
@@ -33,6 +34,23 @@ export function postForm<T>(path: string, file: File, fields: Record<string, str
   return api<T>(path, { method: "POST", body });
 }
 
+export function resumeRun(
+  runId: string,
+  orgId: string,
+  userId: string,
+  input: { message: string; decision: "confirm" | "skip" },
+): Promise<AgentRun> {
+  return api<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Org-Id": orgId,
+      "X-User-Id": userId,
+    },
+    body: JSON.stringify({ input }),
+  });
+}
+
 export function cancelRun(runId: string, orgId: string, userId: string): Promise<void> {
   return api<void>(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
     method: "POST",
@@ -40,10 +58,60 @@ export function cancelRun(runId: string, orgId: string, userId: string): Promise
   });
 }
 
+export type AgentRun = {
+  id: string;
+  status: string;
+  output_json?: { text?: string } | null;
+  error_json?: { message?: string; kind?: string } | null;
+};
+
+export function getRun(runId: string, orgId: string, userId: string): Promise<AgentRun> {
+  return api<AgentRun>(`/api/runs/${encodeURIComponent(runId)}`, {
+    headers: { "X-Org-Id": orgId, "X-User-Id": userId },
+  });
+}
+
+export function getRunTrace(runId: string, orgId: string, userId: string): Promise<RunTrace> {
+  return api<RunTrace>(`/api/runs/${encodeURIComponent(runId)}/trace`, {
+    headers: { "X-Org-Id": orgId, "X-User-Id": userId },
+  });
+}
+
+export type RunTrace = {
+  run: AgentRun;
+  steps: unknown;
+  events?: { event_type: string; payload_json?: { tool_name?: string } }[];
+};
+
+const RUN_SETTLED = new Set(["succeeded", "failed", "cancelled", "waiting_for_user"]);
+
+export async function waitForRun(
+  runId: string,
+  orgId: string,
+  userId: string,
+  signal?: AbortSignal,
+  onTrace?: (trace: RunTrace) => void,
+): Promise<AgentRun> {
+  for (;;) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const trace = await getRunTrace(runId, orgId, userId);
+    onTrace?.(trace);
+    if (RUN_SETTLED.has(trace.run.status)) return trace.run;
+    await new Promise((resolve) => {
+      const timer = window.setTimeout(resolve, 800);
+      const abort = () => {
+        window.clearTimeout(timer);
+        resolve(undefined);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+    });
+  }
+}
+
 export async function streamMessage(
   sid: string,
   body: unknown,
-  onEvent: (event: Record<string, unknown>) => void,
+  onEvent: (event: Record<string, unknown>) => void | Promise<void>,
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`/api/sessions/${sid}/message`, {
@@ -64,7 +132,7 @@ export async function streamMessage(
     buf = chunks.pop() ?? "";
     for (const chunk of chunks) {
       const line = chunk.split("\n").find((item) => item.startsWith("data: "));
-      if (line) onEvent(JSON.parse(line.slice(6)) as Record<string, unknown>);
+      if (line) await onEvent(JSON.parse(line.slice(6)) as Record<string, unknown>);
     }
   }
 }

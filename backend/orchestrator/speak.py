@@ -14,24 +14,11 @@ from ..memory import attach, prompt_context, prompt_turns, record_history, stand
 from .prompt import ANSWER
 
 
-def attach_model_json(message: dict[str, Any], llm: Any | None) -> None:
-    """Copy this turn's JSON objects onto the assistant message. The list on the client is replaced next turn."""
-    from .status import current_activity
-
-    outputs = getattr(llm, "model_outputs", None)
-    if isinstance(outputs, list) and outputs:
-        message["model_json"] = list(outputs)
-    activity = current_activity()
-    if activity:
-        message["activity"] = activity
-
-
 def one_shot(
     db: Database, session: dict[str, Any], text: str, extra: dict[str, Any] | None = None,
     llm: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
     assistant: dict[str, Any] = {"role": "assistant", "content": text}
-    attach_model_json(assistant, llm)
     history = [*(session.get("history") or []), {"role": "user", "content": "(message)"}, assistant]
     record_history(db, session, history)
     yield {"type": "token", "text": text}
@@ -55,7 +42,7 @@ def _chat_messages(session: dict[str, Any], prompt: str) -> list[dict[str, Any]]
 
 def save_reply(
     db: Database, session: dict[str, Any], text: str, reply: str, extra: dict[str, Any] | None,
-    llm: Any | None = None, session_fields: dict[str, Any] | None = None,
+    llm: Any | None = None, session_fields: dict[str, Any] | None = None, run_id: str | None = None,
 ) -> dict[str, Any]:
     history = list(session.get("history") or [])
     # The raw extraction and heading tree stay on the message for confirm. The done
@@ -63,6 +50,8 @@ def save_reply(
     extra = dict(extra or {})
     pending = extra.pop("contract_pending", None)
     assistant: dict[str, Any] = {"role": "assistant", "content": reply}
+    if run_id:
+        assistant["run_id"] = run_id
     sources = extra.get("brand_hits")
     if sources:
         assistant["sources"] = sources
@@ -103,9 +92,9 @@ def save_reply(
     series = extra.get("report_series")
     if isinstance(series, list) and series:
         assistant["report_series"] = series
-    attach_model_json(assistant, llm)
     record_history(
         db, session, [*history, {"role": "user", "content": text}, assistant], llm=llm,
+        run_id=run_id,
         **(session_fields or {}),
     )
     return {
@@ -132,8 +121,7 @@ def answer_directly(
         parts.append(chunk)
         yield {"type": "token", "text": chunk}
     reply = "".join(parts).strip() or "How can I help?"
-    # Close the step before save_reply copies the activity onto the message.
-    # A done status after that copy is what the desk reloads, so the step stays "running".
+    # Close the step before the reply is saved, so the trace shows it finished.
     if done_step is not None:
         step_id, title, detail = done_step
         yield status(step_id, title, detail, state="done")

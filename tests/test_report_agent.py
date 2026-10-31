@@ -279,6 +279,40 @@ def test_reflection_retries_a_failure_and_keeps_three_tries():
     assert "still" not in handed and "第1次" not in handed
 
 
+def test_code_fix_is_recorded_on_the_tool_step(db):
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from backend.codefix import with_reflection
+    from backend.db import utcnow
+    from backend.llm import FakeLLM
+
+    run, _created = db.create_agent_run("ps-1", "u-a", "chat", "codefix-trace", {"message": "fix"})
+    claimed = db.claim_run(run["id"], "worker-test", utcnow() + timedelta(minutes=5))
+    assert claimed is not None
+    step = db.insert_step(run["id"], "tool", "report.draft", {})
+    assert step is not None
+    trace = SimpleNamespace(db=db, run_id=run["id"], step_id=step["id"])
+
+    def always_fail(_artifact: str):
+        return False, None, "boom", "out"
+
+    llm = FakeLLM(json_replies=[{"fixed_code": "still"}, {"fixed_code": "nope"}])
+    value, failures = with_reflection(llm, kind="code", first="a", run=always_fail, trace=trace)
+    assert value is None and len(failures) == 3
+
+    calls = [
+        row for row in db.run_trace("ps-1", run["id"])["model_calls"]
+        if row["step_id"] == step["id"]
+    ]
+    assert [(row["provider"], row["model"], row["status"]) for row in calls] == [
+        ("fake", "deepseek-flash", "succeeded"),
+        ("fake", "deepseek-flash", "succeeded"),
+    ]
+    assert [row["request_json"]["schema"]["name"] for row in calls] == ["code_fix", "code_fix"]
+    assert [row["response_json"]["json"]["fixed_code"] for row in calls] == ["still", "nope"]
+
+
 def test_findings_sum_a_mix_and_a_trend_and_skip_a_single_row():
     rows = [
         {"period": "2025-08", "channel": "Tmall", "units": 10},

@@ -22,7 +22,8 @@ from .read import read_agreement
 
 
 def file_contract(
-    db: Database, session: dict[str, Any], documents: list[tuple[str, bytes]],
+    db: Database, session: dict[str, Any], documents: list[tuple[str, bytes]], 
+    *, run_id: str | None = None,
 ) -> dict[str, Any]:
     """Read the first agreement into a draft table. Nothing is written.
 
@@ -38,6 +39,7 @@ def file_contract(
         settings = LLMSettings(base_url=None, api_key="")
         extraction, tree = read_agreement(
             DeepSeekClient(settings), SJTUClient(settings), name, data,
+            db=db, run_id=run_id,
         )
         model = "deepseek-flash"
         digest = hashlib.sha256(data).hexdigest()

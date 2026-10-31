@@ -11,7 +11,7 @@ slicing. Plain dates — a contract term, a reporting period — stay `YYYY-MM-D
 are calendar labels with no instant behind them.
 
 Naming: these are rows, referred to as `orm.Product` etc. The pydantic models the rest of
-the code passes around are in `backend/schemas/`; `database.py` converts between the two.
+the code passes around are in `backend/schemas/`; `database/` converts between the two.
 """
 
 from __future__ import annotations

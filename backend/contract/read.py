@@ -15,10 +15,10 @@ import json
 import re
 from typing import Any
 
+from ..config import LLMSettings
 from ..db import Database
 from ..documents import SUPPORTED_EXTS, load_pages, render_pdf_images
 from ..llm import DeepSeekClient, SJTUClient, parse_json_loose
-from ..config import LLMSettings
 from ..schemas import ContractChunk
 from .chunks import flatten_chunk_tree, split_chunks
 from .ingest import ingest_extraction, record_from_extraction
@@ -343,12 +343,13 @@ def _merge(parts: list[dict[str, Any]]) -> dict[str, Any]:
 
 def read_agreement(
     llm: DeepSeekClient, school: SJTUClient, file_name: str, data: bytes,
+    *, db: Database | None = None, run_id: str | None = None,
 ) -> tuple[dict[str, Any], list[dict]]:
     """Sanitized extraction plus the heading tree. Raises ValueError when the file cannot be
     read or contains no enforceable terms — nothing is written in that case."""
     if not file_name.lower().endswith(SUPPORTED_EXTS):
         raise ValueError(f"Unsupported agreement: {file_name} (use {', '.join(SUPPORTED_EXTS)})")
-    pages = load_pages(file_name, data)
+    pages = load_pages(file_name, data, db=db, run_id=run_id)
     if not pages:
         raise ValueError(f"No pages in {file_name!r}.")
     blank = [n for n, t in pages if not (t or "").strip()]

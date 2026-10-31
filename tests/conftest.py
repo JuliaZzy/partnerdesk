@@ -126,26 +126,26 @@ def _scripted_models(monkeypatch):
         "flash_tools": calls.flash_tools,
     }
 
-    def school_json(model, *, system, messages, schema=None, temperature=0):
+    def school_json(model, *, system, messages, schema=None, temperature=0, client=None):
         llm = _nearest_double("complete_json")
         if llm is None:
             return real["school_json"](model, system=system, messages=messages, schema=schema, temperature=temperature)
         return llm.complete_json(system=system, messages=messages, schema=schema, temperature=temperature)
 
-    def school_text(model, *, system, messages, temperature=0):
+    def school_text(model, *, system, messages, temperature=0, client=None):
         llm = _nearest_double("stream_text")
         if llm is None:
             yield from real["school_text"](model, system=system, messages=messages, temperature=temperature)
             return
         yield from llm.stream_text(system=system, messages=messages, temperature=temperature)
 
-    def flash_json(*, system, messages, schema=None, temperature=0):
+    def flash_json(*, system, messages, schema=None, temperature=0, client=None):
         llm = _nearest_double("complete_json")
         if llm is None:
             return real["flash_json"](system=system, messages=messages, schema=schema, temperature=temperature)
         return llm.complete_json(system=system, messages=messages, schema=schema, temperature=temperature)
 
-    def flash_tools(*, system, messages, tools):
+    def flash_tools(*, system, messages, tools, client=None):
         llm = _nearest_double("complete")
         if llm is None:
             return real["flash_tools"](system=system, messages=messages, tools=tools)

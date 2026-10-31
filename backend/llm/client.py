@@ -1,10 +1,8 @@
-"""兼容 OpenAI 的聊天客户端。
+"""One client per model vendor.
 
-调用方依赖 `LLM` 协议。`OpenAICompatLLM` 通过同一个 SDK 和同一个 `base_url`
-对接 OpenAI、校园网关、Ollama 或 GLM。
-
-入：系统提示、消息，以及 JSON schema、文本流或工具定义之一。
-出：一个 dict、文本片段，或一次 `AssistantTurn`。
+Each chat method returns the vendor's own response and stores that call's token
+counts on `last_usage` (`prompt_tokens`, `completion_tokens`). A stream stores
+them as the chunks are read. OCR is not a chat client.
 """
 
 from __future__ import annotations
@@ -14,161 +12,67 @@ import json
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
-from dataclasses import replace
-from typing import Any, Protocol
+from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import requests
 from openai import AsyncOpenAI, OpenAI
 
 from ..config import LLMSettings, env
-from .parse import parse_json_loose
-from .types import AssistantTurn, Message, ToolCall
 
 
-class LLM(Protocol):
-    def complete_json(
-        self,
-        *,
-        system: str,
-        messages: list[Message],
-        schema: dict[str, Any] | None = None,
-        temperature: float = 0.0,
-        max_tokens: int = 900,
-    ) -> dict[str, Any]: ...
-
-    def stream_text(
-        self,
-        *,
-        system: str,
-        messages: list[Message],
-        temperature: float = 0.7,
-        max_tokens: int = 300,
-    ) -> Iterator[str]: ...
-
-    def complete(
-        self,
-        *,
-        system: str,
-        messages: list[Message],
-        tools: list[dict[str, Any]] | None = None,
-        temperature: float = 0.0,
-        max_tokens: int = 900,
-    ) -> AssistantTurn: ...
+def _usage_count(usage: Any, *names: str) -> int:
+    if usage is None:
+        return 0
+    for name in names:
+        raw = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+        if raw is None:
+            continue
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 0
+    return 0
 
 
-class OpenAICompatLLM:
-    """OpenAI / campus / Ollama / GLM through the `openai` SDK — same chat API, different base_url."""
+def _remember_usage(client: Any, usage: Any) -> None:
+    """Chat completions say prompt/completion. The Responses API says input/output."""
+    client.last_usage = {
+        "prompt_tokens": _usage_count(usage, "prompt_tokens", "input_tokens"),
+        "completion_tokens": _usage_count(usage, "completion_tokens", "output_tokens"),
+    }
 
-    def __init__(
-        self,
-        settings: LLMSettings | None = None,
-        task: str | None = None,
-        *,
-        _client: Any | None = None,
-        model_outputs: list[dict[str, Any]] | None = None,
-    ):
-        from openai import OpenAI
 
-        self.settings = settings or llm_settings(task)
-        # One list for this turn. with_model keeps the same list so a dropdown switch
-        # still records every JSON object the desk shows.
-        self.model_outputs = [] if model_outputs is None else model_outputs
-        if _client is not None:
-            self._client = _client
-            return
-        kwargs: dict[str, Any] = {"api_key": self.settings.api_key, "timeout": self.settings.timeout, "max_retries": 1}
-        if self.settings.base_url:
-            kwargs["base_url"] = self.settings.base_url
-        self._client = OpenAI(**kwargs)
+def _remembering_stream(client: Any, stream: Iterator[Any]) -> Iterator[Any]:
+    for chunk in stream:
+        usage = chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
+        if usage is not None:
+            _remember_usage(client, usage)
+        yield chunk
 
-    def with_model(self, model: str) -> OpenAICompatLLM:
-        """Dropdown choice: that row's url and call name. Same url keeps this HTTP client."""
-        spec = get_llm_config(model)
-        if spec is None:
-            chosen = (model or "").strip()
-            return OpenAICompatLLM(
-                settings=replace(self.settings, model=chosen, timeout=model_timeout(chosen)),
-                _client=self._client,
-                model_outputs=self.model_outputs,
-            )
-        settings = replace(
-            self.settings, base_url=spec.base_url, model=spec.model, timeout=model_timeout(spec.id),
-        )
-        same_endpoint = settings.base_url == self.settings.base_url
-        return OpenAICompatLLM(
-            settings=settings, _client=self._client if same_endpoint else None, model_outputs=self.model_outputs,
-        )
 
-    def _response_format(self, schema: dict[str, Any] | None) -> dict[str, Any]:
-        if schema and self.settings.json_mode == "schema":
-            return {"type": "json_schema", "json_schema": schema}
-        return {"type": "json_object"}
+async def _remembering_async_stream(client: Any, stream: AsyncIterator[Any]) -> AsyncIterator[Any]:
+    async for chunk in stream:
+        usage = chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
+        if usage is not None:
+            _remember_usage(client, usage)
+        yield chunk
 
-    def complete_json(self, *, system, messages, schema=None, temperature=0.0, max_tokens=900):
-        resp = self._client.chat.completions.create(
-            model=self.settings.model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format=self._response_format(schema),
-            messages=[{"role": "system", "content": system}, *messages],
-            timeout=self.settings.timeout,
-            **self._request_extra(),
-        )
-        text = resp.choices[0].message.content or ""
-        parsed = parse_json_loose(text)
-        if not isinstance(parsed, dict):
-            raise TypeError("model did not return a JSON object")
-        self.model_outputs.append(parsed)
-        from ..orchestrator.status import note_model_output
-        note_model_output(parsed)
-        return parsed
 
-    def stream_text(self, *, system, messages, temperature=0.7, max_tokens=300):
-        stream = self._client.chat.completions.create(
-            model=self.settings.model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-            messages=[{"role": "system", "content": system}, *messages],
-            timeout=self.settings.timeout,
-            **self._request_extra(),
-        )
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            text = chunk.choices[0].delta.content
-            if text:
-                yield text
+def _finish_response(client: Any, resp: Any, *, stream: bool) -> Any:
+    if stream:
+        _remember_usage(client, None)
+        return _remembering_stream(client, resp)
+    _remember_usage(client, getattr(resp, "usage", None))
+    return resp
 
-    def complete(self, *, system, messages, tools=None, temperature=0.0, max_tokens=900):
-        kwargs: dict[str, Any] = {
-            "model": self.settings.model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "messages": [{"role": "system", "content": system}, *messages],
-            "timeout": self.settings.timeout,
-            **self._request_extra(),
-        }
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
-        resp = self._client.chat.completions.create(**kwargs)
-        msg = resp.choices[0].message
-        calls: list[ToolCall] = []
-        for tc in msg.tool_calls or []:
-            raw = tc.function.arguments
-            parsed: Any = {}
-            if isinstance(raw, dict):
-                parsed = raw
-            elif isinstance(raw, str) and raw.strip():
-                try:
-                    parsed = parse_json_loose(raw)
-                except json.JSONDecodeError:
-                    parsed = {}
-            args = parsed if isinstance(parsed, dict) else {}
-            calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
-        return AssistantTurn(content=msg.content, tool_calls=calls)
+
+def _finish_async_response(client: Any, resp: Any, *, stream: bool) -> Any:
+    if stream:
+        _remember_usage(client, None)
+        return _remembering_async_stream(client, resp)
+    _remember_usage(client, getattr(resp, "usage", None))
+    return resp
 
 
 class GLMClient:
@@ -214,7 +118,7 @@ class GLMClient:
             kwargs["tool_choice"] = tool_choice
         if reasoning_effort:
             kwargs["extra_body"] = {"reasoning": {"effort": reasoning_effort}}
-        return self._client.responses.create(**kwargs)
+        return _finish_response(self, self._client.responses.create(**kwargs), stream=stream)
 
 
 # Caller shapes. This class does not run tools or keep the conversation.
@@ -288,7 +192,8 @@ class QwenClient:
             kwargs["parallel_tool_calls"] = parallel_tool_calls
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
-        return await self._client.chat.completions.create(**kwargs)
+        resp = await self._client.chat.completions.create(**kwargs)
+        return _finish_async_response(self, resp, stream=stream)
 
     async def response(
         self,
@@ -323,7 +228,8 @@ class QwenClient:
             kwargs["max_output_tokens"] = max_output_tokens
         if reasoning_effort:
             kwargs["reasoning"] = {"effort": reasoning_effort}
-        return await self._client.responses.create(**kwargs)
+        resp = await self._client.responses.create(**kwargs)
+        return _finish_async_response(self, resp, stream=stream)
 
 # 定义异步任务列表
 """
@@ -463,7 +369,7 @@ class DeepSeekClient:
             kwargs["tools"] = tools
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
-        return self._client.chat.completions.create(**kwargs)
+        return _finish_response(self, self._client.chat.completions.create(**kwargs), stream=stream)
 
     def response(
         self,
@@ -510,7 +416,7 @@ class DeepSeekClient:
             kwargs["top_logprobs"] = top_logprobs
         if user:
             kwargs["user"] = user
-        return self._client.responses.create(**kwargs)
+        return _finish_response(self, self._client.responses.create(**kwargs), stream=stream)
 
 """
 for attempt in range(1, 6):  # 最多重试 5 次，避免无限循环
@@ -537,6 +443,35 @@ if __name__ == "__main__":
     print(query(question))
 """
 
+def _campus_stream(client: Any, body: dict[str, Any]) -> Iterator[Any]:
+    """Campus SSE. Each yielded object is one chat-completion chunk."""
+    _remember_usage(client, None)
+    resp = requests.post(
+        env("SCHOOL_BASE_URL") + "/chat/completions",
+        headers=client.headers,
+        json=body,
+        timeout=(30, 600),
+        stream=True,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+    try:
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line or not str(line).startswith("data:"):
+                continue
+            data = str(line)[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(chunk, dict) and chunk.get("usage") is not None:
+                _remember_usage(client, chunk["usage"])
+            yield chunk
+    finally:
+        resp.close()
+
 class SJTUClient:
     """SJTU gateway, called with requests as in the campus sample."""
 
@@ -554,6 +489,8 @@ class SJTUClient:
         stream: bool = False,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
     ) -> Any:
         # 深度推理是另一个调用名，例如 deepseek-reasoner。思考文字在返回的 reasoning_content 里。
         # 看图把 content 写成列表，不要另开接口：
@@ -564,6 +501,13 @@ class SJTUClient:
             body["max_tokens"] = max_tokens
         if temperature is not None:
             body["temperature"] = temperature
+        if tools:
+            body["tools"] = tools
+        if tool_choice:
+            body["tool_choice"] = tool_choice
+        if stream:
+            body["stream_options"] = {"include_usage": True}
+            return _campus_stream(self, body)
         for attempt in range(1, 6):
             try:
                 resp = requests.post(
@@ -573,7 +517,10 @@ class SJTUClient:
                 time.sleep(2)
                 continue
             if resp.status_code == 200:
-                return resp.json()
+                data = resp.json()
+                if isinstance(data, dict):
+                    _remember_usage(self, data.get("usage"))
+                return data
             if 400 <= resp.status_code < 500 and resp.status_code != 429:
                 raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
             time.sleep(2)

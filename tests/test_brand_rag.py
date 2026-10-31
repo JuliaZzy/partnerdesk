@@ -23,12 +23,10 @@ from backend.brand_knowledge.rag import (
 )
 from backend.config import rerank_settings
 from backend.llm import FakeLLM
+from backend.llm.types import AssistantTurn, ToolCall
 from backend.orchestrator.prompt import FOLLOWUP
 from backend.schemas import BrandDocument
-
-
-def _plan(name: str) -> dict:
-    return {"tasks": [{"id": "1", "kind": "agent", "name": name, "input": {}, "depends_on": []}]}
+from backend.services.chat_run import work_chat
 
 
 def test_headings_end_a_chunk_and_the_path_prefixes_the_next():
@@ -245,29 +243,24 @@ def test_brand_question_is_retrieved_then_answered_by_the_text_model(db, monkeyp
         seen["brand"] = brand_id
         return [{"cid": "doc#p1-0", "doc": "doc", "page": 1, "text": "Runs 8 hours at 42 C.", "score": 0.9}]
 
-    monkeypatch.setattr("backend.brand_knowledge.answer.retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.services.session_tools.retrieve", fake_retrieve)
     db.save_document(BrandDocument(id="doc", brand_id="brand-1", file_name="品牌手册.pdf"), [(1, "Runs 8 hours at 42 C.")])
-    sid = service.new_session(db, "ps-1")["id"]
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = service.new_session(db, "ps-1", "u-a")["id"]
     llm = FakeLLM(
-        json_replies=[{"tags": ["brand"], "title": "runtime"}, _plan("brand")],
+        json_replies=[{"tags": ["brand"], "title": "runtime"}],
+        tool_replies=[AssistantTurn(tool_calls=[ToolCall(id="c1", name="brand.search", arguments={})])],
         text_reply="It runs 8 hours [doc#p1-0].",
     )
     events = list(service.handle_message(db, llm, sid, "How long does it run at 42 C?"))
+    assert work_chat(db, llm, events[0]["run_id"]) is True
     assert seen == {"q": "How long does it run at 42 C?", "brand": "brand-1"}
-    assert next(event for event in events if event["type"] == "plan")["tasks"][0]["name"] == "brand"
-    told = llm.calls[-1]
-    assert told["kind"] == "text" and "段落" in told["system"]
-    assert "Runs 8 hours at 42 C." in told["messages"][-1]["content"]
-    assert "How long does it run at 42 C?" in told["messages"][-1]["content"]
-    assert "8 hours" in "".join(e.get("text", "") for e in events)
-    assert "[1] 品牌手册.pdf，第1页" in told["messages"][-1]["content"]
-    assert events[-1]["brand_hits"] == [{
+    stored = db.session(sid)["history"][-1]
+    assert stored["content"] == "It runs 8 hours [doc#p1-0]."
+    assert stored["sources"] == [{
         "n": 1, "cid": "doc#p1-0", "doc": "doc", "page": 1,
         "file_name": "品牌手册.pdf", "source": "品牌手册.pdf，第1页",
     }]
-    stored = db.session(sid)["history"][-1]
-    assert stored["sources"] == events[-1]["brand_hits"]
-    assert db.session(sid)["specialist"] == "brand"
 
 
 def test_a_follow_up_is_rewritten_for_retrieval_and_stored_as_typed(db, monkeypatch):
@@ -277,22 +270,28 @@ def test_a_follow_up_is_rewritten_for_retrieval_and_stored_as_typed(db, monkeypa
         seen.append((question, brand_id))
         return [{"cid": "doc#p1-0", "doc": "doc", "page": 1, "text": "冷萃 500ml，保质期十二个月。", "score": 0.9}]
 
-    monkeypatch.setattr("backend.brand_knowledge.answer.retrieve", fake_retrieve)
-    sid = service.new_session(db, "ps-1")["id"]
+    monkeypatch.setattr("backend.services.session_tools.retrieve", fake_retrieve)
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = service.new_session(db, "ps-1", "u-a")["id"]
     llm = FakeLLM(
         json_replies=[
             {"tags": ["brand"], "title": "冷萃"},
-            _plan("brand"),
-            _plan("brand"),
             {"query": "冷萃 500ml 的保质期"},
-            _plan("brand"),
             {"query": ""},
+        ],
+        tool_replies=[
+            AssistantTurn(tool_calls=[ToolCall(id="c1", name="brand.search", arguments={})]),
+            AssistantTurn(content="十二个月 [1]。"),
+            AssistantTurn(tool_calls=[ToolCall(id="c2", name="brand.search", arguments={})]),
+            AssistantTurn(content="十二个月 [1]。"),
+            AssistantTurn(tool_calls=[ToolCall(id="c3", name="brand.search", arguments={})]),
+            AssistantTurn(content="十二个月 [1]。"),
         ],
         text_reply="十二个月 [1]。",
     )
-    list(service.handle_message(db, llm, sid, "冷萃 500ml 保质期多久"))
-    list(service.handle_message(db, llm, sid, "那瓶装的呢"))
-    list(service.handle_message(db, llm, sid, "你好"))
+    for text in ("冷萃 500ml 保质期多久", "那瓶装的呢", "你好"):
+        events = list(service.handle_message(db, llm, sid, text))
+        work_chat(db, llm, events[0]["run_id"])
     assert seen == [
         ("冷萃 500ml 保质期多久", "brand-1"),
         ("冷萃 500ml 的保质期", "brand-1"),
@@ -300,9 +299,11 @@ def test_a_follow_up_is_rewritten_for_retrieval_and_stored_as_typed(db, monkeypa
     ]
     user_lines = [m["content"] for m in db.session(sid)["history"] if m["role"] == "user"]
     assert user_lines[-2:] == ["那瓶装的呢", "你好"]
-    text_calls = [c for c in llm.calls if c["kind"] == "text"]
-    assert "那瓶装的呢" in text_calls[1]["messages"][-1]["content"]
-    rewrites = [c for c in llm.calls if c["kind"] == "json" and c["system"] is FOLLOWUP]
+    complete = [c for c in llm.calls if c["kind"] == "complete"]
+    assert any("那瓶装的呢" in str(c["messages"]) for c in complete)
+    rewrites = [c for c in llm.calls if c["kind"] == "json" and (
+        c["system"] is FOLLOWUP or (isinstance(c["system"], str) and c["system"].startswith(FOLLOWUP[:8]))
+    )]
     assert len(rewrites) == 2
     assert "冷萃 500ml 保质期多久" in rewrites[0]["messages"][-1]["content"]
     assert "那瓶装的呢" in rewrites[0]["messages"][-1]["content"]
@@ -312,9 +313,16 @@ def test_unconfigured_retrieval_is_told_to_the_user(db, monkeypatch):
     def boom(question, brand_id):
         raise RagUnavailable("EMBEDDING_BASE_URL is not set.")
 
-    monkeypatch.setattr("backend.brand_knowledge.answer.retrieve", boom)
-    sid = service.new_session(db, "ps-1")["id"]
-    llm = FakeLLM(json_replies=[{"tags": ["brand"], "title": "specs"}, _plan("brand")], text_reply="should not be used")
+    monkeypatch.setattr("backend.services.session_tools.retrieve", boom)
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = service.new_session(db, "ps-1", "u-a")["id"]
+    llm = FakeLLM(
+        json_replies=[{"tags": ["brand"], "title": "specs"}],
+        tool_replies=[AssistantTurn(tool_calls=[ToolCall(id="c1", name="brand.search", arguments={})])],
+        text_reply="should not be used",
+    )
     events = list(service.handle_message(db, llm, sid, "What is the shelf life?"))
-    assert "EMBEDDING_BASE_URL" in "".join(e.get("text", "") for e in events)
-    assert not any(c["kind"] == "text" for c in llm.calls)
+    assert work_chat(db, llm, events[0]["run_id"]) is True
+    trace = db.run_trace("ps-1", events[0]["run_id"])
+    call = next(item for item in trace["tool_calls"] if item["tool_name"] == "brand.search")
+    assert "EMBEDDING_BASE_URL" in str(call.get("result_json") or call.get("error_json"))

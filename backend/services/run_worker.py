@@ -10,24 +10,32 @@ moved to `dead_letter_jobs`.
 
 from __future__ import annotations
 
-import time, logging
+import logging
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
+
 from sqlalchemy.exc import OperationalError
 
 from ..db import Database, utcnow
+from ..db.database import ChatTurnBusy
 from ..repositories.run_repository import (
-    TERMINAL_STATUSES,
+    RUN_TERMINAL_STATUSES,
+    RunStatus,
     ack_job,
+    cancel_run,
+    claim_chat_turn,
     claim_queued_job,
     claim_run,
     complete_run,
     fail_run,
-    cancel_run,
     find_agent_run_by_id,
-    schedule_retry,
     requeue_job,
+    schedule_retry
+)
+from ..repositories.run_repository import (
+    sweep_expired_leases as _sweep_expired_leases
 )
 
 LEASE_FOR = timedelta(minutes=5) # How long to keep the lease on the row.
@@ -41,14 +49,60 @@ class PermanentRunError(Exception):
 class InfrastructureError(Exception):
     """The queue message can be tried by another worker. This does not spend a business attempt."""
 
+class LeaseLost(Exception):
+    """This worker no longer holds the lease. Acknowledge the job and leave the run."""
+
+class SessionBusy(Exception):
+    """Another run for this chat is still running. Leave this job queued."""
+
+def _finish_claimed(
+    db: Database,
+    run: dict[str, Any],
+    job_id: str,
+    execute: Callable[[dict[str, Any]], dict[str, Any]],
+    retry_after: tuple[timedelta, ...],
+) -> bool:
+    run_id = str(run["id"])
+    try:
+        output = execute(run)
+    except (InfrastructureError, OperationalError) as e:
+        requeue_job(db, job_id, run_id, str(e))
+        return True
+    except PermanentRunError as e:
+        return _settle(db, job_id, run_id, e, permanent=True, retry_after=retry_after)
+    except LeaseLost:
+        ack_job(db, job_id)
+        return True
+    except Exception as e:
+        return _settle(db, job_id, run_id, e, permanent=False, retry_after=retry_after)
+    row = find_agent_run_by_id(db, run_id)
+    if row is None or row["status"] in RUN_TERMINAL_STATUSES or row["status"] == RunStatus.WAITING_FOR_USER:
+        ack_job(db, job_id)
+        return True
+    finished = complete_run(db, run_id, output)
+    if finished is None:
+        cancel_run(db, run_id)
+    ack_job(db, job_id)
+    return True
+
 def work_once(
     db: Database,
     worker_id: str,
     execute: Callable[[dict[str, Any]], dict[str, Any]],
     retry_after: tuple[timedelta, ...] = RETRY_AFTER,
+    run_id: str | None = None,
 ) -> bool:
     """Handle one queue row. False when the queue has nothing queued."""
-    job = claim_queued_job(db, worker_id)
+    if run_id is not None:
+        try:
+            claimed = claim_chat_turn(db, run_id, worker_id, _lease_deadline())
+        except ChatTurnBusy as e:
+            raise SessionBusy(e.run_id) from e
+        if claimed is not None:
+            run, job_id = claimed 
+            return _finish_claimed(db, run, job_id, execute, retry_after)
+
+    job = claim_queued_job(db, worker_id, run_id)
     if job is None:
         return False
     try:
@@ -57,7 +111,7 @@ def work_once(
         return _settle(db, job["id"], "", e, permanent=True, retry_after=retry_after)
     try:
         run = find_agent_run_by_id(db, run_id)
-        if run is None or run["status"] in TERMINAL_STATUSES:
+        if run is None or run["status"] in RUN_TERMINAL_STATUSES:
             ack_job(db, job["id"])
             return True
         claimed = claim_run(db, run_id, worker_id, _lease_deadline())
@@ -70,8 +124,15 @@ def work_once(
         return True
     except PermanentRunError as e:
         return _settle(db, job["id"], run_id, e, permanent=True, retry_after=retry_after)
+    except LeaseLost:
+        ack_job(db, job["id"])
+        return True
     except Exception as e:
         return _settle(db, job["id"], run_id, e, permanent=False, retry_after=retry_after)
+    row = find_agent_run_by_id(db, run_id)
+    if row is None or row["status"] in RUN_TERMINAL_STATUSES or row["status"] == RunStatus.WAITING_FOR_USER:
+        ack_job(db, job["id"])
+        return True
     finished = complete_run(db, run_id, output)
     if finished is None:
         cancel_run(db, run_id)
@@ -119,3 +180,7 @@ def _run_id(job: dict[str, Any]) -> str:
 
 def _lease_deadline() -> datetime:
     return utcnow() + LEASE_FOR
+
+def sweep_expired_leases(db: Database, limit: int = 100) -> int:
+    """Release runs whose lease has expired. Do not call this from `create_app`."""
+    return _sweep_expired_leases(db, limit)

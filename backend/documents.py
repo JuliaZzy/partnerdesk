@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import io
 import re
+import time
 
 from .config import env
+from .db import Database
+from .services.run_names import StepType, step_name
 
 PSEUDO_PAGE_CHARS = 3500
 # GLM-OCR本身有 PDF 大约 50MB、最多 100 页的限制
@@ -74,8 +77,41 @@ def _pages_from_payload(payload: dict) -> list[tuple[int, str]]:
         return [(1, markdown)]
     raise ValueError("GLM-OCR returned no pages.")
 
+def _open_ocr_step(db: Database, run_id: str, file_name: str) -> str | None:
+    if db is None or not run_id:
+        return None 
+    step = db.insert_step(run_id, StepType.TOOL, step_name(StepType.TOOL, "document.ocr"), {"file_name": file_name})
+    if step is None:
+        return None
+    return step["id"]
 
-def ocr_pdf(data: bytes) -> list[tuple[int, str]]:
+def _close_ocr(
+    db: Database, run_id: str | None, step_id: str | None, *,
+    file_name: str, pages: int, latency_ms: int, error: Exception | None,
+) -> None:
+    if db is None or not run_id or not step_id:
+        return 
+    status = "failed" if error is not None else "succeeded"
+    result = {"file_name": file_name, "pages": pages}
+    db.insert_tool_call(
+        run_id, step_id,
+        tool_name="document.ocr",
+        args={"file_name": file_name},
+        result={} if error is not None else result,
+        status=status,
+        idempotency_key=f"document.ocr:{run_id}:{file_name}",
+        latency_ms=latency_ms,
+        error={"message": str(error)} if error is not None else None,
+    )
+    db.finish_step(
+        step_id, status,
+        None if error is not None else result,
+        {"message": str(error)} if error is not None else None,
+    )
+
+def ocr_pdf(
+    data: bytes, *, db: Database | None = None, run_id: str | None = None, file_name: str = "",
+) -> list[tuple[int, str]]:
     """Pages of one PDF from GLM-OCR. Raises ValueError when the key is missing or the call fails."""
     from .llm.client import GLMOCRClient
 
@@ -83,20 +119,35 @@ def ocr_pdf(data: bytes) -> list[tuple[int, str]]:
     url = env("GLM_BASE_URL")
     if not key or not url:
         raise ValueError("GLM_API_KEY and GLM_BASE_URL must both be set in .env.")
-    return _pages_from_payload(GLMOCRClient(api_key=key, url=url).parse(data))
+    step_id = _open_ocr_step(db, run_id, file_name)
+    started = time.perf_counter()
+    try:
+        pages = _pages_from_payload(GLMOCRClient(api_key=key, url=url).parse(data))
+    except Exception as e:
+        _close_ocr(
+            db, run_id, step_id, file_name=file_name, pages=0, 
+            latency_ms=int((time.perf_counter() - started) * 1000), error=e,
+        )
+        raise 
+    _close_ocr(
+        db, run_id, step_id, file_name=file_name, pages=len(pages), 
+        latency_ms=int((time.perf_counter() - started) * 1000), error=None,
+    )
+    return pages
 
-
-def load_pages(file_name: str, data: bytes) -> list[tuple[int, str]]:
+def load_pages(
+    file_name: str, data: bytes, *, db: Database | None = None, run_id: str | None = None,
+) -> list[tuple[int, str]]:
     """(page_number, text) per page. PDF via GLM-OCR; docx / txt / md stay local.
-
+    
     Pages are coordinates for a later citation. Contract heading splits live in
-    `contract.chunks` — this function does not cut on clause numbers.
+    `contract.chunks` - this function does not cut on clause numbers.
     """
     if len(data) > MAX_FILE_BYTES:
-        raise ValueError(f"{file_name} is over 10MB.")
+        raise ValueError(f"{file_name} is over 10MB")
     name = file_name.lower()
     if name.endswith(".pdf"):
-        return ocr_pdf(data)
+        return ocr_pdf(data, db=db, run_id=run_id, file_name=file_name)
     if name.endswith(".docx"):
         import docx
 
@@ -109,7 +160,7 @@ def load_pages(file_name: str, data: bytes) -> list[tuple[int, str]]:
         text = data.decode("utf-8", errors="replace")
         parts = [p for p in text.split("\f") if p.strip()] if "\f" in text else _chunk(text)
         return list(enumerate(parts, start=1))
-    raise ValueError(f"Unsupported document: {file_name} (use {', '.join(SUPPORTED_EXTS)})")
+    raise ValueError(f"unsupported document: {file_name} (use {', '.join(SUPPORTED_EXTS)})")
 
 
 def render_pdf_images(data: bytes, page_numbers: list[int] | None = None) -> dict[int, bytes]:

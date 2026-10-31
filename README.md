@@ -152,7 +152,7 @@ docs/porting/      从第一版带过来了什么、为什么（01–06）
 
 Postgres、Redis、Milvus 只在 Compose 网络里，不往本机暴露端口。镜像已经 build 过的话，`./dev` 只是起容器。Milvus 第一次要拉一个比较大的镜像，起来也比 Postgres 慢。
 
-Celery worker 和 API 用同一份镜像，`./dev` 和 `./dev api` 都会把它拉起来。broker 是 Redis 的 1 号库，任务结果在 2 号库；0 号库仍是会话锁、并行结果和汇率缓存。任务在进程启动时导入，改了 `backend/tasks.py` 之后 `docker compose restart worker`（源码是挂载进去的，不用重新 build）。依赖变了才要 `./dev build`。
+Celery worker 和 API 用同一份镜像，`./dev` 和 `./dev api` 都会把它拉起来。broker 是 Redis 的 1 号库，任务结果在 2 号库；0 号库仍是会话锁、并行结果和汇率缓存。任务在进程启动时导入，改了 `backend/celery/tasks.py` 之后 `docker compose restart worker`（源码是挂载进去的，不用重新 build）。依赖变了才要 `./dev build`。
 
 产品目录可选（约半小时拉数据 + 几分钟入库）：
 

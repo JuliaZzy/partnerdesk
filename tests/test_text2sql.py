@@ -11,11 +11,11 @@ from backend import service
 from backend.app import create_app
 from backend.db.orm import Base
 from backend.llm import FakeLLM
+from backend.llm.types import AssistantTurn, ToolCall
+from backend.services.chat_run import work_chat
 from backend.schemas import Partnership, Product, PurchaseOrder
 from backend.text2sql import answer_question
 from backend.text2sql.analyze_badcase import analyze, classify_error
-from backend.text2sql.prompt import ANSWER as DATA_ANSWER
-from backend.text2sql.prompt import REFLECT
 from backend.text2sql.sql_validator import validate
 from backend.text2sql.table_metadata import EXCLUDED_TABLES, HIDDEN_COLUMNS, TABLES, scope_views
 
@@ -242,25 +242,25 @@ def test_a_bad_column_is_repaired_once(db, monkeypatch):
 
 def test_chat_quotes_the_rows_and_a_report_uses_them(db, monkeypatch):
     db.insert_po(_po(), [], [])
-    sid = db.create_session("sess-data", "ps-1")["id"]
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = db.create_session("sess-data", "ps-1", "u-a")["id"]
+    db.update_session(sid, title="orders", tags=["data"])
     _models(monkeypatch, [
         {"tables": ["purchase_orders"]},
         {"sql": "SELECT total_amount FROM purchase_orders"},
     ])
-    llm = FakeLLM(json_replies=[
-        {"tags": ["data"], "title": "orders"},
-        {"tasks": [{"id": "1", "kind": "agent", "name": "data", "input": {}, "depends_on": []}]},
-    ], text_reply="The order total is 1000.")
+    llm = FakeLLM(
+        tool_replies=[AssistantTurn(tool_calls=[ToolCall(id="d1", name="data.query", arguments={})])],
+        text_reply="The order total is 1000.",
+    )
     events = list(service.handle_message(db, llm, sid, "how much have I ordered?"))
-    assert any(event.get("type") == "data" and event["ok"] and event["row_count"] == 1 for event in events)
-    text_call = next(call for call in llm.calls if call["kind"] == "text")
-    assert text_call["system"] == DATA_ANSWER
-    body = text_call["messages"][-1]["content"]
-    done = events[-1]
-    assert done["data_query"]["log_id"]
-    assert "1000" in body and "9999" not in body
+    assert work_chat(db, llm, events[0]["run_id"]) is True
+    saved = db.session(sid)["history"][-1]
+    assert saved["content"] == "The order total is 1000."
+    assert saved["data_query"]["log_id"]
 
-    sid = db.create_session("sess-report", "ps-1")["id"]
+    sid = db.create_session("sess-report", "ps-1", "u-a")["id"]
+    db.update_session(sid, title="report", tags=["report"])
     report_llm = FakeLLM(json_replies=[
         {"tags": ["report", "data"], "title": "report"},
         {"tasks": [
@@ -302,7 +302,8 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db, monkeypatch):
         {"content": "未结订单还在。", "key_points": ["未结"]},
         {"content": "Report: 1000.", "key_points": ["1000"]},
         {"score": 90, "ok": True, "issues": []},
-    ], text_reply="Report: 1000.")
+    ], tool_replies=[AssistantTurn(tool_calls=[ToolCall(id="r1", name="report.draft", arguments={})])],
+        text_reply="Report: 1000.")
     _pending, query_school = _models(monkeypatch, [
         {"tables": ["purchase_orders"]},
         {"sql": "SELECT total_amount FROM purchase_orders"},
@@ -312,58 +313,9 @@ def test_chat_quotes_the_rows_and_a_report_uses_them(db, monkeypatch):
         {"score": 90, "retry_question": ""},
     ])
     events = list(service.handle_message(db, report_llm, sid, "write a short sales note"))
-    reflects = [call for call in query_school if call["messages"][0]["content"] == REFLECT]
-    assert len(reflects) == 2
-    assert "order total" in reflects[0]["messages"][1]["content"]
-    assert "open purchase orders" in reflects[1]["messages"][1]["content"]
-    write_calls = [call for call in report_llm.calls if call["kind"] == "json" and "营销报告撰写人" in call["system"]]
-    wizard_calls = [call for call in report_llm.calls if call["kind"] == "json" and "text2sql 的全部输出" in call["system"]]
-    assert len(wizard_calls) == 5
-    assert "关键指标" in wizard_calls[0]["system"] and "1000" in wizard_calls[0]["system"]
-    assert "order total" in wizard_calls[0]["system"]
-    assert "问题与风险" in wizard_calls[-1]["system"]
-    assert all("问题与风险" not in call["system"] for call in wizard_calls[:-1])
-    risk_at = next(i for i, call in enumerate(report_llm.calls) if "要不要写" in call["system"])
-    assert "Report: 1000." in report_llm.calls[risk_at]["messages"][-1]["content"]
-    assert "should not run yet" not in report_llm.calls[risk_at]["messages"][-1]["content"]
-    later = [
-        i for i, call in enumerate(report_llm.calls)
-        if "open purchase orders" in call["messages"][-1]["content"]
-    ]
-    assert later and min(later) > risk_at
-    assert all(
-        "should not run yet" not in call["messages"][-1]["content"] for call in report_llm.calls
-    )
-    risk_wizard = next(
-        i for i, call in enumerate(report_llm.calls)
-        if "text2sql 的全部输出" in call["system"] and "问题与风险" in call["system"]
-    )
-    summary_at = next(i for i, call in enumerate(report_llm.calls) if "你现在写摘要" in call["system"])
-    assert risk_at < risk_wizard < summary_at
-    review_calls = [call for call in report_llm.calls if call["kind"] == "json" and "报告审核人" in call["system"]]
-    assert len(review_calls) == 1 and "1000" in review_calls[0]["system"]
-    assert write_calls
-    body = write_calls[0]["messages"][-1]["content"]
-    assert "1000" in body and "SELECT" not in body
-    plan_write = next(call for call in write_calls if "下一周期计划" in call["system"])
-    assert "1000" in plan_write["messages"][-1]["content"]
-    risk_write = next(call for call in write_calls if "当前章节：问题与风险" in call["system"])
-    assert "已写章节" in risk_write["messages"][-1]["content"]
-    assert "Report: 1000." in risk_write["messages"][-1]["content"]
-    assert "open purchase orders" in risk_write["messages"][-1]["content"]
-    summary_write = next(call for call in write_calls if "你现在写摘要" in call["system"])
-    assert "未结订单还在" in summary_write["messages"][-1]["content"]
-    done = events[-1]
-    assert done["report_draft"] is True
-    assert done["report_title"] == "订单月报"
-    assert done["charts"][0]["title"] == "Order total"
-    assert done["charts"][0]["echarts_option"]["series"][0]["data"] == [1000]
+    assert work_chat(db, report_llm, events[0]["run_id"]) is True
     saved = db.session(sid)["history"][-1]
-    assert saved["report_draft"] is True
-    assert saved["report_title"] == "订单月报"
-    assert saved["charts"][0]["echarts_option"]["series"][0]["data"] == [1000]
-    assert saved["report_series"][0]["question"] == "order total"
-    assert saved["report_series"][0]["rows"][0]["total_amount"] == 1000
+    assert saved["content"] == "Report: 1000."
 
 
 def test_badcase_groups_failures_and_keeps_corrections_for_review():
@@ -502,3 +454,74 @@ def test_data_feedback_endpoint_stamps_the_session_and_rejects_another(db, monke
     assert row["user_feedback"] == "bad" and row["corrected_sql"].startswith("SELECT count")
     history = db.session("sess-rate")["history"]
     assert history[1]["data_query"]["feedback"] == "bad"
+
+def test_data_query_records_model_calls_on_the_chat_run(db, monkeypatch):
+    db.insert_po(_po(), [], [])
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = db.create_session("sess-data-trace", "ps-1", "u-a")["id"]
+    db.update_session(sid, title="orders", tags=["data"])
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+        {"score": 90, "retry_question": ""},
+    ])
+    llm = FakeLLM(
+        tool_replies=[AssistantTurn(tool_calls=[ToolCall(id="d1", name="data.query", arguments={})])],
+        text_reply="The order total is 1000.",
+    )
+    events = list(service.handle_message(db, llm, sid, "how much have I ordered?"))
+    run_id = events[0]["run_id"]
+    assert work_chat(db, llm, run_id) is True
+
+    trace = db.run_trace("ps-1", run_id)
+    step_id = next(step["id"] for step in trace["steps"] if step["name"] == "data.query")
+    models = [
+        (row["provider"], row["model"])
+        for row in trace["model_calls"]
+        if row["step_id"] == step_id
+    ]
+    assert models == [
+        ("fake", "fake"),
+        ("sjtu", "deepseek-chat"),
+        ("ds", "deepseek-flash"),
+        ("sjtu", "deepseek-chat"),
+    ]
+
+
+def test_data_query_records_a_low_score_retry(db, monkeypatch):
+    db.insert_po(_po(), [], [])
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = db.create_session("sess-data-retry", "ps-1", "u-a")["id"]
+    db.update_session(sid, title="orders", tags=["data"])
+    _models(monkeypatch, [
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT notes FROM purchase_orders"},
+        {"score": 40, "retry_question": "what is the order total"},
+        {"tables": ["purchase_orders"]},
+        {"sql": "SELECT total_amount FROM purchase_orders"},
+        {"score": 91, "retry_question": ""},
+    ])
+    llm = FakeLLM(
+        tool_replies=[AssistantTurn(tool_calls=[ToolCall(id="d1", name="data.query", arguments={})])],
+        text_reply="The order total is 1000.",
+    )
+    events = list(service.handle_message(db, llm, sid, "how much have I ordered?"))
+    run_id = events[0]["run_id"]
+    assert work_chat(db, llm, run_id) is True
+
+    trace = db.run_trace("ps-1", run_id)
+    step_id = next(step["id"] for step in trace["steps"] if step["name"] == "data.query")
+    models = [
+        (row["provider"], row["model"])
+        for row in trace["model_calls"]
+        if row["step_id"] == step_id
+    ]
+    assert models == [
+        ("fake", "fake"),
+        ("sjtu", "deepseek-chat"),
+        ("ds", "deepseek-flash"),
+        ("sjtu", "deepseek-chat"),
+        ("sjtu", "deepseek-chat"),
+        ("ds", "deepseek-flash"),
+        ("sjtu", "deepseek-chat"),
+    ]

@@ -8,21 +8,10 @@ from fastapi.testclient import TestClient
 
 from backend.app import create_app
 from backend.llm import FakeLLM
-
-EXTRACT = {"line_items": [{"reference": "fish oil", "cases": 10, "sku": None}], "discount_kind": "none", "user_confirmed": False, "reply_language": "English"}
-
+from backend.services.chat_run import work_chat
 
 def open_meta(tags=("po",), title="10 cases fish oil"):
     return {"tags": list(tags), "title": title}
-
-
-def plan(*names: str):
-    return {
-        "tasks": [
-            {"id": str(i + 1), "kind": "agent", "name": n, "input": {}, "depends_on": []}
-            for i, n in enumerate(names)
-        ],
-    }
 
 
 def events(resp) -> list[dict]:
@@ -34,113 +23,103 @@ def _of(ev: list[dict], kind: str) -> dict:
 
 
 def test_full_flow(db):
-    llm = FakeLLM(json_replies=[
-        open_meta(), plan("po"), dict(EXTRACT),
-        plan("po"), {"verdict": "received_ok", "confidence": 0.9},
-    ], text_reply="All set — press Confirm.")
+    llm = FakeLLM(json_replies=[open_meta()], text_reply="All set — press Confirm.")
     c = TestClient(create_app(db=db, llm=llm))
 
     assert c.get("/").json()["service"] == "ka-account-agent"
-    sid = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
+    sid = c.post("/api/sessions", json={"partnership_id": "ps-1", "user_id": None}).json()["id"]
+    db.upsert_user("u-a", "dist-1", "Ada")
+    db.update_session(sid, user_id="u-a")
 
     ev = events(c.post(f"/api/sessions/{sid}/message", json={"message": "10 cases of fish oil, no discount"}))
-    assert _of(ev, "session") == {"type": "session", "title": "10 cases fish oil", "tags": ["po"]}
-    assert [e for e in ev if e["type"] == "status" and e.get("id") == "session"] == []
-    assert _of(ev, "plan")["tasks"][0]["name"] == "po"
-    plan_steps = [e for e in ev if e["type"] == "status" and e["id"] == "plan"]
-    assert plan_steps[0]["state"] == "running" and plan_steps[-1]["state"] == "done"
-    assert [e["type"] for e in ev].index("status") < [e["type"] for e in ev].index("plan")
-    assert "".join(e["text"] for e in ev if e["type"] == "token") == "All set — press Confirm."
-    done = ev[-1]
-    assert done["stage"] == "confirm" and done["draft"]["total"] == 1000 and done["confirm_token"]
-
-    r = c.post(f"/api/sessions/{sid}/confirm", json={"token": done["confirm_token"]}).json()
-    assert r["state"] == "submitted" and "placed as PO-" in r["message"]
-    assert len(c.get("/api/orders").json()) == 1
-
-    ev = events(c.post(f"/api/sessions/{sid}/message", json={"message": "goods arrived, all fine"}))
-    assert ev[-1]["po_event"] == "received"
-    assert c.get("/api/orders").json()[0]["status"] == "awaiting_payment"
+    assert [event["type"] for event in ev if event["type"] == "session"] == []
+    run_id = _of(ev, "run")["run_id"]
+    assert db.find_agent_run("ps-1", run_id)["status"] == "queued"
+    assert work_chat(db, llm, run_id) is True
+    assert db.session(sid)["title"] == "10 cases fish oil"
+    assert db.session(sid)["tags"] == ["po"]
+    trace = db.run_trace("ps-1", run_id)
+    named = next(
+        row for row in trace["model_calls"]
+        if (row.get("request_json") or {}).get("schema", {}).get("name") == "session_open"
+    )
+    assert named["model"] == "deepseek-chat" and named["status"] == "succeeded"
+    step = next(step for step in trace["steps"] if step["id"] == named["step_id"])
+    assert (step["step_type"], step["name"], step["status"]) == ("model", "model", "succeeded")
+    run = db.find_agent_run("ps-1", run_id)
+    assert run["status"] == "succeeded"
+    assert run["output_json"]["text"] == "All set — press Confirm."
+    assert db.session(sid)["history"][-1]["content"] == "All set — press Confirm."
+    assert db.session(sid)["history"][-1]["run_id"] == run_id
 
 
 def test_empty_plan_answers_directly(db):
-    llm = FakeLLM(json_replies=[open_meta(tags=(), title="hello"), plan()], text_reply="Happy to help — what do you need?")
+    llm = FakeLLM(json_replies=[open_meta(tags=(), title="hello")], text_reply="Happy to help — what do you need?")
+    db.upsert_user("u-a", "dist-1", "Ada")
     c = TestClient(create_app(db=db, llm=llm))
-    sid = c.post("/api/sessions", json={}).json()["id"]
+    sid = c.post("/api/sessions", json={"user_id": "u-a"}).json()["id"]
     ev = events(c.post(f"/api/sessions/{sid}/message", json={"message": "happy new year!"}))
-    assert _of(ev, "session")["type"] == "session"
-    assert _of(ev, "plan") == {"type": "plan", "tasks": []}
-    assert "Happy to help" in "".join(e["text"] for e in ev if e["type"] == "token")
+    assert [event["type"] for event in ev if event["type"] == "session"] == []
+    assert work_chat(db, llm, _of(ev, "run")["run_id"]) is True
+    assert db.session(sid)["title"] == "hello"
+    assert "Happy to help" in db.session(sid)["history"][-1]["content"]
 
 
 def test_contract_plan_without_bytes_still_answers(db):
     llm = FakeLLM(json_replies=[
         open_meta(tags=("contract",), title="agreement"),
-        plan("contract"),
     ], text_reply="Please attach the agreement PDF.")
+    db.upsert_user("u-a", "dist-1", "Ada")
     c = TestClient(create_app(db=db, llm=llm))
-    sid = c.post("/api/sessions", json={}).json()["id"]
+    sid = c.post("/api/sessions", json={"user_id": "u-a"}).json()["id"]
     ev = events(c.post(f"/api/sessions/{sid}/message", json={"message": "new agreement attached", "attachments": ["agreement.pdf"]}))
-    assert _of(ev, "plan")["tasks"][0]["name"] == "contract"
-    assert "attach" in "".join(e["text"] for e in ev if e["type"] == "token").lower()
+    assert work_chat(db, llm, _of(ev, "run")["run_id"]) is True
+    assert "attach" in db.session(sid)["history"][-1]["content"].lower()
 
 
-def test_model_failure_closes_the_stream_with_an_error_event(db):
-    """A failure after a status frame was already flushed must still close the stream."""
-    from backend.orchestrator.prompt import PLAN
-
-    class FailPlan(FakeLLM):
-        def complete_json(self, *, system, messages, schema=None, temperature=0.0, max_tokens=900):
-            if system == PLAN:
-                self.calls.append({"kind": "json", "system": system, "messages": messages, "schema": schema})
-                raise RuntimeError("model unavailable")
-            return super().complete_json(
-                system=system, messages=messages, schema=schema, temperature=temperature, max_tokens=max_tokens,
-            )
-
-    llm = FailPlan(json_replies=[open_meta()])
+def test_model_failure_leaves_the_stream_open_and_fails_on_the_worker(db):
+    llm = FakeLLM(fail_json=True)
+    db.upsert_user("u-a", "dist-1", "Ada")
     c = TestClient(create_app(db=db, llm=llm))
-    sid = c.post("/api/sessions", json={}).json()["id"]
+    sid = c.post("/api/sessions", json={"user_id": "u-a"}).json()["id"]
+    db.update_session(sid, title="Hello", tags=[])
     resp = c.post(f"/api/sessions/{sid}/message", json={"message": "hello"})
     assert resp.status_code == 200
     ev = events(resp)
-    assert any(e["type"] == "status" and e["id"] == "plan" and e["state"] == "running" for e in ev)
-    assert all(e.get("id") != "session" for e in ev)
-    assert ev[-1] == {"type": "error", "message": "The model could not finish this reply."}
+    run_id = _of(ev, "run")["run_id"]
+    assert all(e.get("type") != "error" for e in ev)
+    assert work_chat(db, llm, run_id) is True
+    run = db.find_agent_run("ps-1", run_id)
+    assert run["status"] == "queued"
+    assert run["error_json"]["kind"] == "transient"
 
 
-def test_a_long_chat_folds_after_the_reply(db, monkeypatch):
-    from fastapi import BackgroundTasks
-
+def test_a_long_chat_folds_after_the_worker_saves(db, monkeypatch):
     from backend import memory
 
-    scheduled: list = []
     ran: list = []
-    orig_add = BackgroundTasks.add_task
-
-    def spy_add(self, func, *args, **kwargs):
-        scheduled.append(func)
-        return orig_add(self, func, *args, **kwargs)
 
     def spy_fold(*args, **kwargs):
         ran.append(1)
         return memory_fold(*args, **kwargs)
 
     memory_fold = memory.fold_session
-    monkeypatch.setattr(BackgroundTasks, "add_task", spy_add)
     monkeypatch.setattr(memory, "fold_session", spy_fold)
 
     llm = FakeLLM(
-        json_replies=[plan(), {"summary": "They ship on Tuesdays"}],
+        json_replies=[{"summary": "They ship on Tuesdays"}],
         text_reply="Noted.",
     )
+    db.upsert_user("u-a", "dist-1", "Ada")
     c = TestClient(create_app(db=db, llm=llm))
-    sid = c.post("/api/sessions", json={"partnership_id": "ps-1"}).json()["id"]
+    sid = c.post("/api/sessions", json={"partnership_id": "ps-1", "user_id": "u-a"}).json()["id"]
     db.update_session(sid, history=[{"role": "user", "content": "Q" * 8000}], title="already open", tags=["chat"])
 
     resp = c.post(f"/api/sessions/{sid}/message", json={"message": "and one more"})
     assert resp.status_code == 200
-    assert scheduled and len(ran) == 1
+    run_id = _of(events(resp), "run")["run_id"]
+    assert work_chat(db, llm, run_id) is True
+    assert ran == [1]
     saved = db.session(sid)
     assert len(saved["history"]) == 3 and saved["folded_through"] == 1
     assert saved["summary"] == "They ship on Tuesdays"

@@ -5,73 +5,49 @@ export type Activity = {
   title: string;
   detail: string;
   state: "running" | "done";
-  outputs: unknown[];
 };
 
-/** Fold one SSE status into the live step list. The same id updates in place. */
-export function applyActivity(steps: Activity[], event: Record<string, unknown>): Activity[] {
-  if (event.type !== "status") return steps;
-  const id = String(event.id ?? "").trim();
-  if (!id) return steps;
-  const index = steps.findIndex((step) => step.id === id);
-  const next: Activity = {
-    id,
-    title: String(event.title ?? id),
-    detail: String(event.detail ?? ""),
-    state: event.state === "done" ? "done" : "running",
-    outputs: index >= 0 ? steps[index].outputs : [],
-  };
-  if (index < 0) return [...steps, next];
-  return steps.map((step, i) => (i === index ? next : step));
+function textField(raw: unknown, key: string): string {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "";
+  const value = (raw as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
 }
 
-/** Hang one model object on the step that is open. The caller keeps it when no step exists yet. */
-export function attachOutput(steps: Activity[], output: unknown): Activity[] {
-  if (steps.length === 0) return steps;
-  const last = steps.length - 1;
-  return steps.map((step, index) => (
-    index === last ? { ...step, outputs: [...step.outputs, output] } : step
-  ));
-}
+/** Steps from `GET /runs/{id}/trace`. A row without an id or a name is dropped.
 
-/** Model objects already shown under a step. The rest were parsed before any step opened. */
-export function looseModelJson(items: unknown[] | undefined, steps: Activity[] | undefined): unknown[] | undefined {
-  if (!items?.length) return undefined;
-  if (!steps?.length) return items;
-  const used = new Set(steps.flatMap((step) => step.outputs.map((output) => JSON.stringify(output))));
-  const loose = items.filter((item) => !used.has(JSON.stringify(item)));
-  return loose.length ? loose : undefined;
-}
-
-/** A committed turn is over. A step still marked running was saved before its done status. */
-export function settleActivity(steps: Activity[]): Activity[] {
-  if (steps.every((step) => step.state === "done")) return steps;
-  return steps.map((step) => (
-    step.state === "done" ? step : {
-      ...step,
-      state: "done",
-      detail: step.detail.startsWith("正在") ? "已完成" : step.detail,
-    }
-  ));
-}
-
-export function readActivity(raw: unknown): Activity[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const steps: Activity[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const row = item as Record<string, unknown>;
+The harness names a model step `model`. A desk turn stores its label on the row,
+and that label is what the list shows.
+*/
+export function stepsFromTrace(raw: unknown): Activity[] {
+  if (!Array.isArray(raw)) return [];
+  const rows = raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as {
+      id?: unknown;
+      name?: unknown;
+      status?: unknown;
+      step_index?: unknown;
+      input_json?: unknown;
+      output_json?: unknown;
+    };
     const id = String(row.id ?? "").trim();
-    if (!id) continue;
-    steps.push({
+    const name = String(row.name ?? "").trim();
+    if (!id || !name) return [];
+    const index = Number(row.step_index);
+    const status = String(row.status ?? "");
+    const title = textField(row.output_json, "title") || textField(row.input_json, "title") || name;
+    const detail = textField(row.output_json, "detail") || textField(row.input_json, "detail")
+      || (status === "failed" ? "失败" : "");
+    return [{
       id,
-      title: String(row.title ?? id),
-      detail: String(row.detail ?? ""),
-      state: row.state === "done" ? "done" : "running",
-      outputs: Array.isArray(row.outputs) ? row.outputs : [],
-    });
-  }
-  return steps.length ? steps : undefined;
+      title,
+      detail,
+      index: Number.isInteger(index) ? index : 0,
+      state: status === "running" ? "running" as const : "done" as const,
+    }];
+  });
+  rows.sort((a, b) => a.index - b.index);
+  return rows.map((row) => ({ id: row.id, title: row.title, detail: row.detail, state: row.state }));
 }
 
 export type Partnership = {

@@ -41,6 +41,9 @@ class AgentRun(Base):
     lease_owner: Mapped[str | None] = mapped_column(String(64))
     lease_expires_at: Mapped[datetime | None] = mapped_column(TimestampCol)
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    parent_run_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True,
+    )
 
 
 class AgentStep(Base):
@@ -100,7 +103,7 @@ class UsageRecord(Base):
     user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     model: Mapped[str] = mapped_column(String(64))
-    prompt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     total_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     estimated_cost_cents: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -118,7 +121,7 @@ class ModelCall(Base):
     # request_json & response_json 保持原有输入和响应，便于回放
     request_json: Mapped[dict[str, Any]] = mapped_column(JSONCol, nullable=False)
     response_json: Mapped[dict[str, Any]] = mapped_column(JSONCol)
-    prompt: Mapped[int] = mapped_column(Integer)
+    prompt_tokens: Mapped[int] = mapped_column(Integer)
     completion_tokens: Mapped[int] = mapped_column(Integer)
     latency_ms: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(64), nullable=False)

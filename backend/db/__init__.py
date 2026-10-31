@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from .database import Database, utcnow
+from .database import ChatTurnBusy, Database, InvalidRunTransition, utcnow
 from .engine import make_engine, run_migrations
 
-__all__ = ["Database", "make_engine", "run_migrations", "utcnow"]
+__all__ = ["ChatTurnBusy", "Database", "InvalidRunTransition", "make_engine", "run_migrations", "utcnow"]

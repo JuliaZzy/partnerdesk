@@ -43,7 +43,7 @@ def run(
 
 def collect_order(
     db: Database, llm: Any, session: dict[str, Any], text: str, images: list[str], bundle: Bundle,
-    emit: Callable[[dict[str, Any]], None],
+    emit: Callable[[dict[str, Any]], None], run_id: str | None = None, step_id: str | None = None,
 ) -> dict[str, Any]:
     """Draft the order, or record a receipt, without writing the chat transcript.
 
@@ -54,7 +54,7 @@ def collect_order(
         po = db.po(local["po_id"])
         if po:
             emit(status("po-after", "售后", "正在看这是收货、付款还是破损", state="running"))
-            outcome = handle_post_submit(db, llm, po, text)
+            outcome = handle_post_submit(db, llm, po, text, run_id=run_id, step_id=step_id)
             if outcome.kind != "none":
                 emit(status("po-after", "售后", "已记到订单上", state="done"))
                 return {"note": outcome.message, "po_event": outcome.kind}
@@ -64,11 +64,11 @@ def collect_order(
             emit(status("po-after", "售后", "开始一张新订单", state="done"))
         local["slots"] = {}
         local["stage"] = "gathering"
-        prepared = prepare_order(db, llm, bundle, local, text, images)
+        prepared = prepare_order(db, llm, bundle, local, text, images, run_id=run_id, step_id=step_id)
         for event in prepared.events:
             emit(event)
         return order_result(prepared, bundle, clear_po=True)
-    prepared = prepare_order(db, llm, bundle, local, text, images)
+    prepared = prepare_order(db, llm, bundle, local, text, images, run_id=run_id, step_id=step_id)
     for event in prepared.events:
         emit(event)
     return order_result(prepared, bundle)

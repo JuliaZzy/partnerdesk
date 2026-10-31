@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from contextvars import ContextVar, Token
 from typing import Any
@@ -21,6 +22,7 @@ from typing import Any
 from .db import Database
 from .llm import calls as model_calls
 from .schemas import Memory
+from .services.run_names import StepType, step_name
 
 log = logging.getLogger(__name__)
 
@@ -212,9 +214,63 @@ def _prefix_tokens(history: list[dict[str, Any]], folded: int) -> int:
     start = recent_start(history, folded)
     return sum(message_tokens(message) for message in history[folded:start])
 
+def _open_fold_step(db: Database, run_id: str | None) -> str | None:
+    if not run_id:
+        return None 
+    step = db.insert_step(run_id, StepType.TOOL, step_name(StepType.TOOL, "memory.fold"), {})
+    if step is None:
+        return None
+    return step["id"]
+
+def _record_fold(
+    db: Database, run_id: str | None, step_id: str | None, llm: Any, *,
+    request: dict[str, Any], response: dict[str, Any], latency_ms: int, error: Exception | None = None,
+) -> None:
+    if not run_id or not step_id:
+        return
+    usage = getattr(llm, "last_usage", None)
+    usage = usage if isinstance(usage, dict) else {}
+    db.insert_model_call(
+        run_id, step_id, 
+        provider=str(getattr(llm, "provider", None) or "sjtu"),
+        model=model_calls.SCHOOL_CHAT,
+        request=request,
+        response={"json": response} if response else {},
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        completion_tokens=int(usage.get("completion_tokens") or 0),
+        latency_ms=latency_ms,
+        status="failed" if error is not None else "succeeded",
+        error={"message": str(error)} if error is not None else None,
+    )
+
+def _close_fold(
+    db: Database, run_id: str | None, step_id: str | None, *,
+    cursor: int, fold_through: int, summary: str, latency_ms: int, error: Exception | None = None,
+) -> None:
+    if not run_id or not step_id:
+        return
+    status = "failed" if error is not None else "succeeded"
+    result = {"folded_through": fold_through, "summary": summary}
+    db.insert_tool_call(
+        run_id, step_id,
+        tool_name="memory.fold",
+        args={"folded_through": cursor},
+        result={} if error is not None else result,
+        status=status,
+        idempotency_key=f"memory.fold:{run_id}:{cursor}",
+        latency_ms=latency_ms,
+        error={"message": str(error)} if error is not None else None,
+    )
+    db.finish_step(
+        step_id, status,
+        None if error is not None else result,
+        {"message": str(error)} if error is not None else None,
+    )
 
 def fold_older(
-    db: Database, llm: Any, session: dict[str, Any], history: list[dict[str, Any]], folded: int,
+    db: Database, llm: Any, session: dict[str, Any], 
+    history: list[dict[str, Any]], folded: int,
+    run_id: str | None,
 ) -> tuple[int, str]:
     """Merge the unsummarised prefix into the rolling summary once it is about 2000 tokens.
 
@@ -230,23 +286,60 @@ def fold_older(
     pending = _transcript(history[folded:start])
     if not pending:
         return start, summary
+    step_id = _open_fold_step(db, run_id)
+    messages = [{"role": "user", "content": (
+        f"=== 迄今的摘要 ===\n{summary or '（无）'}\n\n"
+        f"=== 更早的轮次 ===\n{pending}"
+    )}]
+    request = {
+        "model": model_calls.SCHOOL_CHAT,
+        "system": FOLD,
+        "messages": messages,
+        "schema": fold_schema(),
+    }
+    raw: dict[str, Any] = {}
+    caught: Exception | None = None
+    started = time.perf_counter()
     try:
-        raw = model_calls.school_json(
+        parsed = model_calls.school_json(
             model_calls.SCHOOL_CHAT,
             system=FOLD,
-            messages=[{"role": "user", "content": (
-                f"=== 迄今的摘要 ===\n{summary or '（无）'}\n\n"
-                f"=== 更早的轮次 ===\n{pending}"
-            )}],
-            schema=fold_schema(), temperature=0,
+            messages=messages,
+            schema=fold_schema(),
+            temperature=0,
+            client=llm,
         )
-    except Exception:
+        if isinstance(parsed, dict):
+            raw = parsed
+        else:
+            caught = ValueError("model did not return a JSON object")
+    except Exception as e:
+        caught = e 
         log.exception("could not fold older turns into the summary")
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    _record_fold(
+        db, run_id, step_id, llm, request=request, response=raw, 
+        latency_ms=latency_ms, error=caught
+    )
+    if caught is not None:
+        _close_fold(
+            db, run_id, step_id, cursor=folded, fold_through=folded, summary=summary,
+            latency_ms=latency_ms, error=caught,
+        )
         return folded, summary
     text = " ".join(str(raw.get("summary") or "").split())
     if not text:
+        _close_fold(
+            db, run_id, step_id, cursor=folded, fold_through=folded, summary=summary,
+            latency_ms=latency_ms, error=None,
+        )
         return folded, summary
-    return start, text[:_SUMMARY_CHARS]
+    kept = text[:_SUMMARY_CHARS]
+    _close_fold(
+        db, run_id, step_id, cursor=folded, fold_through=start, summary=kept,
+        latency_ms=latency_ms, error=None,
+    )
+    return start, kept
 
 
 def bind_fold_scheduler(schedule: Callable[[Callable[[], None]], None]) -> Token:
@@ -267,7 +360,7 @@ def _fold_lock(session_id: str) -> threading.Lock:
         return lock
 
 
-def fold_session(db: Database, llm: Any, session_id: str) -> None:
+def fold_session(db: Database, llm: Any, session_id: str, run_id: str | None) -> None:
     """Fold whatever prefix has reached the budget, from the row as it stands now.
 
     A second task for the same session waits, then sees the cursor already moved.
@@ -278,7 +371,7 @@ def fold_session(db: Database, llm: Any, session_id: str) -> None:
             return
         history = list(row.get("history") or [])
         folded = int(row.get("folded_through") or 0)
-        updated, summary = fold_older(db, llm, row, history, folded)
+        updated, summary = fold_older(db, llm, row, history, folded, run_id)
         fields: dict[str, Any] = {}
         if updated != folded:
             fields["folded_through"] = updated
@@ -290,7 +383,7 @@ def fold_session(db: Database, llm: Any, session_id: str) -> None:
 
 def record_history(
     db: Database, session: dict[str, Any], history: list[dict[str, Any]], *,
-    llm: Any | None = None, **fields: Any,
+    llm: Any | None = None, run_id: str | None = None, **fields: Any,
 ) -> None:
     """Store the whole transcript. Folding, when the prefix is long enough, does not run inside the reply.
 
@@ -305,7 +398,7 @@ def record_history(
     session_id = str(session["id"])
 
     def job() -> None:
-        fold_session(db, llm, session_id)
+        fold_session(db, llm, session_id, run_id)
 
     schedule = _fold_scheduler.get()
     if schedule is None:

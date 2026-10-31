@@ -138,7 +138,7 @@ services:
     command:
       - celery
       - -A
-      - backend.worker:celery
+      - backend.celery.worker:celery
       - worker
       - --loglevel=INFO
       - --concurrency=2
@@ -149,7 +149,7 @@ services:
           "CMD",
           "celery",
           "-A",
-          "backend.worker:celery",
+          "backend.celery.worker:celery",
           "inspect",
           "ping",
           "--timeout",

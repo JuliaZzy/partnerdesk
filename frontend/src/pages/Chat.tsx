@@ -1,21 +1,18 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 
-import { api, cancelRun, postJson, streamMessage } from "../api";
+import { api, cancelRun, getRunTrace, postJson, resumeRun, streamMessage, waitForRun, type RunTrace } from "../api";
+import { CHAT_DOC_EXTS, CHAT_IMAGE_EXTS, clipAttachedFiles, fileExt } from "../chat-files";
 import { flightOf, isChatBusy, isForgotten, onForgetChat, patchFlight, setActiveChat, useFlight } from "../chat-live";
 import { NeedPartnership, useDesk } from "../desk";
 import {
-  applyActivity,
-  attachOutput,
   citationSources,
   contractFiling,
   dataQueryMark,
   discountText,
   greeting,
   lineFlag,
-  looseModelJson,
   money,
-  readActivity,
-  settleActivity,
+  stepsFromTrace,
   trimNum,
   reportCharts,
   resultLink,
@@ -49,8 +46,9 @@ type Turn = {
   contract?: ContractFiling;
   order?: boolean;
   combined?: boolean;
+  /** This reply's chat run. A reload reads it and fetches the trace. */
+  runId?: string;
   activity?: Activity[];
-  modelJson?: unknown[];
 };
 
 type Gap = { message: string; candidates?: { name: string; sku: string }[] };
@@ -91,8 +89,6 @@ type SessionRow = {
     data_query?: unknown;
     charts?: unknown;
     web_notes?: unknown;
-    model_json?: unknown;
-    activity?: unknown;
     report_draft?: boolean;
     report_pending_id?: string;
     report_id?: string;
@@ -102,14 +98,23 @@ type SessionRow = {
     order_draft?: unknown;
     report_body?: string;
     combined?: boolean;
+    run_id?: string;
   }[];
 };
 
 const snaps = new Map<string, Snap>();
 onForgetChat((id) => snaps.delete(id));
-const IMAGE = new Set(["png", "jpg", "jpeg", "webp"]);
-const DOC = new Set(["pdf", "docx", "txt", "md"]);
 const SKIP = new Set(["(message)", "(confirm)"]);
+
+function waitingToolName(trace: RunTrace): string | null {
+  const events = trace.events ?? [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (events[i].event_type !== "run.waiting_for_user") continue;
+    const name = events[i].payload_json?.tool_name;
+    if (typeof name === "string" && name) return name;
+  }
+  return null;
+}
 
 function paneIndex(id: string, prefix: string): number | null {
   if (!id.startsWith(prefix)) return null;
@@ -152,14 +157,12 @@ function fromSession(session: SessionRow, hello: string): Snap {
       const contract = message.role === "assistant" ? contractFiling(message.contract) : undefined;
       const order = message.role === "assistant" && message.order === true;
       const combined = message.role === "assistant" && message.combined === true;
+      const runId = message.role === "assistant" && message.run_id ? message.run_id : undefined;
       const savedDraft = orderDraft(message.order_draft);
       if (savedDraft) draft = savedDraft;
-      const activity = message.role === "assistant" ? readActivity(message.activity) : undefined;
-      const stored = message.role === "assistant" && Array.isArray(message.model_json) ? message.model_json : undefined;
-      const modelJson = looseModelJson(stored, activity);
       turns.push({
         role: message.role, text, sources, dataQuery, charts, webNotes: notes,
-        reportDraft, reportBody, reportPendingId, reportId, reportTitle, contract, order, combined, activity, modelJson,
+        reportDraft, reportBody, reportPendingId, reportId, reportTitle, contract, order, combined, runId,
       });
     }
   }
@@ -200,6 +203,7 @@ function ChatDesk() {
   const [sid, setSid] = useState<string | null>(null);
   const [snap, setSnap] = useState<Snap | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
+  const [attachNote, setAttachNote] = useState<string | null>(null);
   const [model, setModel] = useState(() => localStorage.getItem("partnerdesk.model") || "");
   const threadRef = useRef<HTMLDivElement>(null);
   const bootKey = useRef("");
@@ -210,6 +214,35 @@ function ChatDesk() {
   const composing = useRef(false);
   const stops = useRef(new Map<string, AbortController>());
   const flight = useFlight(sid);
+  const [traceSteps, setTraceSteps] = useState<Activity[]>([]);
+
+useEffect(() => {
+  const runId = flight.runId;
+  if (!runId || !userId) {
+    setTraceSteps([]);
+    return;
+  }
+  let stopped = false;
+  const orgId = partnership.id;
+
+  async function pull(): Promise<string> {
+    const trace = await getRunTrace(runId as string, orgId, userId);
+    if (!stopped) setTraceSteps(stepsFromTrace(trace.steps));
+    return trace.run.status;
+  }
+
+  void pull().catch(() => undefined);
+  if (!flight.busy) return () => { stopped = true; };
+  const timer = window.setInterval(() => {
+    void pull().then((status) => {
+      if (status === "succeeded" || status === "failed" || status === "cancelled") window.clearInterval(timer);
+    }).catch(() => undefined);
+  }, 800);
+  return () => {
+    stopped = true;
+    window.clearInterval(timer);
+  };
+}, [flight.runId, flight.busy, userId, partnership.id]);
   sidRef.current = sid;
   const pendingKinds = flight.tasks;
   const liveKind = pendingKinds.length > 1
@@ -276,6 +309,21 @@ function ChatDesk() {
     if (sidRef.current === id) setSnap(next);
   }
 
+  async function withSavedTraces(turns: Turn[]): Promise<Turn[]> {
+    if (!userId) return turns;
+    const orgId = partnership.id;
+    return Promise.all(turns.map(async (turn) => {
+      if (turn.role !== "assistant" || !turn.runId) return turn;
+      try {
+        const trace = await getRunTrace(turn.runId, orgId, userId);
+        const steps = stepsFromTrace(trace.steps);
+        return steps.length ? { ...turn, activity: steps } : turn;
+      } catch {
+        return turn;
+      }
+    }));
+  }
+
   async function openExisting(id: string, seq: number) {
     const cached = snaps.get(id);
     if (cached) {
@@ -288,7 +336,10 @@ function ChatDesk() {
       focus(id, snaps.get(id)!);
       return;
     }
-    focus(id, fromSession(session, greeting(partnership)));
+    const next = fromSession(session, greeting(partnership));
+    const turns = await withSavedTraces(next.turns);
+    if (seq !== openSeq.current) return;
+    focus(id, { ...next, turns });
   }
 
   async function startNew(seq: number) {
@@ -353,7 +404,7 @@ function ChatDesk() {
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
-  }, [snap?.turns, flight.live, flight.activity]);
+  }, [snap?.turns, flight.live, traceSteps]);
 
   const models = desk.meta?.models ?? [];
   const listed = models.some((item) => item.id === model);
@@ -368,71 +419,30 @@ function ChatDesk() {
     if (!trimmed && chosen.length === 0) return;
     const stop = new AbortController();
     stops.current.set(chatId, stop);
+    setAttachNote(null);
     patchFlight(chatId, {
-      busy: true, streaming: true, runId: null, error: null,
-      draft: "", files: [], live: "", activity: [], modelJson: [], task: null, tasks: [],
+      busy: true, streaming: true, runId: null, error: null, approvalTool: null,
+      draft: "", files: [], live: "", task: null, tasks: [],
     });
+    const maxImages = desk.meta?.max_images;
     const images: string[] = [];
     const documents: { name: string; data: string }[] = [];
     for (const file of chosen) {
-      const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-      if (IMAGE.has(ext) && images.length < (desk.meta?.max_images ?? 3)) images.push(await readDataUrl(file));
-      else if (DOC.has(ext) && documents.length < 2) documents.push({ name: file.name, data: await readDataUrl(file) });
+      const ext = fileExt(file.name);
+      if (CHAT_IMAGE_EXTS.has(ext)) {
+        if (maxImages != null && images.length < maxImages) images.push(await readDataUrl(file));
+      } else if (CHAT_DOC_EXTS.has(ext) && documents.length < 2) {
+        documents.push({ name: file.name, data: await readDataUrl(file) });
+      }
     }
     const userTurn: Turn = { role: "user", text: trimmed, images, files: documents.map((d) => d.name) };
     const base: Snap = { ...baseSnap, turns: [...baseSnap.turns, userTurn] };
     commitSnap(chatId, base);
     let steps: Activity[] = [];
-    let reply = "";
-    const warnings: string[] = [];
-    const finished: { event: Record<string, unknown> | null } = { event: null };
     let title = base.title;
     let tags = base.tags;
-    let route = base.route;
-    const modelJson: unknown[] = [];
-    // The reply is finished when `done` arrives. Waiting for the socket to close,
-    // then for the chat list, kept "Replying…" up after the answer was already on screen.
     let committed = false;
-    function finish() {
-      if (committed || !chatId) return;
-      committed = true;
-      const done = finished.event;
-      const incoming = orderDraft(done?.draft);
-      const hasReport = done?.report_draft === true;
-      const reportBody = typeof done?.report_body === "string" ? done.report_body : undefined;
-      const poTurn = incoming != null || done?.order === true;
-      const next: Snap = {
-        ...base,
-        title,
-        tags,
-        route,
-        turns: [...base.turns, {
-          role: "assistant",
-          text: reply || "(no reply from the model)",
-          model: model || undefined,
-          warnings,
-          sources: citationSources(done?.brand_hits),
-          dataQuery: dataQueryMark(done?.data_query),
-          charts: reportCharts(done?.charts),
-          webNotes: webNotes(done?.web_notes),
-          reportDraft: hasReport,
-          reportBody,
-          reportPendingId: typeof done?.report_pending_id === "string" ? done.report_pending_id : undefined,
-          reportTitle: typeof done?.report_title === "string" ? done.report_title.trim() || undefined : undefined,
-          contract: contractFiling(done?.contract),
-          order: poTurn,
-          combined: done?.combined === true,
-          activity: settleActivity(steps),
-          modelJson: looseModelJson(modelJson, steps),
-        }],
-        stage: poTurn ? String(done?.stage ?? base.stage) : base.stage,
-        draft: poTurn ? incoming : base.draft,
-        gaps: poTurn ? ((done?.gaps_detail as Gap[] | undefined) ?? []) : base.gaps,
-        confirmToken: poTurn ? ((done?.confirm_token as string | null) ?? null) : base.confirmToken,
-      };
-      commitSnap(chatId, next);
-      patchFlight(chatId, { busy: false, streaming: false, live: "", activity: [], modelJson: [], task: null, tasks: [] });
-    }
+    let parkedTool: string | null = null;
     try {
       await streamMessage(chatId, {
         message: trimmed,
@@ -440,55 +450,111 @@ function ChatDesk() {
         attachments: documents.map((d) => d.name),
         files: documents,
         model: modelId || null,
-      }, (event) => {
+      }, async (event) => {
         if (typeof event.run_id === "string" && event.run_id) patchFlight(chatId, { runId: event.run_id });
-        if (event.type === "status") {
-          steps = applyActivity(steps, event);
-          patchFlight(chatId, { activity: steps });
-        } else if (event.type === "token") {
-          reply += String(event.text ?? "");
-          patchFlight(chatId, { live: reply });
-        } else if (event.type === "session") {
+        if (event.type === "session") {
           title = (event.title as string | null) ?? title;
           tags = (event.tags as string[]) ?? tags;
           desk.nameSession(chatId, title, tags);
-        } else if (event.type === "model_json") {
-          modelJson.push(event.json);
-          if (steps.length === 0) {
-            patchFlight(chatId, { modelJson: [...modelJson] });
-          } else {
-            steps = attachOutput(steps, event.json);
-            patchFlight(chatId, { activity: steps });
-          }
-        } else if (event.type === "plan") {
-          const tasks = (event.tasks as { name?: string }[]) ?? [];
-          const names = tasks.map((task) => String(task.name || "")).filter(Boolean);
-          route = `→ ${names.join(" · ") || "answer"}`;
-          const kinds = names.filter((name): name is "po" | "report" | "contract" => (
-            name === "po" || name === "report" || name === "contract"
-          ));
-          patchFlight(chatId, {
-            task: kinds.length === 1 ? kinds[0] : null,
-            tasks: kinds.length > 1 ? kinds : [],
-          });
-        } else if (event.type === "warning") {
-          warnings.push(String(event.message ?? ""));
         } else if (event.type === "error") {
           throw new Error(String(event.message ?? "The model could not finish this reply."));
-        } else if (event.type === "done") {
-          finished.event = event;
-          finish();
         }
       }, stop.signal);
-      finish();
+      const runId = flightOf(chatId).runId;
+      if (!runId || !userId) throw new Error("run was not created");
+      const ended = await waitForRun(runId, partnership.id, userId, stop.signal, (trace) => {
+        steps = stepsFromTrace(trace.steps);
+        setTraceSteps(steps);
+        const partial = trace.run.output_json?.text;
+        if (typeof partial === "string" && partial) patchFlight(chatId, { live: partial });
+        parkedTool = waitingToolName(trace) ?? parkedTool;
+      });
+      if (ended.status === "cancelled") {
+        committed = true;
+        return;
+      }
+      if (ended.status === "failed") {
+        throw new Error(ended.error_json?.message || "The model could not finish this reply.");
+      }
+      if (ended.status === "waiting_for_user") {
+        committed = true;
+        patchFlight(chatId, { approvalTool: parkedTool ?? "这个工具" });
+        return;
+      }
+      const session = await api<SessionRow>(`/api/sessions/${chatId}`);
+      const next = fromSession(session, greeting(partnership));
+      const last = next.turns[next.turns.length - 1];
+      if (last?.role === "assistant" && steps.length) last.activity = steps;
+      commitSnap(chatId, { ...next, title: next.title ?? title, tags: next.tags.length ? next.tags : tags });
+      committed = true;
     } catch (err) {
-      // Abort is the cancel click. The user already asked to stop, so it is not a send failure.
+      // Abort is the cancel click, or leaving the page. Neither is a send failure.
       if (!committed && !(err instanceof Error && err.name === "AbortError")) {
         patchFlight(chatId, { error: err instanceof Error ? err.message : "send failed" });
       }
     } finally {
       stops.current.delete(chatId);
-      patchFlight(chatId, { busy: false, streaming: false, live: "", activity: [], modelJson: [], task: null, tasks: [] });
+      patchFlight(chatId, { busy: false, streaming: false, live: "", task: null, tasks: [] });
+    }
+    void desk.reloadSessions().catch(() => undefined);
+  }
+
+  async function resumeApproval(decision: "confirm" | "skip") {
+    const chatId = sidRef.current;
+    if (!chatId || !userId) return;
+    const current = flightOf(chatId);
+    const runId = current.runId;
+    if (!runId || current.busy) return;
+    const stop = new AbortController();
+    stops.current.set(chatId, stop);
+    patchFlight(chatId, { busy: true, streaming: true, error: null });
+    let steps: Activity[] = traceSteps;
+    let parkedTool = current.approvalTool;
+    let committed = false;
+    try {
+      await resumeRun(runId, partnership.id, userId, {
+        message: decision === "skip" ? "跳过" : "确认",
+        decision,
+      });
+      const ended = await waitForRun(runId, partnership.id, userId, stop.signal, (trace) => {
+        steps = stepsFromTrace(trace.steps);
+        setTraceSteps(steps);
+        const partial = trace.run.output_json?.text;
+        if (typeof partial === "string" && partial) patchFlight(chatId, { live: partial });
+        parkedTool = waitingToolName(trace) ?? parkedTool;
+      });
+      if (ended.status === "cancelled") {
+        committed = true;
+        patchFlight(chatId, { approvalTool: null });
+        return;
+      }
+      if (ended.status === "failed") {
+        throw new Error(ended.error_json?.message || "The model could not finish this reply.");
+      }
+      if (ended.status === "waiting_for_user") {
+        committed = true;
+        patchFlight(chatId, { approvalTool: parkedTool ?? "这个工具" });
+        return;
+      }
+      const session = await api<SessionRow>(`/api/sessions/${chatId}`);
+      const next = fromSession(session, greeting(partnership));
+      const last = next.turns[next.turns.length - 1];
+      if (last?.role === "assistant" && steps.length) last.activity = steps;
+      const base = snaps.get(chatId);
+      commitSnap(chatId, {
+        ...next,
+        title: next.title ?? base?.title ?? null,
+        tags: next.tags.length ? next.tags : (base?.tags ?? []),
+      });
+      committed = true;
+      patchFlight(chatId, { approvalTool: null });
+    } catch (err) {
+      if (!committed && !(err instanceof Error && err.name === "AbortError")) {
+        patchFlight(chatId, { error: err instanceof Error ? err.message : "send failed" });
+      }
+    } finally {
+      stops.current.delete(chatId);
+      patchFlight(chatId, { busy: false, streaming: false, live: "", task: null, tasks: [] });
     }
     void desk.reloadSessions().catch(() => undefined);
   }
@@ -497,14 +563,14 @@ function ChatDesk() {
     const chatId = sidRef.current;
     if (!chatId) return;
     const runId = flightOf(chatId).runId;
-    // Closing this stream stops the desk turn at its next yield.
-    stops.current.get(chatId)?.abort();
-    if (!runId || !userId) return;
-    try {
-      await cancelRun(runId, partnership.id, userId);
-    } catch (err) {
-      patchFlight(chatId, { error: err instanceof Error ? err.message : "cancel failed" });
+    if (runId && userId) {
+      try {
+        await cancelRun(runId, partnership.id, userId);
+      } catch (err) {
+        patchFlight(chatId, { error: err instanceof Error ? err.message : "cancel failed" });
+      }
     }
+    stops.current.get(chatId)?.abort();
   }
 
   async function confirm() {
@@ -684,7 +750,7 @@ function ChatDesk() {
             <div className={`turn ${turn.role}`} key={index}>
               <div className="bubble">
                 {turn.activity && turn.activity.length > 0 && (
-                  <ActivityList steps={settleActivity(turn.activity)} quiet={artifact} />
+                  <ActivityList steps={turn.activity} />
                 )}
                 {turn.model && <div className="who">{models.find((item) => item.id === turn.model)?.short || turn.model}</div>}
                 {showAnswer && (
@@ -708,7 +774,6 @@ function ChatDesk() {
                     ))}
                   </div>
                 )}
-                {!artifact && turn.modelJson && turn.modelJson.length > 0 && <ModelJson items={turn.modelJson} />}
                 {turn.files?.map((name) => <div className="who" key={name}>📎 {name}</div>)}
                 {turn.images?.map((src) => <img key={src.slice(0, 32)} alt="" src={src} />)}
                 {turn.sources?.map((source) => (
@@ -726,11 +791,11 @@ function ChatDesk() {
             </div>
             );
           })}
-          {(flight.activity.length > 0 || flight.live || flight.modelJson.length > 0 || liveKind) && (
+          {((flight.streaming && (traceSteps.length > 0 || flight.live || liveKind))
+            || (!flight.streaming && Boolean(flight.error) && traceSteps.length > 0)) && (
             <div className="turn assistant">
               <div className="bubble">
-                {flight.activity.length > 0 && <ActivityList steps={flight.activity} quiet={Boolean(liveKind)} />}
-                {!liveKind && flight.modelJson.length > 0 && <ModelJson items={flight.modelJson} />}
+                {traceSteps.length > 0 && <ActivityList steps={traceSteps} />}
                 {livePane
                   ? <button type="button" className="result-link" onClick={() => openResult(livePane.id)}>{resultLink(livePane.label)}</button>
                   : flight.live && <Markdown text={flight.live} />}
@@ -738,10 +803,18 @@ function ChatDesk() {
             </div>
           )}
         </div>
+        {flight.approvalTool && !flight.streaming && (
+          <div className="confirm-bar">
+            <span>要执行 {flight.approvalTool} 吗？</span>
+            <button className="btn" type="button" disabled={flight.busy} onClick={() => void resumeApproval("skip")}>跳过</button>
+            <button className="btn-primary" type="button" disabled={flight.busy} onClick={() => void resumeApproval("confirm")}>确认</button>
+          </div>
+        )}
         <form
           className="composer"
           onSubmit={(event) => {
             event.preventDefault();
+            if (flight.approvalTool) return;
             void send(flight.draft);
           }}
         >
@@ -786,7 +859,17 @@ function ChatDesk() {
                 hidden
                 accept=".png,.jpg,.jpeg,.webp,.pdf,.docx,.txt,.md"
                 onChange={(event) => {
-                  if (sid) patchFlight(sid, { files: [...(event.target.files ?? [])] });
+                  const picked = [...(event.target.files ?? [])];
+                  event.target.value = "";
+                  if (!sid) return;
+                  const maxImages = desk.meta?.max_images;
+                  if (maxImages == null) {
+                    patchFlight(sid, { files: picked });
+                    return;
+                  }
+                  const clipped = clipAttachedFiles(picked, maxImages);
+                  setAttachNote(clipped.overflow ? `不能再上传图片了，一次最多 ${maxImages} 张` : null);
+                  patchFlight(sid, { files: clipped.files });
                 }}
               />
             </label>
@@ -796,9 +879,10 @@ function ChatDesk() {
                 <StopIcon />
               </button>
             ) : (
-              <button className="btn-primary" type="submit" disabled={flight.busy || !sid}>Send</button>
+              <button className="btn-primary" type="submit" disabled={flight.busy || !sid || Boolean(flight.approvalTool)}>Send</button>
             )}
           </div>
+          {attachNote && <div className="warn">{attachNote}</div>}
         </form>
       </section>
       {showPanel && (
@@ -886,19 +970,6 @@ function ChatDesk() {
   );
 }
 
-function ModelJson({ items }: { items: unknown[] }) {
-  return (
-    <div className="model-jsons">
-      {items.map((item, index) => (
-        <pre className="model-json" key={index}>
-          <span className="label">模型输出 {index + 1}</span>
-          {JSON.stringify(item, null, 2)}
-        </pre>
-      ))}
-    </div>
-  );
-}
-
 function StepMark({ state }: { state: Activity["state"] }) {
   if (state === "done") {
     return (
@@ -919,7 +990,7 @@ function StepMark({ state }: { state: Activity["state"] }) {
   );
 }
 
-function ActivityList({ steps, quiet }: { steps: Activity[]; quiet?: boolean }) {
+function ActivityList({ steps }: { steps: Activity[] }) {
   return (
     <ol className="activity">
       {steps.map((step, index) => (
@@ -929,7 +1000,6 @@ function ActivityList({ steps, quiet }: { steps: Activity[]; quiet?: boolean }) 
             {step.detail ? <span className="detail">{step.detail}</span> : null}
             <StepMark state={step.state} />
           </div>
-          {!quiet && step.outputs.length > 0 && <ModelJson items={step.outputs} />}
         </li>
       ))}
     </ol>

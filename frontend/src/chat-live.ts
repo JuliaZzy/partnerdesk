@@ -1,22 +1,20 @@
 import { useSyncExternalStore } from "react";
 
-import type { Activity } from "./format";
-
 /** One chat's composer and the reply that is still coming in. Other chats keep their own. */
 export type Flight = {
   busy: boolean;
   /** True only while a chat reply stream is open. Confirm and save stay busy without this. */
   streaming: boolean;
-  /** Exercise run id, when the stream event carried one. The cancel click uses it. */
+  /** Run id from the stream. The cancel click and the trace poll use it. */
   runId: string | null;
   live: string;
-  activity: Activity[];
-  modelJson: unknown[];
   error: string | null;
   draft: string;
   files: File[];
   task: "po" | "report" | "contract" | null;
   tasks: ("po" | "report" | "contract")[];
+  /** Tool name while the run is parked for confirm or skip. */
+  approvalTool: string | null;
 };
 
 const EMPTY: Flight = {
@@ -24,13 +22,12 @@ const EMPTY: Flight = {
   streaming: false,
   runId: null,
   live: "",
-  activity: [],
-  modelJson: [],
   error: null,
   draft: "",
   files: [],
   task: null,
   tasks: [],
+  approvalTool: null,
 };
 
 const flights = new Map<string, Flight>();

@@ -6,7 +6,7 @@ import importlib
 import json
 from pathlib import Path
 
-from backend.orchestrator.prompt import OPEN, PLAN
+from backend.orchestrator.prompt import OPEN
 from backend.po.extract import build_extract_prompt
 from backend.po.prompt import EXTRACT, fill
 from backend.po.slots import PoSlots
@@ -37,7 +37,6 @@ def test_fill_leaves_json_braces_and_fills_slots():
 def test_build_extract_prompt_uses_the_po_constants(catalog):
     prompt = build_extract_prompt(catalog.manifest(), PoSlots(), has_images=True, operating_context="Ship on Friday.")
     assert "附件图片" in prompt and "Ship on Friday" in prompt and "FO-100" in prompt
-    assert PLAN.startswith("你是品牌经销商工作台的编排器")
     assert OPEN.startswith("你在为一场品牌与已入驻经销商的新对话做开场标记")
     assert "PLACEHOLDER" not in data_query.REFLECT and '"retry_question"' in data_query.REFLECT
     assert "PLACEHOLDER" not in report.REPORT_QUESTIONS_PROMPT and '"questions"' in report.REPORT_QUESTIONS_PROMPT

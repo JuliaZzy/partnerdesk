@@ -53,6 +53,39 @@ class QueryResult:
     handoff: str = ""
     score: int | None = None
 
+@dataclass
+class _RunTrace:
+    db: Database | None = None
+    run_id: str | None = None
+    step_id: str | None = None
+
+def _record_sql_call(
+    trace: _RunTrace | None,
+    client: Any, 
+    *,
+    provider: str,
+    model: str,
+    request: dict[str, Any],
+    response: dict[str, Any],
+    latency_ms: int,
+    error: Exception | None,
+) -> None:
+    if trace is None or trace.db is None or not trace.run_id or not trace.step_id:
+        return 
+    usage = getattr(client, "last_usage", None)
+    usage = usage if isinstance(usage, dict) else {}
+    trace.db.insert_model_call(
+        run_id=trace.run_id, step_id=trace.step_id,
+        provider=provider,
+        model=model,
+        request=request,
+        response=response,
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        completion_tokens=int(usage.get("completion_tokens") or 0),
+        latency_ms=latency_ms,
+        status="failed" if error is not None else "succeeded",
+        error={"message": str(error)} if error is not None else None,
+    )
 
 def _ds_client() -> DeepSeekClient:
     return DeepSeekClient(LLMSettings(base_url=None, api_key=""))
@@ -71,37 +104,68 @@ def _json_format(schema: dict[str, Any]) -> dict[str, Any]:
         }
     }
 
-
-def _ask_school(*, system: str, user: str) -> dict[str, Any]:
+def _ask_school(*, system: str, user: str, trace: _RunTrace | None = None) -> dict[str, Any]:
     """Campus deepseek-chat. The gateway has no JSON schema; the reply text is the object."""
-    resp = _school_client().chat_completion(
-        _SCHOOL,
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0,
-    )
+    client = _school_client()
+    request = {"model": _SCHOOL, "system": system, "messages": [{"role": "system", "content": user}]}
+    raw: dict[str, Any] = {}
+    error: Exception | None = None
+    started = time.perf_counter()
     try:
-        text = resp["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError) as err:
-        raise ValueError("Campus model did not return a message.") from err
-    raw = parse_json_loose(text)
-    if not isinstance(raw, dict):
-        raise ValueError("Campus model did not return a JSON object.")
+        resp = client.chat_completion(
+            model=_SCHOOL,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0,
+        )
+        try:
+            text = resp["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError) as err:
+            raise ValueError("Campus model did not return a message.") from err
+        parsed = parse_json_loose(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("Campus model did not return a JSON object.")
+        raw = parsed
+    except Exception as err:
+        error = err
+    _record_sql_call(
+        trace, client, provider="sjtu", model=_SCHOOL, 
+        request=request, response={"json": raw} if raw else {}, 
+        latency_ms=int((time.perf_counter() - started) * 1000), error=error
+    )
+    if error is not None:
+        raise error
     return raw
 
 
-def _ask_ds(*, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+def _ask_ds(*, system: str, user: str, schema: dict[str, Any], trace: _RunTrace | None = None) -> dict[str, Any]:
     """One JSON object from deepseek-flash, thinking off."""
-    resp = _ds_client().response(
-        model=_FLASH,
-        instructions=system,
-        input=user,
-        text=_json_format(schema),
-        reasoning_effort="none",
-        temperature=0,
+    client = _ds_client()
+    request = {"model": _FLASH, "instruction": system, "input": user, "text": _json_format(schema), "reasoning_effort": "none", "temperature": 0}
+    raw: dict[str, Any] = {}
+    error: Exception | None = None
+    started = time.perf_counter()
+    try:
+        resp = client.response(
+            model=_FLASH,
+            instructions=system,
+            input=user,
+            text=_json_format(schema),
+            reasoning_effort="none",
+            temperature=0,
+        )
+        parsed = parse_json_loose(resp.output_text)
+        if not isinstance(parsed, dict):
+            raise ValueError("model did not return a JSON object")
+        raw = parsed
+    except Exception as err:
+        error = err
+    _record_sql_call(
+        trace, client, provider="ds", model=_FLASH, 
+        request=request, response={"json": raw} if raw else {}, 
+        latency_ms=int((time.perf_counter() - started) * 1000), error=error
     )
-    raw = parse_json_loose(resp.output_text)
-    if not isinstance(raw, dict):
-        raise ValueError("model did not return a JSON object")
+    if error is not None:
+        raise error
     return raw
 
 
@@ -144,10 +208,11 @@ def _rows_for_prompt(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: _jsonable(value) for key, value in row.items()} for row in rows[:_MAX_ROWS]]
 
 
-def _pick_tables(question: str) -> list[str]:
+def _pick_tables(question: str, trace: _RunTrace | None = None) -> list[str]:
     raw = _ask_school(
         system=f"{PICK}\n\n=== 表 ===\n{catalog_text()}",
         user=question,
+        trace=trace,
     )
     names = raw.get("tables")
     if not isinstance(names, list):
@@ -170,14 +235,15 @@ def _question_text(question: str, history: list[dict[str, Any]] | None, folded_t
 def _write_sql(
     question: str, schema_text: str, *,
     context: str = "", history: list[dict[str, Any]] | None = None, folded_through: int = 0,
+    trace: _RunTrace | None = None,
 ) -> str:
     asked = _question_text(question, history, folded_through)
     system = attach(f"{SQL}\n\n=== 结构 ===\n{schema_text}", context)
-    raw = _ask_ds(system=system, user=asked, schema=sql_schema())
+    raw = _ask_ds(system=system, user=asked, schema=sql_schema(), trace=trace)
     return _strip_fence(str(raw.get("sql") or ""))
 
 
-def _revise_sql(*, schema_text: str, statement: str, error: str) -> str:
+def _revise_sql(*, schema_text: str, statement: str, error: str, trace: _RunTrace | None = None) -> str:
     """Rewrite one failed SELECT against the same column schema and SQL rules."""
     system = (
         f"{SQL}\n\n=== 结构 ===\n{schema_text}\n\n"
@@ -186,14 +252,14 @@ def _revise_sql(*, schema_text: str, statement: str, error: str) -> str:
     )
     user = json.dumps({"failed_sql": statement, "error": error or "（无）"}, ensure_ascii=False)
     try:
-        raw = _ask_ds(system=system, user=user, schema=sql_schema())
+        raw = _ask_ds(system=system, user=user, schema=sql_schema(), trace=trace)
     except Exception:
         return ""
     return _strip_fence(str(raw.get("sql") or ""))
 
 
 def _retry_sql(
-    *, schema_text: str, first: str,
+    *, schema_text: str, first: str, trace: _RunTrace | None = None,
     run: Any,
 ) -> tuple[Any, list[dict[str, str]]]:
     """Run the statement. On failure, rewrite and run again, at most three runs."""
@@ -211,7 +277,7 @@ def _retry_sql(
             return value, []
         if index == _SQL_ATTEMPTS - 1:
             break
-        revised = _revise_sql(schema_text=schema_text, statement=current, error=error or "")
+        revised = _revise_sql(schema_text=schema_text, statement=current, error=error or "", trace=trace)
         if not revised:
             break
         current = revised
@@ -235,6 +301,7 @@ def answer_question(
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str | None = None,
     reflect: bool = True, history: list[dict[str, Any]] | None = None,
     folded_through: int = 0, summary: str = "",
+    run_id: str | None = None, step_id: str | None = None,
 ) -> QueryResult:
     """Pick tables, generate one SELECT, run it, and log the attempt.
 
@@ -243,10 +310,12 @@ def answer_question(
     or more keeps them. Below that, the reflection may ask a different question and run
     again. A reflection error keeps the latest rows that did run.
     """
+    trace = _RunTrace(db=db, run_id=run_id, step_id=step_id)
     result = _attempt(
         db, question=question, partnership_id=partnership_id, brand_id=brand_id,
         distributor_id=distributor_id, session_id=session_id, history=history,
         folded_through=folded_through, summary=summary,
+        trace=trace,
     )
     if not reflect or not result.ok:
         return result
@@ -255,7 +324,7 @@ def answer_question(
     asked = question
     for turn in range(MAX_REFLECTIONS):
         try:
-            score, retry = _reflect(asked, result)
+            score, retry = _reflect(asked, result, trace=trace)
         except Exception:
             return result
         result.score = score
@@ -269,7 +338,7 @@ def answer_question(
         nxt = _attempt(
             db, question=retry, partnership_id=partnership_id, brand_id=brand_id,
             distributor_id=distributor_id, session_id=session_id, history=history,
-            folded_through=folded_through, summary=summary,
+            folded_through=folded_through, summary=summary, trace=trace,
         )
         if not nxt.ok:
             return chosen
@@ -282,6 +351,7 @@ def _attempt(
     db: Database, *, question: str,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str | None,
     history: list[dict[str, Any]] | None = None, folded_through: int = 0, summary: str = "",
+    trace: _RunTrace | None = None,
 ) -> QueryResult:
     started = time.perf_counter()
     question = (question or "").strip()[:_MAX_QUESTION]
@@ -297,7 +367,7 @@ def _attempt(
         if not question:
             ok, error, error_type = False, "empty question", "generation"
         else:
-            tables = _pick_tables(question)
+            tables = _pick_tables(question, trace=trace)
             if not tables:
                 ok, error, error_type = False, "no relevant tables", "generation"
             else:
@@ -306,6 +376,7 @@ def _attempt(
                 context = prompt_context(standing_block(db, partnership_id, person), summary_block(summary))
                 sql = _write_sql(
                     question, schema_text, context=context, history=history, folded_through=folded_through,
+                    trace=trace,
                 )
                 ok, error, sql, raw_rows = _run(
                     db, sql, _scope_params(partnership_id, brand_id, distributor_id, person),
@@ -345,7 +416,7 @@ def _attempt(
 
     seen = {"done": False}
     last = {"result": result}
-    value, attempts = _retry_sql(schema_text=schema_text, first=sql or "", run=run)
+    value, attempts = _retry_sql(schema_text=schema_text, first=sql or "", run=run, trace=trace)
     chosen = value if isinstance(value, QueryResult) else last["result"]
     if attempts:
         chosen.handoff = format_failures(attempts)
@@ -376,7 +447,7 @@ def run_statement(
     )
 
 
-def _reflect(question: str, result: QueryResult) -> tuple[int, str]:
+def _reflect(question: str, result: QueryResult, trace: _RunTrace | None = None) -> tuple[int, str]:
     raw = _ask_school(
         system=REFLECT,
         user=json.dumps({
@@ -385,6 +456,7 @@ def _reflect(question: str, result: QueryResult) -> tuple[int, str]:
             "row_count": result.row_count,
             "rows": result.rows[:20],
         }, ensure_ascii=False),
+        trace=trace,
     )
     retry = str(raw.get("retry_question") or "").strip()[:_MAX_QUESTION]
     return _clamp_score(raw.get("score")), retry

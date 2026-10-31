@@ -1,16 +1,33 @@
 """Scripted stand-in for tests. No network.
 
 `json_replies` are consumed in order. `text_reply` streams word by word.
-`tool_replies` are consumed by `complete`. Every call is appended to `calls`.
+`tool_replies` are consumed by `chat_completion` when tools are offered.
+Every call is appended to `calls`.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from .types import AssistantTurn
+
+
+def _chat_response(turn: AssistantTurn) -> SimpleNamespace:
+    calls = []
+    for call in turn.tool_calls:
+        calls.append(SimpleNamespace(
+            id=call.id,
+            function=SimpleNamespace(
+                name=call.name,
+                arguments=json.dumps(call.arguments, ensure_ascii=False),
+            ),
+        ))
+    message = SimpleNamespace(content=turn.content, tool_calls=calls or None)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
 @dataclass
@@ -23,11 +40,15 @@ class FakeLLM:
     text_reply: str = "Got it."
     calls: list[dict[str, Any]] = field(default_factory=list)
     fail_json: bool = False
+    model: str = "fake"
+    provider: str = "fake"
+    last_usage: dict[str, int] | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def complete_json(self, *, system, messages, schema=None, temperature=0.0, max_tokens=900):
         with self._lock:
             self.calls.append({"kind": "json", "system": system, "messages": messages, "schema": schema})
+            self.last_usage = {"prompt_tokens": 1, "completion_tokens": 1}
             if self.fail_json:
                 raise RuntimeError("model unavailable")
             if not self.json_replies:
@@ -44,3 +65,59 @@ class FakeLLM:
         if self.tool_replies:
             return self.tool_replies.pop(0)
         return AssistantTurn()
+
+    def chat_completion(self, *, model, messages, tools=None, tool_choice=None, **kwargs):
+        del tool_choice
+        system = ""
+        chat: list[dict[str, Any]] = []
+        for message in messages:
+            if message.get("role") == "system":
+                system = str(message.get("content") or "")
+            else:
+                chat.append(message)
+        self.calls.append({"kind": "complete", "system": system, "messages": chat, "tools": tools, "model": model})
+        self.last_usage = {"prompt_tokens": 1, "completion_tokens": 1}
+        if self.fail_json:
+            raise RuntimeError("model unavailable")
+        if tools is not None and self.tool_replies:
+            turn = self.tool_replies.pop(0)
+        else:
+            turn = AssistantTurn(content=self.text_reply)
+        if kwargs.get("stream"):
+            return _stream_turn(turn)
+        return _chat_response(turn)
+
+
+def _stream_turn(turn: AssistantTurn):
+    if turn.content:
+        for i, word in enumerate(turn.content.split(" ")):
+            yield _stream_chunk(content=(" " if i else "") + word)
+    for index, call in enumerate(turn.tool_calls):
+        yield _stream_chunk(tool_call={
+            "index": index,
+            "id": call.id,
+            "type": "function",
+            "function": {
+                "name": call.name,
+                "arguments": json.dumps(call.arguments, ensure_ascii=False),
+            },
+        })
+    yield _stream_chunk(usage={"prompt_tokens": 1, "completion_tokens": 1})
+
+
+def _stream_chunk(*, content: str | None = None, tool_call: dict[str, Any] | None = None, usage: dict[str, int] | None = None) -> dict[str, Any]:
+    delta: dict[str, Any] = {}
+    if content is not None:
+        delta["content"] = content
+    if tool_call is not None:
+        delta["tool_calls"] = [tool_call]
+    chunk: dict[str, Any] = {"choices": [{"delta": delta}]}
+    if usage is not None:
+        chunk["usage"] = usage
+    return chunk
+
+    def response(self, *, model, input, instructions=None, text=None, **kwargs):
+        del model, text, kwargs
+        messages = input if isinstance(input, list) else [{"role": "user", "content": input}]
+        raw = self.complete_json(system=instructions or "", messages=messages)
+        return SimpleNamespace(output_text=json.dumps(raw, ensure_ascii=False))

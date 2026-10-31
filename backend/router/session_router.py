@@ -111,34 +111,25 @@ def message(
         raise HTTPException(404, "session not found")
     if not body.message.strip() and not body.images and not body.files:
         raise HTTPException(400, "message required")
+    if len(body.images) > service.MAX_IMAGES:
+        raise HTTPException(400, f"at most {service.MAX_IMAGES} images")
     documents = [_decode_file(f) for f in body.files]
 
     def gen() -> Iterator[bytes]:
-        # A model error after the first status frame must still close the stream.
+        # A model error after the first frame must still close the stream.
         # The provider body can carry account ids, so the client only gets a fixed line.
-        outputs = getattr(llm, "model_outputs", None) or []
-        sent = 0
         # Closed in finally so a reader that leaves releases this chat's turn lock.
         # The lock is held inside the iterator, and closing only this wrapper would
         # leave that iterator suspended.
-        turn = service.handle_message(db, llm, sid, body.message, body.images, body.attachments, documents)
-
-        def pending() -> Iterator[bytes]:
-            nonlocal sent
-            while sent < len(outputs):
-                event = {"type": "model_json", "json": outputs[sent]}
-                sent += 1
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
-
+        turn = service.handle_message(
+            db, llm, sid, body.message, body.images, body.attachments, documents, body.model,
+        )
         try:
             try:
-                for e in turn:
-                    yield from pending()
-                    yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n".encode()
-                yield from pending()
+                for event in turn:
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
             except Exception:
                 log.exception("chat stream failed")
-                yield from pending()
                 err = {"type": "error", "message": "The model could not finish this reply."}
                 yield f"data: {json.dumps(err)}\n\n".encode()
         finally:

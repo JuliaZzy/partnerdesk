@@ -25,7 +25,7 @@ def _response(payload: dict):
 
 def test_files_over_10mb_are_refused():
     with pytest.raises(ValueError, match="10MB"):
-        load_pages("notes.txt", b"x" * (10 * 1024 * 1024 + 1))
+        load_pages("notes.txt", b"x" * (20 * 1024 * 1024 + 1))
 
 
 def test_pdf_without_a_key_names_the_variable(monkeypatch):
@@ -79,3 +79,38 @@ def test_pdf_uses_markdown_when_the_response_has_no_pages(monkeypatch):
 
     monkeypatch.setattr("backend.llm.client.urllib.request.urlopen", fake_urlopen)
     assert load_pages("agreement.pdf", b"%PDF") == [(1, "# Agreement\n\nMinimum order USD 500.")]
+
+
+def test_pdf_ocr_is_a_tool_step_while_the_run_is_running(db, monkeypatch):
+    from datetime import timedelta
+
+    from backend.db import utcnow
+
+    monkeypatch.setenv("GLM_API_KEY", "test-key")
+    monkeypatch.setenv("GLM_BASE_URL", "https://ocr.example/layout_parsing")
+
+    def fake_urlopen(req, timeout=0):
+        del req, timeout
+        return _response({"md_results": "# Agreement\n\nMinimum order USD 500."})
+
+    monkeypatch.setattr("backend.llm.client.urllib.request.urlopen", fake_urlopen)
+    run, _created = db.create_agent_run("ps-1", "u-a", "chat", "ocr-trace", {"message": "read the file"})
+    assert load_pages("agreement.pdf", b"%PDF", db=db, run_id=run["id"]) == [
+        (1, "# Agreement\n\nMinimum order USD 500."),
+    ]
+    assert db.run_trace("ps-1", run["id"])["steps"] == []
+    assert db.claim_run(run["id"], "worker-test", utcnow() + timedelta(minutes=5)) is not None
+    pages = load_pages("notes.txt", b"hello\n\nthere", db=db, run_id=run["id"])
+    assert pages == [(1, "hello\n\nthere")]
+    pages = load_pages("agreement.pdf", b"%PDF", db=db, run_id=run["id"])
+    trace = db.run_trace("ps-1", run["id"])
+    assert trace["run"]["status"] == "running"
+    assert [(step["step_type"], step["name"], step["status"]) for step in trace["steps"]] == [
+        ("tool", "document.ocr", "succeeded"),
+    ]
+    assert trace["steps"][0]["output_json"] == {"file_name": "agreement.pdf", "pages": len(pages)}
+    tool = trace["tool_calls"][0]
+    assert tool["tool_name"] == "document.ocr"
+    assert tool["status"] == "succeeded"
+    assert tool["result_json"]["pages"] == 1
+    assert tool["step_id"] == trace["steps"][0]["id"]

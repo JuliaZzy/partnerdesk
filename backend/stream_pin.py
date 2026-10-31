@@ -1,9 +1,10 @@
 """Run one chat stream on a single thread.
 
 Starlette pulls a sync body with a fresh worker per chunk, and each worker
-starts from the event-loop context. A turn's activity list is a contextvar,
-so hopping threads drops it, and a reused worker can still be holding another
-chat's copy. The reader may hop. The producer that walks the turn does not.
+starts from the event-loop context. The request context holds the fold
+scheduler, so hopping threads drops it, and a reused worker can still be
+holding another chat's copy. The reader may hop. The producer that walks the
+turn does not.
 """
 
 from __future__ import annotations

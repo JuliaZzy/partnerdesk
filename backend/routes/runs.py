@@ -14,6 +14,7 @@ from ..deps import get_db
 from ..schemas.run import (
     CancelRunRequest,
     CreateRunRequest,
+    RerunRunRequest,
     ResumeRunRequest,
     RunEventResponse,
     RunResponse,
@@ -49,6 +50,27 @@ def create_run(
         org_id=user.org_id,
         user_id=user.id,
         run_type=request.run_type,
+        idempotency_key=request.idempotency_key,
+        run_input=request.input,
+    )
+    if not created:
+        response.status_code = 200
+    return run
+
+
+@router.post("/runs/{run_id}/rerun", response_model=RunResponse, status_code=201)
+def rerun_run(
+    run_id: str,
+    request: RerunRunRequest,
+    response: Response,
+    user: CurrentUser = Depends(get_current_user),
+    db: Database = Depends(get_db),
+) -> dict:
+    run, created = run_service.rerun(
+        db,
+        org_id=user.org_id,
+        user_id=user.id,
+        run_id=run_id,
         idempotency_key=request.idempotency_key,
         run_input=request.input,
     )

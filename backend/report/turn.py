@@ -13,6 +13,7 @@ text2sql 执行取数，并对返回的行打分。80 分及以上就用这些�
 from __future__ import annotations
 
 import json
+import time
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -52,6 +53,58 @@ _SEARCH = 200
 _SNIPPET = 300
 _FALLBACK = "这个合作关系最近的订单和动销"
 
+
+@dataclass(frozen=True)
+class _RunTrace:
+    db: Database | None = None
+    run_id: str | None = None
+    step_id: str | None = None
+
+def _call_json(
+    llm: Any,
+    *, 
+    model: str,
+    system: str,
+    messages: list[dict[str, Any]],
+    schema: dict[str, Any] | None = None,
+    temperature: float = 0.0,
+    flash: bool = False,
+    trace: _RunTrace | None = None,
+) -> dict[str, Any]:
+    request = {"model": model, "system": system, "messages": messages, "schema": schema}
+    raw: dict[str, Any] = {}
+    error: Exception | None = None
+    started = time.perf_counter()
+    try:
+        if flash:
+            client = llm if callable(getattr(llm, "response", None)) else None 
+            raw = model_calls.flash_json(
+                system=system, messages=messages, schema=schema, temperature=temperature, client=client
+            )
+        else:
+            raw = model_calls.school_json(
+                model=model, system=system, messages=messages, schema=schema, temperature=temperature, client=llm
+            )
+    except Exception as e:
+        error = e
+    usage = getattr(llm, "last_usage", None)
+    if trace is not None and trace.db is not None and trace.run_id and trace.step_id:
+        usage = usage if isinstance(usage, dict) else {}
+        trace.db.insert_model_call(
+            trace.run_id, trace.step_id,
+            provider=str(getattr(llm, "provider", None) or ("deepseek" if flash else "sjtu")),
+            model=model,
+            request=request,
+            response={"json": raw} if raw else {},
+            prompt_tokens=int(usage.get("prompt_tokens") or 0),
+            completion_tokens=int(usage.get("completion_tokens") or 0),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            status="failed" if error is not None else "succeeded",
+            error={"message": str(error)} if error is not None else None,
+        )
+    if error is not None:
+        raise error
+    return raw
 
 @dataclass(frozen=True)
 class ReportDraft:
@@ -277,16 +330,18 @@ def parse_plan(raw: Any, *, today: date | None = None) -> list[SectionPlan]:
 def iter_draft(
     db: Database, llm: Any, *, message: str, history: list[dict[str, Any]],
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
-    hint: str | None = None, search_fn: Any = None, folded_through: int = 0, summary: str = "",
+    hint: str | None = None, search_fn: Any = None, folded_through: int = 0, 
+    summary: str = "", run_id: str | None = None, step_id: str | None = None,
 ) -> Iterator[dict[str, Any] | ReportDraft]:
     """Yield a status around each slow step, then the draft."""
     # Importing orchestrator.status at module level loads orchestrator.turn, which imports this module.
     from ..orchestrator.status import status
 
+    trace = _RunTrace(db=db, run_id=run_id, step_id=step_id)
     remembered = prompt_context(standing_block(db, partnership_id, actor_id(db, session_id)), summary_block(summary))
     yield status("report-plan", "规划", "正在按大纲安排每一节要查什么", state="running")
     planned, report_title = _plan(
-        llm, message=message, history=history, hint=hint, remembered=remembered, folded_through=folded_through,
+        llm, message=message, history=history, hint=hint, remembered=remembered, folded_through=folded_through, trace=trace
     )
     question_count = len({question.casefold() for section in planned for question in section.questions})
     search_count = len({query.casefold() for section in planned for query in section.searches})
@@ -296,6 +351,7 @@ def iter_draft(
     asked, by_section, failures = _query(
         db, llm, planned, partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
         session_id=session_id, history=history, folded_through=folded_through, summary=summary,
+        trace=trace,
     )
     yield status("report-query", "查数", f"查完 {len(asked)} 个问题", state="done")
 
@@ -307,7 +363,7 @@ def iter_draft(
     for section in planned:
         if not section.chart:
             continue
-        made, fails = _charts(llm, message, by_section[section.id])
+        made, fails = _charts(llm, message, by_section[section.id], trace=trace)
         made = fit_chart_axes(_assign_chart_ids(made, used_chart_ids))
         charts_for[section.id] = made
         charts.extend(made)
@@ -326,7 +382,7 @@ def iter_draft(
     for section in planned:
         if section.id in {"summary", "risks"}:
             continue
-        got, err, fails = _code_wizard(llm, section, query_results)
+        got, err, fails = _code_wizard(llm, section, query_results, trace=trace)
         insights_by_section[section.id] = got
         if err:
             insight_errors.append(f"{section.title}: {err}")
@@ -359,6 +415,7 @@ def iter_draft(
         llm, message=message, history=history, chapters=prior,
         asked=[item.question for item in asked],
         remembered=remembered, folded_through=folded_through,
+        trace=trace,
     )
     if decision.write:
         if decision.questions or decision.searches:
@@ -371,6 +428,7 @@ def iter_draft(
                 db, llm, decision.questions, asked=asked, by_section=by_section, section_id="risks",
                 partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
                 session_id=session_id, history=history, folded_through=folded_through, summary=summary,
+                trace=trace,
             )
             failures.extend(notes)
         if decision.searches:
@@ -379,7 +437,7 @@ def iter_draft(
             )
             _search_more(decision.searches, found, search_fn or search)
         risks_section = next(section for section in planned if section.id == "risks")
-        got, err, fails = _code_wizard(llm, risks_section, _query_results(asked))
+        got, err, fails = _code_wizard(llm, risks_section, _query_results(asked), trace=trace)
         if err:
             insight_errors.append(f"{risks_section.title}: {err}")
         insight_failures.extend(fails)
@@ -390,6 +448,7 @@ def iter_draft(
             llm, message, history, risks_section, _asks_for(risks_section, by_section), found, [],
             _insights_for(risks_section, insights_by_section),
             remembered=remembered, folded_through=folded_through, prior=prior,
+            trace=trace,
         )
         if content.strip():
             texts["risks"] = finish_section(content, [])
@@ -404,6 +463,7 @@ def iter_draft(
     summary_text, _points = _write_summary(
         llm, message, history, _body_for_summary(planned, texts),
         remembered=remembered, folded_through=folded_through,
+        trace=trace,
     )
     texts["summary"] = finish_section(strip_chart_refs(summary_text), []) or "摘要没有写成。"
     yield status("report-summary", "摘要", "摘要已写完", state="done")
@@ -413,6 +473,7 @@ def iter_draft(
     yield status("report-review", "审核", "正在给整份报告打分", state="running")
     report, score, review_error = _review_rounds(
         llm, message=message, report=report, evidence=evidence, remembered=remembered,
+        trace=trace,
     )
     if review_error or score is None:
         review_note = "审核没有完成"
@@ -451,7 +512,7 @@ def iter_draft(
 
 def _plan(
     llm: Any, *, message: str, history: list[dict[str, Any]], hint: str | None,
-    remembered: str = "", folded_through: int = 0,
+    remembered: str = "", folded_through: int = 0, trace: _RunTrace | None = None,
 ) -> tuple[list[SectionPlan], str]:
     recent = "\n".join(
         f"{turn['role']}: {str(turn.get('content') or '')[:500]}"
@@ -464,8 +525,9 @@ def _plan(
         f"=== 规划问题 ===\n{(hint or '').strip() or '（无）'}"
     )
     try:
-        raw = model_calls.school_json(
-            model_calls.SCHOOL_REASONER,
+        raw = _call_json(
+            llm,
+            model=model_calls.SCHOOL_REASONER,
             system=attach(REPORT_QUESTIONS_PROMPT.format(
                 max_questions=MAX_SECTION_QUESTIONS,
                 max_searches=MAX_SECTION_SEARCHES,
@@ -474,7 +536,9 @@ def _plan(
                 outline=outline_text(),
             ), remembered),
             messages=[{"role": "user", "content": user}],
-            schema=plan_schema(), temperature=0,
+            schema=plan_schema(), 
+            temperature=0,
+            trace=trace,
         )
     except Exception:
         raw = {}
@@ -498,7 +562,7 @@ def _fill_risks(planned: list[SectionPlan], questions: list[str], searches: list
 
 def _plan_risks(
     llm: Any, *, message: str, history: list[dict[str, Any]], chapters: str, asked: list[str],
-    remembered: str = "", folded_through: int = 0,
+    remembered: str = "", folded_through: int = 0, trace: _RunTrace | None = None,
 ) -> RiskPlan:
     """Decide risks only after the earlier chapters are written. A model failure skips the section."""
     if not chapters.strip():
@@ -509,8 +573,9 @@ def _plan_risks(
         f"=== 已经问过数据库的问题 ===\n{json.dumps(asked, ensure_ascii=False)}"
     )})
     try:
-        raw = model_calls.school_json(
-            model_calls.SCHOOL_REASONER,
+        raw = _call_json(
+            llm,
+            model=model_calls.SCHOOL_REASONER,
             system=attach(RISK_PLAN_PROMPT.format(
                 message=(message or "").strip()[:4000] or "（无文字）",
                 database_structure=catalog_text(),
@@ -518,7 +583,7 @@ def _plan_risks(
                 max_searches=MAX_SECTION_SEARCHES,
             ), remembered),
             messages=messages,
-            schema=risk_plan_schema(), temperature=0,
+            schema=risk_plan_schema(), temperature=0, trace=trace,
         )
     except Exception:
         return RiskPlan(False, [], [])
@@ -530,6 +595,7 @@ def _query_extra(
     asked: list[_Ask], by_section: dict[str, list[_Ask]], section_id: str,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     history: list[dict[str, Any]], folded_through: int, summary: str,
+    trace: _RunTrace | None = None,
 ) -> tuple[list[_Ask], list[str]]:
     """Run questions this draft has not asked. A repeat is reused."""
     seen = {item.question.casefold(): item for item in asked}
@@ -544,6 +610,7 @@ def _query_extra(
                 db, llm, question=question, qid=f"q{len(asked) + 1}",
                 partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
                 session_id=session_id, history=history, folded_through=folded_through, summary=summary,
+                trace=trace,
             )
             seen[question.casefold()] = item
             asked.append(item)
@@ -570,6 +637,7 @@ def _query(
     db: Database, llm: Any, planned: list[SectionPlan], *,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     history: list[dict[str, Any]], folded_through: int, summary: str,
+    trace: _RunTrace | None = None,
 ) -> tuple[list[_Ask], dict[str, list[_Ask]], list[str]]:
     """Run each distinct planned question once. Repair and the reflection score live in text2sql."""
     seen: dict[str, _Ask] = {}
@@ -585,6 +653,7 @@ def _query(
                     db, llm, question=question, qid=f"q{len(asked) + 1}",
                     partnership_id=partnership_id, brand_id=brand_id, distributor_id=distributor_id,
                     session_id=session_id, history=history, folded_through=folded_through, summary=summary,
+                    trace=trace,
                 )
                 seen[key] = item
                 asked.append(item)
@@ -598,12 +667,15 @@ def _ask(
     db: Database, llm: Any, *, question: str, qid: str,
     partnership_id: str, brand_id: str, distributor_id: str, session_id: str,
     history: list[dict[str, Any]], folded_through: int, summary: str,
+    trace: _RunTrace | None = None,
 ) -> tuple[_Ask, str]:
     """One planned question. Statement repair and the reflection score live in text2sql."""
     result = answer_question(
         db, question=question, partnership_id=partnership_id, brand_id=brand_id,
         distributor_id=distributor_id, session_id=session_id, history=history,
         folded_through=folded_through, summary=summary,
+        run_id=None if trace is None else trace.run_id, 
+        step_id=None if trace is None else trace.step_id,
     )
     return _Ask(qid, question, result), result.handoff
 
@@ -676,7 +748,7 @@ def _echarts_charts(specs: Any) -> list[dict[str, Any]]:
     return kept
 
 
-def _charts(llm: Any, message: str, asked: list[_Ask]) -> tuple[list[dict[str, Any]], list[str]]:
+def _charts(llm: Any, message: str, asked: list[_Ask], trace: _RunTrace | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     query_results = []
     for item in asked:
         if not item.result.ok or not item.result.rows:
@@ -694,13 +766,15 @@ def _charts(llm: Any, message: str, asked: list[_Ask]) -> tuple[list[dict[str, A
     if not query_results:
         return [], []
     try:
-        raw = model_calls.flash_json(
+        raw = _call_json(
+            llm,
+            model=model_calls.DEEPSEEK_FLASH,
             system=CHART_GENERATION_PROMPT.format(
                 message=(message or "").strip()[:4000] or "（无文字）",
                 query_results=json.dumps(query_results, ensure_ascii=False),
             ),
             messages=[{"role": "user", "content": "按查询结果选择图表。"}],
-            schema=chart_schema(), temperature=0,
+            schema=chart_schema(), temperature=0, trace=trace,
         )
     except Exception as err:
         raw = {"error": str(err).split("\n", 1)[0][:300]}
@@ -717,7 +791,7 @@ def _charts(llm: Any, message: str, asked: list[_Ask]) -> tuple[list[dict[str, A
         return False, [], "图表 JSON 没有可用的 echarts_option", ""
 
     charts, attempts = with_reflection(
-        llm, kind="chart", first=json.dumps(raw, ensure_ascii=False), run=run,
+        llm, kind="chart", first=json.dumps(raw, ensure_ascii=False), run=run, trace=trace,
     )
     return charts or [], [format_failures(attempts)] if attempts else []
 
@@ -778,12 +852,15 @@ def _insights_for(section: SectionPlan, by_section: dict[str, list[dict[str, Any
 
 def _code_wizard(
     llm: Any, section: SectionPlan, query_results: list[dict[str, Any]],
+    trace: _RunTrace | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, list[str]]:
     """Ask for analyze(datasets) for one chapter. datasets is every successful query."""
     if not query_results:
         return [], None, []
     try:
-        raw = model_calls.flash_json(
+        raw = _call_json(
+            llm,
+            model=model_calls.DEEPSEEK_FLASH,
             system=CODE_WIZARD_PROMPT.format(
                 section_title=section.title,
                 section_brief=section.brief,
@@ -791,7 +868,7 @@ def _code_wizard(
                 query_results=json.dumps(query_results, ensure_ascii=False, default=str),
             ),
             messages=[{"role": "user", "content": "只为当前章节写 analyze(datasets)。"}],
-            schema=code_wizard_schema(), temperature=0,
+            schema=code_wizard_schema(), temperature=0, trace=trace,
         )
     except Exception as err:
         return [], str(err).split("\n", 1)[0][:200], []
@@ -803,7 +880,7 @@ def _code_wizard(
             return False, [], result["error"], _dataset_catalog(query_results)
         return True, result["insights"], None, ""
 
-    insights, attempts = with_reflection(llm, kind="code", first=str(code or ""), run=run)
+    insights, attempts = with_reflection(llm, kind="code", first=str(code or ""), run=run, trace=trace)
     return insights or [], None, [format_failures(attempts)] if attempts else []
 
 
@@ -862,7 +939,7 @@ def _read_section(raw: Any) -> tuple[str, list[str]]:
 def _write_section(
     llm: Any, message: str, history: list[dict[str, Any]], section: SectionPlan,
     asked: list[_Ask], found: list[_Search], charts: list[dict[str, Any]], insights: list[dict[str, Any]],
-    *, remembered: str = "", folded_through: int = 0, prior: str = "",
+    *, remembered: str = "", folded_through: int = 0, prior: str = "", trace: _RunTrace | None = None,
 ) -> tuple[str, list[str]]:
     messages = _history(history, folded_through)
     messages.append({
@@ -870,15 +947,16 @@ def _write_section(
         "content": _section_payload(section, asked, found, charts, insights, prior),
     })
     try:
-        raw = model_calls.school_json(
-            model_calls.SCHOOL_REASONER,
+        raw = _call_json(
+            llm,
+            model=model_calls.SCHOOL_REASONER,
             system=attach(WRITING_PROMPT.format(
                 message=(message or "").strip()[:4000] or _FALLBACK,
                 section_title=section.title,
                 section_brief=section.brief,
             ), remembered),
             messages=messages,
-            schema=section_schema(), temperature=0,
+            schema=section_schema(), temperature=0, trace=trace,
         )
     except Exception:
         return "", []
@@ -887,18 +965,19 @@ def _write_section(
 
 def _write_summary(
     llm: Any, message: str, history: list[dict[str, Any]], body: str,
-    *, remembered: str = "", folded_through: int = 0,
+    *, remembered: str = "", folded_through: int = 0, trace: _RunTrace | None = None,
 ) -> tuple[str, list[str]]:
     messages = _history(history, folded_through)
     messages.append({"role": "user", "content": f"=== 已写章节 ===\n{body}"})
     try:
-        raw = model_calls.school_json(
-            model_calls.SCHOOL_REASONER,
+        raw = _call_json(
+            llm,
+            model=model_calls.SCHOOL_REASONER,
             system=attach(SUMMARY_PROMPT.format(
                 message=(message or "").strip()[:4000] or _FALLBACK,
             ), remembered),
             messages=messages,
-            schema=section_schema(), temperature=0,
+            schema=section_schema(), temperature=0, trace=trace,
         )
     except Exception:
         return "", []
@@ -1285,11 +1364,13 @@ def _review_score(raw: Any) -> tuple[int | None, list[dict[str, int | str]]]:
 
 def _review_report(
     llm: Any, *, message: str, report: str, evidence: str, previous_issues: str = "（无）",
-    remembered: str = "",
+    remembered: str = "", trace: _RunTrace | None = None,
 ) -> tuple[int | None, list[dict[str, str]], list[dict[str, int | str]], str | None]:
     """Score the current draft from five chapter marks. Later rounds check the last issues."""
     try:
-        raw = model_calls.flash_json(
+        raw = _call_json(
+            llm,
+            model=model_calls.DEEPSEEK_FLASH,
             system=attach(REPORT_REVIEW_PROMPT.format(
                 message=(message or "").strip()[:4000] or _FALLBACK,
                 outline=outline_text(),
@@ -1298,7 +1379,7 @@ def _review_report(
                 previous_issues=previous_issues or "（无）",
             ), remembered),
             messages=[{"role": "user", "content": "找出问题并给这整份报告打分。"}],
-            schema=review_schema(), temperature=0,
+            schema=review_schema(), temperature=0, trace=trace,
         )
     except Exception as err:
         return None, [], [], str(err).split("\n", 1)[0][:200]
@@ -1309,7 +1390,7 @@ def _review_report(
 
 
 def _review_rounds(
-    llm: Any, *, message: str, report: str, evidence: str, remembered: str = "",
+    llm: Any, *, message: str, report: str, evidence: str, remembered: str = "", trace: _RunTrace | None = None,
 ) -> tuple[str, int | None, str | None]:
     """Score, revise when below 85, and score the revision. At most three revisions."""
     score: int | None = None
@@ -1319,6 +1400,7 @@ def _review_rounds(
         score, issues, chapters, error = _review_report(
             llm, message=message, report=report, evidence=evidence,
             previous_issues=previous, remembered=remembered,
+            trace=trace,
         )
         if score is not None and issues and score >= PASS_SCORE:
             score = PASS_SCORE - 1
@@ -1327,6 +1409,7 @@ def _review_rounds(
         revised = _revise_report(
             llm, message=message, report=report, score=score, chapters=chapters, issues=issues,
             evidence=evidence, remembered=remembered,
+            trace=trace,
         )
         if not revised.strip():
             return report, score, error
@@ -1337,6 +1420,7 @@ def _review_rounds(
     score, issues, _, error = _review_report(
         llm, message=message, report=report, evidence=evidence,
         previous_issues=previous, remembered=remembered,
+        trace=trace,
     )
     if score is not None and issues and score >= PASS_SCORE:
         score = PASS_SCORE - 1
@@ -1346,10 +1430,13 @@ def _review_rounds(
 def _revise_report(
     llm: Any, *, message: str, report: str, score: int, chapters: list[dict[str, int | str]],
     issues: list[dict[str, str]], evidence: str, remembered: str = "",
+    trace: _RunTrace | None = None,
 ) -> str:
     """One rewrite of the whole draft from the review. Empty means keep the original."""
     try:
-        raw = model_calls.flash_json(
+        raw = _call_json(
+            llm,
+            model=model_calls.DEEPSEEK_FLASH,
             system=attach(REPORT_REVISE_PROMPT.format(
                 message=(message or "").strip()[:4000] or _FALLBACK,
                 report=report[:12000],
@@ -1359,7 +1446,7 @@ def _revise_report(
                 evidence=evidence[:12000],
             ), remembered),
             messages=[{"role": "user", "content": "按审核意见修改整份报告。"}],
-            schema=revise_schema(), temperature=0,
+            schema=revise_schema(), temperature=0, trace=trace,
         )
     except Exception:
         return ""

@@ -19,7 +19,6 @@ from typing import Any
 from ..contract import contract_discount_for_next_order
 from ..db import Database
 from ..memory import prompt_context, recall, record_history, summary_block, with_memory
-from ..orchestrator.speak import attach_model_json
 from ..orchestrator.status import status
 from ..schemas import AgentSettings, CommercialRule, Partnership
 from .catalog import Catalog
@@ -103,6 +102,7 @@ def _gap_detail(check: CheckResult) -> list[dict[str, Any]]:
 
 def prepare_order(
     db: Database, llm: Any, bundle: Bundle, session: dict[str, Any], message: str, images: list[str] | None = None,
+    run_id: str | None = None, step_id: str | None = None,
 ) -> PoPrepared:
     """Fill slots and price the draft. Does not speak and does not write the session."""
     images = images or []
@@ -131,6 +131,7 @@ def prepare_order(
         ex = extract_turn(
             llm, manifest=bundle.catalog.manifest(), current=current, history=history, message=message,
             images=images, operating_context=context, contract_discount=applied, folded_through=folded,
+            db=db, run_id=run_id, step_id=step_id,
         )
         slots, language = merge_slots(current, ex.slots), ex.reply_language
         events.append(status("po-extract", "抽取", "订单字段已填上", state="done"))
@@ -212,7 +213,6 @@ def run_po_turn(
     assistant: dict[str, Any] = {"role": "assistant", "content": reply_text, "order": True}
     if draft:
         assistant["order_draft"] = draft
-    attach_model_json(assistant, llm)
     history = [*prepared.history, {"role": "user", "content": message or "(image)"}, assistant]
     record_history(
         db, session, history, llm=llm,

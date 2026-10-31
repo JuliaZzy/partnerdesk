@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  applyActivity,
-  attachOutput,
-  settleActivity,
-  looseModelJson,
   chatTitle,
   citationSources,
   dataQueryMark,
@@ -23,48 +19,13 @@ import {
   revenueLabel,
   sumBy,
   unitsLabel,
+  stepsFromTrace,
 } from "./format";
 
 describe("desk formatters", () => {
   it("formats money the way the order panel did", () => {
     expect(money("USD", 1000)).toBe("USD 1,000.00");
     expect(money("USD", null)).toBe("—");
-  });
-
-  it("updates a live step in place and keeps the others", () => {
-    const started = applyActivity([], { type: "status", id: "plan", title: "计划", detail: "正在判断", state: "running" });
-    const next = applyActivity(started, { type: "status", id: "po-extract", title: "抽取", detail: "正在填订单", state: "running" });
-    const done = applyActivity(next, { type: "status", id: "plan", title: "计划", detail: "采购单", state: "done" });
-    expect(done.map((step) => [step.id, step.state, step.detail])).toEqual([
-      ["plan", "done", "采购单"],
-      ["po-extract", "running", "正在填订单"],
-    ]);
-    expect(applyActivity(done, { type: "token", text: "hi" })).toBe(done);
-  });
-
-  it("stops a stored in-progress step once the turn is over", () => {
-    const steps = [{
-      id: "contract-reply", title: "说明", detail: "正在根据入库结果回复", state: "running" as const, outputs: [],
-    }];
-    expect(settleActivity(steps)).toEqual([{
-      id: "contract-reply", title: "说明", detail: "已完成", state: "done", outputs: [],
-    }]);
-    const finished = [{
-      id: "contract-read", title: "读合同", detail: "读取失败", state: "done" as const, outputs: [],
-    }];
-    expect(settleActivity(finished)).toBe(finished);
-  });
-
-  it("keeps each step's model output when that step updates", () => {
-    const started = applyActivity([], { type: "status", id: "plan", title: "Planning", detail: "正在判断", state: "running" });
-    const withPlan = attachOutput(started, { tasks: [] });
-    const split = applyActivity(withPlan, { type: "status", id: "report-split", title: "拆问题", detail: "正在拆", state: "running" });
-    const withQuestions = attachOutput(split, { questions: ["orders"], searches: [] });
-    const done = applyActivity(withQuestions, { type: "status", id: "plan", title: "Planning", detail: "报表", state: "done" });
-    expect(done[0].outputs).toEqual([{ tasks: [] }]);
-    expect(done[1].outputs).toEqual([{ questions: ["orders"], searches: [] }]);
-    expect(looseModelJson([{ tasks: [] }, { title: "标题" }], done)).toEqual([{ title: "标题" }]);
-    expect(attachOutput([], { sql: "SELECT 1" })).toEqual([]);
   });
 
   it("keeps report charts that carry an echarts option", () => {
@@ -182,6 +143,30 @@ describe("desk formatters", () => {
       [fact("units_sold", "FO-100", 60, "2025-08-01")],
     );
     expect(rows).toEqual([{ sku: "FO-100", product: "Fish Oil", ordered: 120, sold: 60, sellThrough: 0.5 }]);
+  });
+
+  it("reads a run trace as the step list", () => {
+    expect(stepsFromTrace([
+      { id: "step_b", name: "echo", status: "succeeded", step_index: 2 },
+      { id: "step_a", name: "model", status: "running", step_index: 1 },
+      { id: "step_c", name: "", status: "failed", step_index: 3 },
+      { id: "step_d", name: "send_email", status: "failed", step_index: 4 },
+    ])).toEqual([
+      { id: "step_a", title: "model", detail: "", state: "running" },
+      { id: "step_b", title: "echo", detail: "", state: "done" },
+      { id: "step_d", title: "send_email", detail: "失败", state: "done" },
+    ]);
+    expect(stepsFromTrace([{
+      id: "step_plan",
+      name: "model",
+      status: "succeeded",
+      step_index: 1,
+      input_json: { status_id: "plan", title: "Planning", detail: "正在判断" },
+      output_json: { title: "Planning", detail: "直接回答" },
+    }])).toEqual([
+      { id: "step_plan", title: "Planning", detail: "直接回答", state: "done" },
+    ]);
+    expect(stepsFromTrace(null)).toEqual([]);
   });
 });
 

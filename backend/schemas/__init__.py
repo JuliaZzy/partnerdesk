@@ -1,6 +1,6 @@
 """Pydantic objects the rest of the code passes around.
 
-Tables stay in `db/orm/`. `db/database.py` converts between the two. HTTP bodies for a
+Tables stay in `db/orm/`. `db/database/` converts between the two. HTTP bodies for a
 module live next to that module's objects.
 """
 

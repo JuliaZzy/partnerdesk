@@ -16,7 +16,11 @@ from __future__ import annotations
 from typing import Any
 
 # Tables that exist in the database and must never be queried from here.
-EXCLUDED_TABLES = frozenset({"sessions", "text2sql_logs", "narrative_reports", "users"})
+EXCLUDED_TABLES = frozenset({
+    "sessions", "text2sql_logs", "narrative_reports", "users",
+    "agent_runs", "agent_steps", "run_events", "checkpoints", "usage_records",
+    "model_calls", "tool_calls", "audit_logs", "outbox_jobs", "dead_letter_jobs", "job_queue",
+})
 # Columns that exist on a queryable table but are not in its view.
 # `memories.user_id` is applied in the view, so one person's notes never appear for another.
 HIDDEN_COLUMNS = {

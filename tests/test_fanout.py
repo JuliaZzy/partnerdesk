@@ -6,55 +6,10 @@ import threading
 
 from backend import service
 from backend.llm import FakeLLM
-from backend.orchestrator.gather import scheduled
-from backend.orchestrator.turn import PlanTask
 from backend.redis_store import begin_turn, drop_turn, fx_drop, fx_put, load_results, store_result
 from backend.schemas import PurchaseOrder
+from backend.services.chat_run import work_chat
 from backend.tools.exchange_rate import quote
-
-
-def test_a_later_tool_uses_the_earlier_result_not_the_planned_placeholder():
-    from backend.orchestrator.gather import _arguments_for
-
-    search = {
-        "name": "web_search", "ok": True,
-        "payload": {"tool": "web_search", "result": {"ok": True, "data": {
-            "results": [{"title": "北京", "snippet": "10/23 16/7°C"}],
-        }}},
-    }
-    translate = PlanTask(
-        id="t3", kind="tool", name="translate", depends_on=["t1"],
-        input={"text": "北京天气和特色小吃推荐", "target": "en"},
-    )
-    args = _arguments_for(translate, [search])
-    assert "16/7°C" in args["text"]
-    assert args["target"] == "en"
-    mailed = PlanTask(
-        id="t4", kind="tool", name="send_email", depends_on=["t3"],
-        input={"to": "julia_zzy@126.com", "subject": "北京天气", "body": "请查收北京天气和特色小吃推荐（英文版）。"},
-    )
-    body = _arguments_for(mailed, [{
-        "name": "translate", "ok": True,
-        "payload": {"result": {"ok": True, "data": {"translation": "Beijing, 16/7°C."}}},
-    }])
-    assert body["body"] == "Beijing, 16/7°C."
-    assert body["to"] == "julia_zzy@126.com"
-
-
-def test_each_parallel_task_has_its_own_running_line():
-    from backend.orchestrator.gather import _running_line
-
-    assert _running_line(PlanTask(id="c", kind="agent", name="contract")) == "正在解析合同"
-    assert _running_line(PlanTask(id="t", kind="tool", name="translate")) == "正在翻译"
-    assert _running_line(PlanTask(id="w", kind="tool", name="web_search")) == "正在进行网络搜索"
-
-
-def test_a_report_keeps_its_own_data_task_as_a_hint():
-    data = PlanTask(id="d", kind="agent", name="data", depends_on=[])
-    report = PlanTask(id="r", kind="agent", name="report", depends_on=["d"])
-    assert [task.name for task in scheduled([data, report])] == ["report"]
-    own = PlanTask(id="q", kind="agent", name="data", depends_on=[])
-    assert [task.name for task in scheduled([own, report])] == ["data", "report"]
 
 
 def test_results_arrive_in_any_order_and_read_back_together():
@@ -90,7 +45,8 @@ def test_one_reply_covers_contract_and_data(db, monkeypatch):
         eta_date=None, ship_to_country="US", notes=None, discount_amount=None, discount_percentage=None,
         subtotal_amount=1000, total_amount=1000,
     )), [], [])
-    sid = db.create_session("sess-fan", "ps-1")["id"]
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = db.create_session("sess-fan", "ps-1", "u-a")["id"]
     from tests.test_text2sql import _models
 
     _models(monkeypatch, [
@@ -105,15 +61,9 @@ def test_one_reply_covers_contract_and_data(db, monkeypatch):
         ]},
     ], text_reply="合同还没有文件。总额 1000。")
     events = list(service.handle_message(db, llm, sid, "查一下订单总额，顺便看看合同"))
-    running = [event.get("title") for event in events if event.get("type") == "status" and event.get("state") == "running"]
-    assert "正在解析合同" in running and "正在查数" in running
-    assert sum(event.get("type") == "done" for event in events) == 1
-    text_call = next(call for call in llm.calls if call["kind"] == "text")
-    body = text_call["messages"][-1]["content"]
-    assert "1000" in body and "need_file" in body
+    assert work_chat(db, llm, events[0]["run_id"]) is True
     history = db.session(sid)["history"]
     assert [message["role"] for message in history] == ["user", "assistant"]
-    assert history[-1]["combined"] is True
     assert history[-1]["content"] == "合同还没有文件。总额 1000。"
 
 

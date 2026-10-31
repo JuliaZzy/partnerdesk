@@ -14,6 +14,10 @@ class CreateRunRequest(BaseModel):
     input: dict[str, Any]
 
 
+class RerunRunRequest(BaseModel):
+    idempotency_key: str
+    input: dict[str, Any] | None = None
+
 class RunResponse(BaseModel):
     id: str
     org_id: str
@@ -32,6 +36,7 @@ class RunResponse(BaseModel):
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
     attempts: int
+    parent_run_id: str | None = None
 
 
 class RunEventResponse(BaseModel):
@@ -80,6 +85,7 @@ class AgentRun(BaseModel):
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
     attempts: int
+    parent_run_id: str | None = None
 
 
 class AgentStep(BaseModel):
@@ -120,7 +126,7 @@ class UsageRecord(BaseModel):
     user_id: str
     provider: str
     model: str
-    prompt: int
+    prompt_tokens: int
     completion_tokens: int
     total_tokens: int
     estimated_cost_cents: int
@@ -135,7 +141,7 @@ class ModelCall(BaseModel):
     model: str
     request_json: dict[str, Any]
     response_json: dict[str, Any]
-    prompt: int
+    prompt_tokens: int
     completion_tokens: int
     latency_ms: int
     status: str

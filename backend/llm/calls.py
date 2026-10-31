@@ -21,7 +21,7 @@ SCHOOL_CHAT = "deepseek-chat"
 SCHOOL_REASONER = "deepseek-reasoner"
 SCHOOL_PLAN = "minimax"
 SCHOOL_VISION = "qwen"
-FLASH = "deepseek-flash"
+DEEPSEEK_FLASH = "deepseek-flash"
 
 
 def _settings() -> LLMSettings:
@@ -30,21 +30,25 @@ def _settings() -> LLMSettings:
 
 def _school_text(resp: Any) -> str:
     try:
-        return str(resp["choices"][0]["message"]["content"] or "")
-    except (KeyError, IndexError, TypeError) as err:
+        if isinstance(resp, dict):
+            return str(resp["choices"][0]["message"]["content"] or "")
+        return str(resp.choice[0].message.content or "")
+    except (KeyError, IndexError, TypeError, AttributeError) as err:
         raise ValueError("Campus model did not return a message.") from err
 
 
 def school_json(
     model: str, *, system: str, messages: list[dict[str, Any]],
     schema: dict[str, Any] | None = None, temperature: float = 0,
+    client: Any | None = None,
 ) -> dict[str, Any]:
     """Campus chat. The gateway has no JSON schema; the reply text is the object."""
     del schema
     # Thinking is on for this model name, so leave temperature at the gateway default.
-    resp = SJTUClient(_settings()).chat_completion(
-        model,
-        [{"role": "system", "content": system}, *messages],
+    client = client if client is not None else SJTUClient(_settings())
+    resp = client.chat_completion(
+        model=model,
+        messages=[{"role": "system", "content": system}, *messages],
         temperature=None if model == SCHOOL_REASONER else temperature,
     )
     raw = parse_json_loose(_school_text(resp))
@@ -55,11 +59,13 @@ def school_json(
 
 def school_text(
     model: str, *, system: str, messages: list[dict[str, Any]], temperature: float = 0,
+    client: Any | None = None,
 ) -> Iterator[str]:
     """Campus chat, one chunk. The desk still renders it as reply tokens."""
-    resp = SJTUClient(_settings()).chat_completion(
-        model,
-        [{"role": "system", "content": system}, *messages],
+    client = client if client is not None else SJTUClient(_settings())
+    resp = client.chat_completion(
+        model=model,
+        message=[{"role": "system", "content": system}, *messages],
         temperature=temperature,
     )
     text = _school_text(resp).strip()
@@ -76,6 +82,7 @@ def _flash_input(messages: list[dict[str, Any]]) -> str | list[dict[str, Any]]:
 def flash_json(
     *, system: str, messages: list[dict[str, Any]],
     schema: dict[str, Any] | None = None, temperature: float = 0,
+    client: Any | None = None,
 ) -> dict[str, Any]:
     """Official deepseek-flash, thinking off. A schema is sent when the caller has one."""
     text: dict[str, Any]
@@ -83,8 +90,9 @@ def flash_json(
         text = {"format": {"type": "json_schema", "name": schema["name"], "schema": schema["schema"]}}
     else:
         text = {"format": {"type": "json_object"}}
-    resp = DeepSeekClient(_settings()).response(
-        model=FLASH,
+    client = client if client is not None else DeepSeekClient(_settings())
+    resp = client.response(
+        model=DEEPSEEK_FLASH,
         instructions=system,
         input=_flash_input(messages),
         text=text,
@@ -111,10 +119,12 @@ def _tool_arguments(raw: Any) -> dict[str, Any]:
 
 def flash_tools(
     *, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+    client: Any | None = None,
 ) -> AssistantTurn:
     """Official deepseek-flash function calls. Thinking stays off."""
-    resp = DeepSeekClient(_settings()).chat_completion(
-        model=FLASH,
+    client = client if client is not None else DeepSeekClient(_settings())
+    resp = client.chat_completion(
+        model=DEEPSEEK_FLASH,
         messages=[{"role": "system", "content": system}, *messages],
         tools=tools,
         tool_choice="auto",

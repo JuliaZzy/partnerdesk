@@ -9,6 +9,7 @@ turns a verdict into a status change. The pure parts have no I/O so they test co
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,7 +18,7 @@ from ..llm import calls as model_calls
 from ..schemas import PurchaseOrder
 from .prompt import CLAIM, PAYMENT, RECEIPT
 
-MIN_CONFIDENCE = 0.7
+MIN_CONFIDENCE = 0.8
 
 # --- pure logic --------------------------------------------------------------
 
@@ -44,7 +45,15 @@ class InspectionOutcome:
     refund_amount: float | None
 
 
-def inspection_ok_outcome(*, payment_terms: str | None, total: float, prepaid: float, balance_paid: float, claim_credit: float = 0.0, deductions: float = 0.0) -> InspectionOutcome:
+def inspection_ok_outcome(
+    *, 
+    payment_terms: str | None, 
+    total: float, 
+    prepaid: float, 
+    balance_paid: float, 
+    claim_credit: float = 0.0, 
+    deductions: float = 0.0
+) -> InspectionOutcome:
     """All OK, then route by what is still owed."""
     terms = terms_key(payment_terms)
     remaining = round(total - prepaid - balance_paid - claim_credit - deductions, 2)
@@ -108,29 +117,88 @@ def _conf(raw: dict[str, Any]) -> float:
         return 0.0
     return c if 0 <= c <= 1 else 0.0
 
-
-def classify_receipt(llm: Any, message: str) -> tuple[str, float]:
-    raw = model_calls.school_json(
-        model_calls.SCHOOL_CHAT, system=RECEIPT_PROMPT,
-        messages=[{"role": "user", "content": message[:4000]}], temperature=0,
+def _record_claim_call(
+    db: Database | None,
+    run_id: str | None,
+    step_id: str | None,
+    *,
+    provider: str,
+    model: str,
+    request: dict[str, Any],
+    response: dict[str, Any],
+    usage: dict[str, int],
+    latency_ms: int,
+    error: Exception | None,
+) -> None:
+    if db is None or not run_id or not step_id:
+        return
+    db.insert_model_call(
+        run_id, step_id,
+        provider=provider,
+        model=model,
+        request=request,
+        response=response,
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        completion_tokens=int(usage.get("completion_tokens") or 0),
+        latency_ms=latency_ms,
+        status="failed" if error is not None else "succeeded",
+        error={"message": str(error) if error is not None else None}
     )
+
+def _school_llm(
+    llm: Any,
+    system: str,
+    message: str, 
+    *,
+    db: Database | None,
+    run_id: str | None,
+    step_id: str | None,
+) -> dict[str, Any]:
+    msg = [{"role": "user", "content": message[:4000]}]
+    request = {"model": model_calls.SCHOOL_CHAT, "system": system, "messages": msg}
+    raw: dict[str, Any] = {}
+    error: Exception | None = None
+    started = time.perf_counter()
+    try:
+        raw = model_calls.school_json(
+            model_calls.SCHOOL_CHAT, system=system, messages=msg, temperature=0, client=llm
+        )
+    except Exception as e:
+        error = e
+    usage = getattr(llm, "last_usage", None) or {}
+    _record_claim_call(
+        db, run_id, step_id, 
+        provider=str(getattr(llm, "provider", None) or "sjtu"), 
+        model=model_calls.SCHOOL_CHAT, 
+        request=request, 
+        response={"json": raw} if raw else {}, 
+        usage=usage if isinstance(usage, dict) else None, 
+        latency_ms=int((time.perf_counter() - started) * 1000), 
+        error=error
+    )
+    if error is not None:
+        raise error
+    return raw
+
+def classify_receipt(llm: Any, message: str, *, 
+    db: Database | None = None, run_id: str | None = None, step_id: str | None = None
+) -> tuple[str, float]:
+    raw = _school_llm(llm, RECEIPT_PROMPT, message, db=db, run_id=run_id, step_id=step_id)
     v = raw.get("verdict")
     return (v if v in ("none", "received_ok", "received_ok_paid", "issues") else "none"), _conf(raw)
 
 
-def classify_payment(llm: Any, message: str) -> tuple[bool, float]:
-    raw = model_calls.school_json(
-        model_calls.SCHOOL_CHAT, system=PAYMENT_PROMPT,
-        messages=[{"role": "user", "content": message[:4000]}], temperature=0,
-    )
+def classify_payment(llm: Any, message: str, *,
+    db: Database | None = None, run_id: str | None = None, step_id: str | None = None
+) -> tuple[bool, float]:
+    raw = _school_llm(llm, PAYMENT_PROMPT, message, db=db, run_id=run_id, step_id=step_id)
     return raw.get("paid") is True, _conf(raw)
 
 
-def extract_claim(llm: Any, message: str) -> dict[str, Any]:
-    raw = model_calls.school_json(
-        model_calls.SCHOOL_CHAT, system=CLAIM_PROMPT,
-        messages=[{"role": "user", "content": message[:4000]}], temperature=0,
-    )
+def extract_claim(llm: Any, message: str, *,
+    db: Database | None = None, run_id: str | None = None, step_id: str | None = None
+) -> dict[str, Any]:
+    raw = _school_llm(llm, CLAIM_PROMPT, message, db=db, run_id=run_id, step_id=step_id)
     return {"lines": raw.get("lines") or [], "resolution": raw.get("resolution"), "confidence": _conf(raw)}
 
 
@@ -143,13 +211,16 @@ class ClaimOutcome:
     po_number: str | None = None
     data: dict[str, Any] | None = None
 
-
-def handle_post_submit(db: Database, llm: Any, po: PurchaseOrder, message: str) -> ClaimOutcome:
+def handle_post_submit(
+    db: Database, llm: Any, po: PurchaseOrder, message: str,
+    run_id: str | None = None, step_id: str | None = None,
+) -> ClaimOutcome:
     """Run the classifiers that make sense for the order's state and apply the first
     confident verdict. Anything below MIN_CONFIDENCE is left for a human."""
-    verdict, conf = classify_receipt(llm, message)
+    recorded = {"db": db, "run_id": run_id, "step_id": step_id}
+    verdict, conf = classify_receipt(llm, message, **recorded)
     if verdict == "issues" and conf >= MIN_CONFIDENCE:
-        claim = extract_claim(llm, message)
+        claim = extract_claim(llm, message, **recorded)
         lines = match_claim_lines(db.po_items(po.id), claim["lines"])
         if lines and claim["confidence"] >= MIN_CONFIDENCE:
             db.update_po(po.id, status="claim_filed")
@@ -170,7 +241,7 @@ def handle_post_submit(db: Database, llm: Any, po: PurchaseOrder, message: str) 
             return ClaimOutcome("received", f"Marked {po.po_number} as received. You're owed a refund of {po.currency} {outcome.refund_amount:.2f}; the brand will process it.", po.po_number)
         due = f" within {outcome.payment_due_days} days" if outcome.payment_due_days else ""
         return ClaimOutcome("received", f"Marked {po.po_number} as received and all OK. {po.currency} {outcome.remaining:.2f} is still due{due}.", po.po_number)
-    paid, pconf = classify_payment(llm, message)
+    paid, pconf = classify_payment(llm, message, **recorded)
     if paid and pconf >= MIN_CONFIDENCE:
         due = prepayment_due_now(terms_key(po.payment_terms), po.total_amount) if po.status == "submitted" else round(po.total_amount - po.prepaid_amount, 2)
         db.update_po(po.id, status="payment_claimed")

@@ -14,8 +14,8 @@ def test_celery_urls_share_the_app_redis_host(monkeypatch):
 
 
 def test_celery_app_uses_those_urls_and_the_ping_task():
-    from backend.tasks import ping
-    from backend.worker import celery
+    from backend.celery.tasks import ping
+    from backend.celery.worker import celery
 
     assert celery.conf.broker_url == celery_broker_url()
     assert celery.conf.result_backend == celery_result_url()
@@ -23,3 +23,6 @@ def test_celery_app_uses_those_urls_and_the_ping_task():
     assert celery_result_url().endswith("/2")
     assert ping.name == "partnerdesk.ping"
     assert "partnerdesk.ping" in celery.tasks
+    from backend.celery.tasks import execute_run
+    assert execute_run.name == "partnerdesk.execute_run"
+    assert "partnerdesk.execute_run" in celery.tasks

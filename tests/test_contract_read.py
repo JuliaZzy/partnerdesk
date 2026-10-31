@@ -12,6 +12,8 @@ import pytest
 from backend import service
 from backend.contract import read_agreement, read_and_ingest, sanitize_extraction
 from backend.llm import FakeLLM
+from backend.llm.types import AssistantTurn, ToolCall
+from backend.services.chat_run import work_chat
 
 
 class _Output:
@@ -186,48 +188,38 @@ def test_a_file_with_no_terms_is_not_written(db):
     assert db.active_contract("ps-1") is None
 
 
-def _plan(name: str) -> dict:
-    return {"tasks": [{"id": "1", "kind": "agent", "name": name, "input": {}, "depends_on": []}]}
-
-
 def test_chat_holds_the_agreement_until_confirm(db, monkeypatch):
-    sid = service.new_session(db, "ps-1")["id"]
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = service.new_session(db, "ps-1", "u-a")["id"]
     named = FakeLLM(
-        json_replies=[{"tags": ["contract"], "title": "agreement"}, _plan("contract")],
+        json_replies=[{"tags": ["contract"], "title": "agreement"}],
         text_reply="Please attach the agreement file.",
     )
     ev = list(service.handle_message(db, named, sid, "see the attached agreement", attachments=["agreement.pdf"]))
-    assert next(event for event in ev if event["type"] == "plan")["tasks"][0]["name"] == "contract"
-    assert "attach" in "".join(e.get("text", "") for e in ev).lower()
+    assert work_chat(db, named, ev[0]["run_id"]) is True
+    assert "attach" in db.session(sid)["history"][-1]["content"].lower()
     assert db.active_contract("ps-1") is None
     assert not any((c.get("schema") or {}).get("name") == "contract_extraction" for c in named.calls)
 
     readers = _Readers([dict(EXTRACTION)])
     monkeypatch.setattr("backend.contract.turn.DeepSeekClient", lambda settings: readers)
     monkeypatch.setattr("backend.contract.turn.SJTUClient", lambda settings: readers)
-    llm = FakeLLM(json_replies=[_plan("contract")], text_reply="Filed the agreement.")
+    llm = FakeLLM(
+        tool_replies=[AssistantTurn(tool_calls=[ToolCall(id="c1", name="contract.read", arguments={})])],
+        text_reply="Filed the agreement.",
+    )
     ev = list(service.handle_message(db, llm, sid, "please file this", documents=[("agreement.txt", AGREEMENT.encode())]))
-    done = ev[-1]
-    assert done.get("contract_id") in (None, "")
-    table = done["contract"]
+    assert work_chat(db, llm, ev[0]["run_id"]) is True
+    saved = db.session(sid)["history"][-1]
+    assert saved["content"] == "Filed the agreement."
+    assert "contract_id" not in saved
+    table = saved["contract"]
     assert table["pending_id"] and table["confirmed"] is False
     assert table["file_name"] == "agreement.txt" and table["term_start_date"] == "2026-01-01"
     assert table["discount_rules"][0]["tiers"][0]["discount_percent"] == 3
     assert db.active_contract("ps-1") is None
-    saved = db.session(sid)["history"][-1]
-    assert "contract_id" not in saved
-    assert saved["contract"]["file_name"] == "agreement.txt"
     assert saved["contract_pending"]["extraction"]["term_start_date"] == "2026-01-01"
-    assert "contract_pending" not in done
-    reply_done = next(e for e in ev if e["type"] == "status" and e["id"] == "contract-reply" and e["state"] == "done")
-    last_token = max(i for i, e in enumerate(ev) if e["type"] == "token")
-    assert last_token < ev.index(reply_done) < ev.index(done)
-    assert reply_done["detail"] == "回复已写完"
-    stored_step = next(step for step in saved["activity"] if step["id"] == "contract-reply")
-    assert stored_step["state"] == "done" and stored_step["detail"] == "回复已写完"
-    told = llm.calls[-1]["messages"][-1]["content"]
-    assert "合同解析" in told and "还没写入数据库" in told and "agreement.txt" in told and "2026-01-01" in told
-    assert "contract_pending" not in told
+    assert "activity" not in saved and "model_json" not in saved
 
     filing = dict(table)
     filing["title"] = "Nordic edited"
@@ -245,3 +237,27 @@ def test_chat_holds_the_agreement_until_confirm(db, monkeypatch):
     again = service.confirm_contract(db, sid, table["pending_id"], filing)
     assert again["contract_id"] == stored.id
     assert len(db.contracts("ps-1")) == 1
+
+
+def test_contract_read_hands_the_run_to_ocr(db, monkeypatch):
+    seen: dict = {}
+
+    def fake_pages(file_name, data, *, db=None, run_id=None):
+        seen["file_name"] = file_name
+        seen["run_id"] = run_id
+        seen["db"] = db
+        raise ValueError("stop after the handoff")
+
+    monkeypatch.setattr("backend.contract.read.load_pages", fake_pages)
+    monkeypatch.setattr("backend.contract.turn.DeepSeekClient", lambda settings: object())
+    monkeypatch.setattr("backend.contract.turn.SJTUClient", lambda settings: object())
+    from backend.services.session_tools import _contract_read
+
+    run, _created = db.create_agent_run("ps-1", "u-a", "chat", "ocr-handoff", {"message": "file"})
+    filed = _contract_read(db, {"id": "s", "partnership_id": "ps-1"}, [("agreement.pdf", b"%PDF")])(
+        {}, context={"run_id": run["id"]},
+    )
+    assert filed["status"] == "failed"
+    assert seen["file_name"] == "agreement.pdf"
+    assert seen["run_id"] == run["id"]
+    assert seen["db"] is db

@@ -7,9 +7,11 @@ history the first has not saved yet.
 from __future__ import annotations
 
 import threading
+import time
 
 from backend import service
 from backend.llm import FakeLLM
+from backend.services.chat_run import work_chat
 
 
 def test_two_sessions_overlap_on_the_model(db):
@@ -32,13 +34,15 @@ def test_two_sessions_overlap_on_the_model(db):
 
     def run(sid: str, llm: FakeLLM) -> None:
         try:
-            list(service.handle_message(db, llm, sid, "hello"))
+            events = list(service.handle_message(db, llm, sid, "hello"))
+            work_chat(db, llm, events[0]["run_id"])
         except BaseException as err:
             gate.abort()
             errors.append(err)
 
-    first = service.new_session(db, "ps-1")["id"]
-    second = service.new_session(db, "ps-1")["id"]
+    db.upsert_user("u-a", "dist-1", "Ada")
+    first = service.new_session(db, "ps-1", "u-a")["id"]
+    second = service.new_session(db, "ps-1", "u-a")["id"]
     one = Overlap(json_replies=[{"tags": [], "title": "one"}, {"tasks": []}])
     two = Overlap(json_replies=[{"tags": [], "title": "two"}, {"tasks": []}])
     threads = [
@@ -55,46 +59,27 @@ def test_two_sessions_overlap_on_the_model(db):
     assert [m["content"] for m in db.session(second)["history"] if m["role"] == "user"] == ["hello"]
 
 
-def test_naming_a_new_chat_does_not_block_the_plan(db, monkeypatch):
-    """The title call runs beside the plan. The plan's model call starts first.
-
-    The rest of the suite names a new chat before the plan, so one scripted queue
-    stays in order. This test turns that off and checks the live overlap.
-    """
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-    from backend.llm.types import AssistantTurn
-
-    order: list[str] = []
-    plan_entered = threading.Event()
-
-    class Live:
-        def complete_json(self, *, system, messages, schema=None, temperature=0.0, max_tokens=900):
-            if system.startswith("你在为一场"):
-                order.append("open-start")
-                assert plan_entered.wait(15), "plan did not start while the title was in flight"
-                order.append("open-end")
-                return {"tags": ["data"], "title": "订单总额"}
-            order.append("plan")
-            plan_entered.set()
-            return {"tasks": []}
-
-        def stream_text(self, *, system, messages, temperature=0.7, max_tokens=300):
-            yield "Hello"
-
-        def complete(self, *, system, messages, tools=None, temperature=0.0, max_tokens=900):
-            return AssistantTurn()
-
-    sid = service.new_session(db, "ps-1")["id"]
-    events = list(service.handle_message(db, Live(), sid, "how much did I order"))
-    assert order.index("plan") < order.index("open-end")
-    assert {"type": "session", "title": "订单总额", "tags": ["data"]} in events
+def test_enqueue_yields_the_run_before_the_title(db):
+    """HTTP returns the run id before the worker names the chat."""
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = service.new_session(db, "ps-1", "u-a")["id"]
+    llm = FakeLLM(json_replies=[{"tags": ["data"], "title": "订单总额"}])
+    turn = service.handle_message(db, llm, sid, "how much did I order")
+    first = next(turn)
+    assert first["type"] == "run"
+    assert db.session(sid).get("title") is None
+    list(turn)
+    assert work_chat(db, llm, first["run_id"]) is True
     assert db.session(sid)["title"] == "订单总额"
     assert db.session(sid)["tags"] == ["data"]
 
 
 def test_one_session_finishes_a_turn_before_the_next_starts(db):
-    state = {"inside": 0, "max": 0}
+    from backend.services.run_worker import SessionBusy
+
+    state = {"inside": 0, "max": 0, "two_running": False}
     mu = threading.Lock()
+    run_ids: list[str] = []
     errors: list[BaseException] = []
 
     class Slow(FakeLLM):
@@ -102,21 +87,37 @@ def test_one_session_finishes_a_turn_before_the_next_starts(db):
             with mu:
                 state["inside"] += 1
                 state["max"] = max(state["max"], state["inside"])
+                statuses = [
+                    db.find_agent_run_by_id(run_id)["status"] for run_id in run_ids
+                ]
+                if statuses.count("running") > 1:
+                    state["two_running"] = True
             try:
-                threading.Event().wait(0.15)
+                threading.Event().wait(0.2)
                 return super().complete_json(**kwargs)
             finally:
                 with mu:
                     state["inside"] -= 1
 
-    sid = service.new_session(db, "ps-1")["id"]
+    db.upsert_user("u-a", "dist-1", "Ada")
+    sid = service.new_session(db, "ps-1", "u-a")["id"]
     llm = Slow(json_replies=[
-        {"tags": [], "title": "a"}, {"tasks": []}, {"tasks": []},
+        {"tags": [], "title": "a"},
     ], text_reply="Hello")
 
     def run(text: str) -> None:
         try:
-            list(service.handle_message(db, llm, sid, text))
+            events = list(service.handle_message(db, llm, sid, text))
+            run_id = events[0]["run_id"]
+            with mu:
+                run_ids.append(run_id)
+            for _ in range(40):
+                try:
+                    if work_chat(db, llm, run_id):
+                        return
+                except SessionBusy:
+                    time.sleep(0.05)
+            raise TimeoutError(text)
         except BaseException as err:
             errors.append(err)
 
@@ -127,6 +128,7 @@ def test_one_session_finishes_a_turn_before_the_next_starts(db):
         thread.join(10)
     assert errors == []
     assert state["max"] == 1
+    assert state["two_running"] is False
     history = db.session(sid)["history"]
     assert [m["role"] for m in history] == ["user", "assistant", "user", "assistant"]
     users = [m["content"] for m in history if m["role"] == "user"]

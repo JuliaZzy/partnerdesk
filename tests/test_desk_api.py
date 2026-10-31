@@ -15,11 +15,25 @@ def client(db, llm=None) -> TestClient:
 
 
 def test_meta_lists_the_campus_models(db):
+    from backend import service
+
     body = client(db).get("/api/meta").json()
     assert "qwen" in [m["id"] for m in body["models"]]
     assert body["default_model"]
     assert "停产" in body["product_statuses"]
     assert body["memory_kinds"]["preference"] == "Preference"
+    assert body["max_images"] == service.MAX_IMAGES
+
+
+def test_a_turn_rejects_more_images_than_meta(db):
+    from backend import service
+
+    sid = service.new_session(db, "ps-1")["id"]
+    cap = service.MAX_IMAGES
+    images = [f"data:image/png;base64,xx{i}" for i in range(cap + 1)]
+    resp = client(db).post(f"/api/sessions/{sid}/message", json={"message": "hi", "images": images})
+    assert resp.status_code == 400
+    assert str(cap) in resp.json()["detail"]
 
 
 def test_catalog_filters_and_needs_no_partnership(db, make_db):
