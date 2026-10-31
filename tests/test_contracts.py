@@ -141,8 +141,8 @@ def test_contract_rate_is_known_on_the_first_order_turn_before_any_product(db):
     assert done["slots"]["line_items"] == []
     assert done["slots"]["discount"]["source"] == "contract" and done["slots"]["discount"]["value"] == 5.0
     extract, reply = llm.calls[0]["system"], llm.calls[-1]["system"]
-    assert "1st container" in extract and "Leave discount_kind null" in extract
-    assert "contract rate" in reply and "1st container" in reply
+    assert "1st container" in extract and "discount_kind 保持 null" in extract
+    assert "合同费率" in reply and "1st container" in reply
 
 
 def test_turn_prefills_the_contract_rate_and_reply_is_told(db):
@@ -154,7 +154,7 @@ def test_turn_prefills_the_contract_rate_and_reply_is_told(db):
     assert done["draft"]["discount_amount"] == 100.0 and done["draft"]["total"] == 1900.0
     assert not any("discount" in g for g in done["gaps"]) and done["stage"] == "confirm"
     prompt = llm.calls[-1]["system"]
-    assert "contract rate" in prompt and "1st container" in prompt and "never as something they could request" in prompt
+    assert "合同费率" in prompt and "1st container" in prompt and "绝不能说成他们可以申请" in prompt
 
 
 def test_customer_statement_overrides_the_prefill_and_over_contract_needs_approval(db):
